@@ -1,0 +1,586 @@
+diff --git a/src/main/ipc.ts b/src/main/ipc.ts
+index 128ac911e3080e6af6c4e83f8bc5e202db61b247..0486d4eb96f265c0295416627db2a2d46e9c9e4c 100644
+--- a/src/main/ipc.ts
++++ b/src/main/ipc.ts
+@@ -85,6 +85,7 @@ import {
+   getPresetName,
+   updateScene,
+   duplicateScene,
++  clearScenePending,
+   deleteScene,
+   reorderScenes,
+   setReserveAll,
+@@ -418,6 +419,9 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
+   handle('scenes:delete', ({ id }) => {
+     deleteScene(id)
+   })
++  handle('scenes:clearPending', ({ id }) => {
++    clearScenePending(id)
++  })
+   handle('scenes:reorder', ({ ids }) => {
+     reorderScenes(ids)
+   })
+diff --git a/src/main/scenes/repo.ts b/src/main/scenes/repo.ts
+index cda997ec1c5d23560cad9145b79a8075e9c946e3..d401b3d117b5100813391d3da0ec1cee836aec9a 100644
+--- a/src/main/scenes/repo.ts
++++ b/src/main/scenes/repo.ts
+@@ -28,6 +28,7 @@ interface Row {
+   height: number
+   reserve_count: number
+   reserve_json?: string | null
++  pending?: number
+ }
+ 
+ /** 출연별 예약 내역 파싱 (키 '' = 사이드바) */
+@@ -83,10 +84,63 @@ function toScene(
+     thumbnailUrl: storedThumbnailUrl('image', r.thumb_id, r.thumb_created_at, r.thumb_size),
+     thumbnailPath: r.thumb_path ?? '',
+     imageCount: r.image_count,
+-    hasFavorite: r.has_favorite === 1
++    hasFavorite: r.has_favorite === 1,
++    pending: r.pending === 1
+   }
+ }
+ 
++// ── [custom] 변경 후 미생성 표시 ────────────────────────────
++// 원본의 마이그레이션 번호와 겹치지 않도록 gen_scenes에 칸을 추가하지 않고 전용 표를 따로 둔다.
++// changed_at = 씬 내용(프롬프트·네거티브·크기)이 마지막으로 실제로 달라진 시각, acked = 수동 확인 여부.
++const marksReady = new WeakSet<object>()
++function marksDb(): ReturnType<typeof getDb> {
++  const db = getDb()
++  if (!marksReady.has(db)) {
++    db.exec(
++      `CREATE TABLE IF NOT EXISTS custom_scene_marks (
++         scene_id INTEGER PRIMARY KEY,
++         changed_at TEXT NOT NULL DEFAULT (datetime('now')),
++         acked INTEGER NOT NULL DEFAULT 0
++       )`
++    )
++    marksReady.add(db)
++  }
++  return db
++}
++
++/** 미생성 판정 SQL — ref는 gen_scenes 행을 가리키는 별칭(또는 표 이름) */
++function pendingSql(ref: string): string {
++  return `(CASE
++    WHEN COALESCE((SELECT acked FROM custom_scene_marks WHERE scene_id = ${ref}.id), 0) = 1 THEN 0
++    WHEN NOT EXISTS (SELECT 1 FROM images WHERE scene_id = ${ref}.id) THEN 1
++    WHEN EXISTS (
++      SELECT 1 FROM custom_scene_marks m
++      WHERE m.scene_id = ${ref}.id
++        AND NOT EXISTS (SELECT 1 FROM images i WHERE i.scene_id = ${ref}.id AND i.created_at > m.changed_at)
++    ) THEN 1
++    ELSE 0
++  END)`
++}
++
++function markSceneChanged(id: number): void {
++  marksDb()
++    .prepare(
++      `INSERT INTO custom_scene_marks (scene_id, changed_at, acked) VALUES (?, datetime('now'), 0)
++       ON CONFLICT(scene_id) DO UPDATE SET changed_at = excluded.changed_at, acked = 0`
++    )
++    .run(id)
++}
++
++/** '변경 후 미생성' 표시를 수동으로 끈다. 다음 내용 변경 때 다시 켜진다. */
++export function clearScenePending(id: number): void {
++  marksDb()
++    .prepare(
++      `INSERT INTO custom_scene_marks (scene_id, acked) VALUES (?, 1)
++       ON CONFLICT(scene_id) DO UPDATE SET acked = 1`
++    )
++    .run(id)
++}
++
+ // ── 프리셋 ──────────────────────────────────────────────
+ export function listPresets(): ScenePreset[] {
+   const rows = getDb()
+@@ -158,10 +212,11 @@ export function listScenes(presetId: number): Scene[] {
+   // 카드 썸네일: 즐겨찾기가 있으면 최상단(최신) 즐겨찾기, 없으면 최신 이미지 (NAIS2 방식)
+   // The cover row is looked up once and joined. Because favorites sort first, the cover
+   // is a favorite exactly when the scene has one, so it also answers has_favorite.
+-  const rows = getDb()
++  const rows = marksDb()
+     .prepare(
+       `SELECT s.id, s.preset_id, s.name, s.prompt, s.negative_prompt, s.width, s.height, s.reserve_count, s.reserve_json,
+               (SELECT COUNT(*) FROM images WHERE scene_id = s.id) AS image_count,
++              ${pendingSql('s')} AS pending,
+               cover.id AS thumb_id,
+               cover.created_at AS thumb_created_at,
+               length(cover.thumbnail) AS thumb_size,
+@@ -201,10 +256,11 @@ export function getPresetName(id: number): string | null {
+ }
+ 
+ export function getScene(id: number): Scene | null {
+-  const r = getDb()
++  const r = marksDb()
+     .prepare(
+       `SELECT id, preset_id, name, prompt, negative_prompt, width, height, reserve_count, reserve_json,
+-              (SELECT COUNT(*) FROM images WHERE scene_id = ?) AS image_count
++              (SELECT COUNT(*) FROM images WHERE scene_id = ?) AS image_count,
++              ${pendingSql('gen_scenes')} AS pending
+        FROM gen_scenes WHERE id = ?`
+     )
+     .get(id, id) as (Row & { image_count: number }) | undefined
+@@ -272,6 +328,22 @@ export function updateScene(id: number, patch: Record<string, unknown>): void {
+     values.push(patch[key])
+   }
+   if (sets.length === 0) return
++  // [custom] 내용이 실제로 달라졌을 때만 '변경 후 미생성' 시각을 찍는다 (이름·예약 수 변경은 제외)
++  const contentKeys = ['prompt', 'negativePrompt', 'width', 'height'] as const
++  if (contentKeys.some((k) => patch[k] !== undefined)) {
++    const cur = getDb()
++      .prepare('SELECT prompt, negative_prompt, width, height FROM gen_scenes WHERE id = ?')
++      .get(id) as
++      { prompt: string; negative_prompt: string; width: number; height: number } | undefined
++    if (
++      cur &&
++      ((patch.prompt !== undefined && patch.prompt !== cur.prompt) ||
++        (patch.negativePrompt !== undefined && patch.negativePrompt !== cur.negative_prompt) ||
++        (patch.width !== undefined && patch.width !== cur.width) ||
++        (patch.height !== undefined && patch.height !== cur.height))
++    )
++      markSceneChanged(id)
++  }
+   sets.push(`updated_at = datetime('now')`)
+   getDb()
+     .prepare(`UPDATE gen_scenes SET ${sets.join(', ')} WHERE id = ?`)
+@@ -280,6 +352,7 @@ export function updateScene(id: number, patch: Record<string, unknown>): void {
+ 
+ export function deleteScene(id: number): void {
+   getDb().prepare('DELETE FROM gen_scenes WHERE id = ?').run(id)
++  marksDb().prepare('DELETE FROM custom_scene_marks WHERE scene_id = ?').run(id) // [custom]
+   sceneEvents.emit('deleted', [id])
+ }
+ 
+@@ -625,7 +698,7 @@ export async function importScenesJson(
+   // [custom] 같은 프리셋에 같은 이름의 씬이 있으면 새로 추가하지 않고 그 씬의 내용만 교체한다.
+   // 이름이 겹치는 씬이 여럿이면 가장 앞(sort_order 최소)의 것만 교체. 생성 이력·순서는 유지.
+   const findByName = db.prepare(
+-    'SELECT id FROM gen_scenes WHERE preset_id = ? AND name = ? ORDER BY sort_order ASC LIMIT 1'
++    'SELECT id, prompt, negative_prompt, width, height FROM gen_scenes WHERE preset_id = ? AND name = ? ORDER BY sort_order ASC LIMIT 1'
+   )
+   const update = db.prepare(
+     "UPDATE gen_scenes SET prompt = ?, negative_prompt = ?, width = ?, height = ?, updated_at = datetime('now') WHERE id = ?"
+@@ -633,9 +706,28 @@ export async function importScenesJson(
+   db.transaction(() => {
+     for (const s of scenes) {
+       const name = s.name ?? t('ui.scene')
+-      const existing = s.name ? (findByName.get(presetId, name) as { id: number } | undefined) : undefined
++      const existing = s.name
++        ? (findByName.get(presetId, name) as
++            | { id: number; prompt: string; negative_prompt: string; width: number; height: number }
++            | undefined)
++        : undefined
+       if (existing) {
+-        update.run(s.prompt, s.negativePrompt ?? '', s.width ?? 832, s.height ?? 1216, existing.id)
++        const next = {
++          prompt: s.prompt,
++          negative: s.negativePrompt ?? '',
++          width: s.width ?? 832,
++          height: s.height ?? 1216
++        }
++        // 내용이 같으면 건드리지 않는다 — 전체 JSON을 다시 불러와도 실제로 바뀐 씬에만 표시가 붙는다
++        if (
++          existing.prompt !== next.prompt ||
++          existing.negative_prompt !== next.negative ||
++          existing.width !== next.width ||
++          existing.height !== next.height
++        ) {
++          update.run(next.prompt, next.negative, next.width, next.height, existing.id)
++          markSceneChanged(existing.id)
++        }
+         continue
+       }
+       stmt.run(
+diff --git a/src/renderer/src/components/scene-mode.tsx b/src/renderer/src/components/scene-mode.tsx
+index ec22c6046b43a59cbc561ca83aa95b8fe09bea7a..37b1781a0e04071d8d1d9210d22d1c67b793601e 100644
+--- a/src/renderer/src/components/scene-mode.tsx
++++ b/src/renderer/src/components/scene-mode.tsx
+@@ -1,4 +1,5 @@
+ import {
++  CircleDashed,
+   CalendarPlus,
+   CalendarX,
+   ChevronDown,
+@@ -366,12 +367,17 @@ function SceneGrid(): React.JSX.Element {
+   // DragOverlay 사용: 드래그 중엔 가벼운 클론이 커서를 따라가고 원본은 숨겨 프레임 저하 방지
+   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }))
+   const [dragScene, setDragScene] = useState<Scene | null>(null)
++  // [custom] 변경 후 미생성 씬만 보기. 걸러 보는 동안에는 순서 바꾸기를 막는다 (부분 목록 기준 재정렬 방지)
++  const [pendingOnly, setPendingOnly] = useState(false)
++  const pendingCount = scenes.filter((s) => s.pending).length
++  const shownScenes = pendingOnly ? scenes.filter((s) => s.pending) : scenes
+   const onDragStart = (e: DragStartEvent): void => {
+     setDragScene(scenes.find((s) => `scene-${s.id}` === e.active.id) ?? null)
+   }
+   const onDragEnd = (e: DragEndEvent): void => {
+     setDragScene(null)
+     const { active, over } = e
++    if (pendingOnly) return
+     if (!over || active.id === over.id) return
+     const ids = scenes.map((s) => `scene-${s.id}`)
+     const from = ids.indexOf(String(active.id))
+@@ -428,6 +434,12 @@ function SceneGrid(): React.JSX.Element {
+           active={editMode}
+           onClick={() => setEditMode(!editMode)}
+         />
++        <IconBtn
++          icon={<CircleDashed size={16} />}
++          tip={t('ui.showOnlyNotGeneratedValue', pendingCount)}
++          active={pendingOnly}
++          onClick={() => setPendingOnly(!pendingOnly)}
++        />
+ 
+         <div className="flex-1" />
+ 
+@@ -524,14 +536,14 @@ function SceneGrid(): React.JSX.Element {
+           onDragEnd={onDragEnd}
+         >
+           <SortableContext
+-            items={scenes.map((s) => `scene-${s.id}`)}
++            items={shownScenes.map((s) => `scene-${s.id}`)}
+             strategy={rectSortingStrategy}
+           >
+             <div
+               className="grid gap-3"
+               style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}
+             >
+-              {scenes.map((scene) => (
++              {shownScenes.map((scene) => (
+                 <SceneCard
+                   key={scene.id}
+                   scene={scene}
+@@ -845,6 +857,13 @@ const SceneCard = memo(function SceneCard({
+     const { ok } = await window.nais.invoke('scenes:openFolder', { sceneId: scene.id })
+     if (!ok) toast(t('ui.noGeneratedImageFolderYet'), 'info')
+   }
++  // [custom] '미생성' 표시를 수동으로 끈다
++  const clearPending = async (): Promise<void> => {
++    await window.nais.invoke('scenes:clearPending', { id: scene.id })
++    useScenesStore.setState((st) => ({
++      scenes: st.scenes.map((s) => (s.id === scene.id ? { ...s, pending: false } : s))
++    }))
++  }
+   const removeScene = async (): Promise<void> => {
+     if (
+       await askConfirm(t('ui.deleteScene'), {
+@@ -939,6 +958,13 @@ const SceneCard = memo(function SceneCard({
+               )
+             })()}
+ 
++          {/* [custom] 변경 후 미생성 표시 — 3점 메뉴 왼쪽 */}
++          {scene.pending && (
++            <span className="pointer-events-none absolute right-9 top-1.5 rounded-full bg-accent px-1.5 py-0.5 text-[11px] font-bold leading-none text-on-accent shadow">
++              {t('ui.notGenerated')}
++            </span>
++          )}
++
+           {/* 우측 상단 — 편집 모드 체크박스 / 일반 3점 메뉴 */}
+           {editMode ? (
+             <span
+@@ -1058,6 +1084,11 @@ const SceneCard = memo(function SceneCard({
+         <ContextMenuItem onSelect={() => void openFolder()}>
+           <FolderOpen size={13} className="text-hue-amber" /> {t('ui.openFolder')}
+         </ContextMenuItem>
++        {scene.pending && (
++          <ContextMenuItem onSelect={() => void clearPending()}>
++            <CircleDashed size={13} /> {t('ui.markAsChecked')}
++          </ContextMenuItem>
++        )}
+         <ContextMenuSeparator />
+         <ContextMenuItem danger onSelect={() => void removeScene()}>
+           <Trash2 size={13} /> {t('ui.delete')}
+diff --git a/src/renderer/src/stores/scenes-store.ts b/src/renderer/src/stores/scenes-store.ts
+index e757e268db98a993a04fa9ebd434e2d998cd44af..73f0dee32447cf9b31f9cd4429be536b87c148f9 100644
+--- a/src/renderer/src/stores/scenes-store.ts
++++ b/src/renderer/src/stores/scenes-store.ts
+@@ -256,7 +256,17 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
+     await get().load()
+   },
+   update: async (id, patch) => {
+-    set({ scenes: get().scenes.map((s) => (s.id === id ? { ...s, ...patch } : s)) })
++    // [custom] 내용이 실제로 달라지면 카드의 '미생성' 표시도 바로 켠다 (서버 판정과 같은 기준)
++    const changesContent = (s: Scene): boolean =>
++      (patch.prompt !== undefined && patch.prompt !== s.prompt) ||
++      (patch.negativePrompt !== undefined && patch.negativePrompt !== s.negativePrompt) ||
++      (patch.width !== undefined && patch.width !== s.width) ||
++      (patch.height !== undefined && patch.height !== s.height)
++    set({
++      scenes: get().scenes.map((s) =>
++        s.id === id ? { ...s, ...patch, pending: s.pending || changesContent(s) } : s
++      )
++    })
+     await window.nais.invoke('scenes:update', {
+       id,
+       patch: {
+@@ -402,8 +412,14 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
+       scenes: get().scenes.map((s) =>
+         s.id === sceneId
+           ? s.hasFavorite
+-            ? { ...s, imageCount: s.imageCount + 1 }
+-            : { ...s, thumbnailUrl: '', thumbnailPath: filePath, imageCount: s.imageCount + 1 }
++            ? { ...s, imageCount: s.imageCount + 1, pending: false }
++            : {
++                ...s,
++                thumbnailUrl: '',
++                thumbnailPath: filePath,
++                imageCount: s.imageCount + 1,
++                pending: false
++              }
+           : s
+       )
+     }),
+diff --git a/src/shared/i18n/catalog-en.ts b/src/shared/i18n/catalog-en.ts
+index b6f4bbaa9d61ceb3ede8ed1779ed4b0c3ce23736..ccbe82f9b06b9dfdf723c41941dc1af9724f5734 100644
+--- a/src/shared/i18n/catalog-en.ts
++++ b/src/shared/i18n/catalog-en.ts
+@@ -137,6 +137,9 @@ export const EN = {
+   'ui.valueValueImages': '{0}: {1} {1|image|images}',
+   'ui.duplicate': 'Duplicate',
+   'ui.openFolder': 'Open folder',
++  'ui.notGenerated': 'Not generated',
++  'ui.showOnlyNotGeneratedValue': 'Show only changed, not yet generated ({0})',
++  'ui.markAsChecked': 'Mark as checked',
+   'ui.queuedForCastValue': 'Queued for cast "{0}"',
+   'ui.queuedWithSidebarSettings': 'Queued with sidebar settings',
+   'ui.deletedCast': 'Deleted cast',
+diff --git a/src/shared/i18n/catalog-ko.ts b/src/shared/i18n/catalog-ko.ts
+index 2b7667cf9927b6bb92a733a019098a1a8bb33c14..03d812c6449f282242a171bbe7d2af39d32ae53f 100644
+--- a/src/shared/i18n/catalog-ko.ts
++++ b/src/shared/i18n/catalog-ko.ts
+@@ -136,6 +136,9 @@ export const KO = {
+   'ui.valueValueImages': '{0} {1}장',
+   'ui.duplicate': '복제',
+   'ui.openFolder': '폴더 열기',
++  'ui.notGenerated': '미생성',
++  'ui.showOnlyNotGeneratedValue': '변경 후 미생성 씬만 보기 ({0})',
++  'ui.markAsChecked': '확인함 (미생성 표시 끄기)',
+   'ui.queuedForCastValue': '"{0}" 출연 예약',
+   'ui.queuedWithSidebarSettings': '사이드바 설정 예약',
+   'ui.deletedCast': '삭제된 출연',
+diff --git a/src/shared/i18n/catalog-zh-CN.ts b/src/shared/i18n/catalog-zh-CN.ts
+index 7f87a5636edf5bfc4be1a9fc0e1cb1f5ed6bd581..450a0a249ab3ef84f601e5eb901e5f31153d88e2 100644
+--- a/src/shared/i18n/catalog-zh-CN.ts
++++ b/src/shared/i18n/catalog-zh-CN.ts
+@@ -136,6 +136,9 @@ export const ZH_CN = {
+   'ui.valueValueImages': '{0}：{1} 张',
+   'ui.duplicate': '复制',
+   'ui.openFolder': '打开文件夹',
++  'ui.notGenerated': '未生成',
++  'ui.showOnlyNotGeneratedValue': '仅显示修改后未生成的场景（{0}）',
++  'ui.markAsChecked': '标记为已确认',
+   'ui.queuedForCastValue': '已按角色组合「{0}」预约',
+   'ui.queuedWithSidebarSettings': '已按左侧当前配置预约',
+   'ui.deletedCast': '已删除的角色组合',
+diff --git a/src/shared/types.ts b/src/shared/types.ts
+index e723404888c5b9f434a721c38f72442b1f9d0699..472c89577e0375f860aed479bc0cca14b7580510 100644
+--- a/src/shared/types.ts
++++ b/src/shared/types.ts
+@@ -366,6 +366,8 @@ export interface Scene {
+   imageCount: number
+   /** 즐겨찾기 보유 여부 — 카드 낙관적 썸네일 교체 억제용 (즐겨찾기가 썸네일 고정) */
+   hasFavorite: boolean
++  /** [custom] 내용(프롬프트·네거티브·크기) 변경 뒤 아직 한 장도 생성하지 않았거나, 이미지가 0장인 씬 */
++  pending?: boolean
+ }
+ 
+ /** 씬 상세의 생성 이미지 (페이지네이션 단위) */
+@@ -626,6 +628,8 @@ export interface IpcInvokeMap {
+   }
+   'scenes:duplicate': { req: { id: number }; res: { id: number } }
+   'scenes:delete': { req: { id: number }; res: void }
++  /** [custom] '변경 후 미생성' 표시를 수동으로 끈다 (다음 내용 변경 때 다시 켜짐) */
++  'scenes:clearPending': { req: { id: number }; res: void }
+   'scenes:reorder': { req: { ids: number[] }; res: void }
+   /** 예약: 전체 취소(count=0 등 절대값 설정 — 출연 내역도 함께 초기화) */
+   'scenes:setReserveAll': { req: { presetId: number; count: number }; res: void }
+diff --git a/tests/custom-scene-pending.integration.ts b/tests/custom-scene-pending.integration.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..fe120fe46b1f04bb89a6ce7b015a45ccb5741d45
+--- /dev/null
++++ b/tests/custom-scene-pending.integration.ts
+@@ -0,0 +1,181 @@
++import { mkdtempSync, rmSync, writeFileSync } from 'fs'
++import { tmpdir } from 'os'
++import { join } from 'path'
++import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
++import { closeDb, getDb, initDb } from '../src/main/db'
++import {
++  clearScenePending,
++  createPreset,
++  createScene,
++  deleteScene,
++  getScene,
++  importScenesJson,
++  listScenes,
++  updateScene
++} from '../src/main/scenes/repo'
++
++// [custom] 씬 JSON 덮어쓰기 불러오기 + '변경 후 미생성' 표시 검증
++const environment = vi.hoisted(() => ({ directory: '', importFile: '' }))
++vi.mock('electron', () => ({
++  app: { getPath: () => environment.directory, getLocale: () => 'ko' },
++  BrowserWindow: { getFocusedWindow: () => null, getAllWindows: () => [] },
++  dialog: {
++    showOpenDialog: async () => ({ canceled: false, filePaths: [environment.importFile] })
++  }
++}))
++
++beforeEach(() => {
++  environment.directory = mkdtempSync(join(tmpdir(), 'nais3-custom-pending-'))
++  environment.importFile = join(environment.directory, 'scenes.json')
++  initDb()
++})
++afterEach(() => {
++  closeDb()
++  rmSync(environment.directory, { recursive: true, force: true })
++})
++
++/** 시간 경과 흉내 — 지금까지의 변경 시각과 이미지를 한 시간 과거로 민다 (SQLite 시각은 초 단위) */
++function passTime(): void {
++  const db = getDb()
++  db.exec(`CREATE TABLE IF NOT EXISTS custom_scene_marks (
++    scene_id INTEGER PRIMARY KEY, changed_at TEXT NOT NULL DEFAULT (datetime('now')), acked INTEGER NOT NULL DEFAULT 0)`)
++  db.exec("UPDATE custom_scene_marks SET changed_at = datetime(changed_at, '-1 hour')")
++  db.exec("UPDATE images SET created_at = datetime(created_at, '-1 hour')")
++}
++function addImage(sceneId: number, when = "datetime('now')"): void {
++  passTime()
++  getDb()
++    .prepare(
++      `INSERT INTO images (file_path, payload_json, kind, scene_id, created_at)
++       VALUES (?, '{}', 'scene', ?, ${when})`
++    )
++    .run(join(environment.directory, `img-${sceneId}-${Math.random()}.png`), sceneId)
++}
++function writeImport(scenes: object[]): void {
++  writeFileSync(environment.importFile, JSON.stringify({ version: 1, scenes }), 'utf-8')
++}
++const pending = (id: number): boolean => getScene(id)?.pending === true
++
++describe('custom: pending marker', () => {
++  it('marks a scene with no images, clears it once an image exists', () => {
++    const id = createScene(createPreset('p'), 'a')
++    expect(pending(id)).toBe(true)
++    addImage(id)
++    expect(pending(id)).toBe(false)
++  })
++
++  it('turns on only when prompt, negative prompt or size really change', () => {
++    const preset = createPreset('p')
++    const id = createScene(preset, 'a')
++    updateScene(id, { prompt: 'one' })
++    addImage(id)
++    expect(pending(id)).toBe(false)
++
++    updateScene(id, { name: 'renamed' })
++    updateScene(id, { reserveCount: 3 })
++    updateScene(id, { prompt: 'one' })
++    expect(pending(id)).toBe(false)
++
++    passTime()
++    updateScene(id, { prompt: 'two' })
++    expect(pending(id)).toBe(true)
++    expect(listScenes(preset).find((s) => s.id === id)?.pending).toBe(true)
++
++    addImage(id)
++    expect(pending(id)).toBe(false)
++
++    passTime()
++    updateScene(id, { negativePrompt: 'bad' })
++    expect(pending(id)).toBe(true)
++    addImage(id)
++    expect(pending(id)).toBe(false)
++    passTime()
++    updateScene(id, { width: 1024 })
++    expect(pending(id)).toBe(true)
++  })
++
++  it('ignores images made before the change', () => {
++    const id = createScene(createPreset('p'), 'a')
++    addImage(id)
++    expect(pending(id)).toBe(false)
++    passTime()
++    updateScene(id, { prompt: 'changed' })
++    expect(pending(id)).toBe(true)
++  })
++
++  it('can be dismissed by hand and comes back on the next change', () => {
++    const id = createScene(createPreset('p'), 'a')
++    clearScenePending(id)
++    expect(pending(id)).toBe(false)
++    updateScene(id, { prompt: 'again' })
++    expect(pending(id)).toBe(true)
++    clearScenePending(id)
++    expect(pending(id)).toBe(false)
++  })
++
++  it('survives deleting a marked scene', () => {
++    const preset = createPreset('p')
++    const id = createScene(preset, 'a')
++    updateScene(id, { prompt: 'x' })
++    deleteScene(id)
++    expect(getScene(id)).toBeNull()
++    expect(listScenes(preset)).toHaveLength(0)
++  })
++})
++
++describe('custom: import overwrites scenes with the same name', () => {
++  it('replaces content in place, keeps order and images, adds unknown names', async () => {
++    const preset = createPreset('p')
++    const first = createScene(preset, '131scene')
++    const second = createScene(preset, '132scene')
++    updateScene(first, { prompt: 'old first', negativePrompt: 'old neg' })
++    updateScene(second, { prompt: 'keep second' })
++    addImage(first)
++    addImage(second)
++    expect(pending(first)).toBe(false)
++    passTime()
++
++    writeImport([
++      {
++        name: '131scene',
++        prompt: 'new first',
++        negativePrompt: 'new neg',
++        width: 1024,
++        height: 1024
++      },
++      { name: '132scene', prompt: 'keep second', negativePrompt: '', width: 832, height: 1216 },
++      { name: '133scene', prompt: 'brand new', negativePrompt: '', width: 1024, height: 1024 }
++    ])
++    const result = await importScenesJson(preset)
++    expect(result).toEqual({ count: 3 })
++
++    const scenes = listScenes(preset)
++    expect(scenes.map((s) => s.name)).toEqual(['131scene', '132scene', '133scene'])
++    expect(scenes[0]).toMatchObject({
++      id: first,
++      prompt: 'new first',
++      negativePrompt: 'new neg',
++      width: 1024,
++      height: 1024,
++      imageCount: 1,
++      pending: true
++    })
++    // 내용이 같은 씬은 건드리지 않는다
++    expect(scenes[1]).toMatchObject({ id: second, prompt: 'keep second', pending: false })
++    expect(scenes[2]).toMatchObject({ prompt: 'brand new', imageCount: 0, pending: true })
++  })
++
++  it('importing the same file twice changes nothing the second time', async () => {
++    const preset = createPreset('p')
++    writeImport([{ name: 'a', prompt: 'p1', negativePrompt: 'n1', width: 1024, height: 1024 }])
++    await importScenesJson(preset)
++    const [scene] = listScenes(preset)
++    addImage(scene.id)
++    expect(pending(scene.id)).toBe(false)
++    passTime()
++
++    await importScenesJson(preset)
++    expect(listScenes(preset)).toHaveLength(1)
++    expect(pending(scene.id)).toBe(false)
++  })
++})

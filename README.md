@@ -1,88 +1,47 @@
-<div align="center">
+# NAIS3 커스텀 빌드 (비공식)
 
-# NAIS3
+[sunanakgo/NAIS3](https://github.com/sunanakgo/NAIS3) 에 개인용 수정을 얹어 윈도우 설치 파일을 자동으로 만드는 저장소입니다. 원본 제작자와 무관한 비공식 빌드이며, 문제가 생기면 원본이 아니라 이 저장소에서 확인해 주세요.
 
-<img src="build/icon-win.png" width="128" alt="NAIS3" />
+설치 파일은 [Releases](../../releases/latest) 에 있습니다.
 
-**NovelAI Image Studio 3** — NovelAI 이미지 생성을 위한 데스크톱 앱
+## 원본과 다른 점
 
-[![Discord](https://img.shields.io/badge/Discord-문의-5865F2?logo=discord&logoColor=white)](https://discord.gg/bFxP5Qvaz)
-[![Patreon](https://img.shields.io/badge/Patreon-후원-FF424D?logo=patreon&logoColor=white)](https://www.patreon.com/c/sunakgo)
-[![License](https://img.shields.io/badge/License-GPL--3.0-blue)](LICENSE)
+[custom/NOTES.md](custom/NOTES.md) 참고.
 
-</div>
+## 만들어지는 방식
 
----
+이 저장소의 `main` 에는 원본 소스가 없고, 수정 파일 묶음과 빌드 설정만 있습니다.
 
-NAIS3는 NAIS2의 후속작으로, NovelAI 이미지 생성을 빠르고 안정적으로 다룰 수 있게 만든 데스크톱 애플리케이션입니다. 수백 개의 캐릭터·프리셋을 저장하고 수만 장의 이미지를 생성하는 헤비 유저를 염두에 두고 설계했습니다.
+1. 매일 한 번 원본의 최신 릴리스 버전을 확인합니다.
+2. 새 버전이 나왔거나 `custom/` 의 수정이 바뀌었으면, 원본 소스를 받아 `custom/patches/` 의 수정을 순서대로 얹습니다.
+3. 테스트를 돌리고 윈도우 설치 파일을 만들어 릴리스로 올립니다.
+4. 수정이 원본에 얹히지 않거나 테스트가 실패하면 빌드가 실패하고 릴리스는 올라가지 않습니다.
 
-## 주요 기능
+| 파일 | 역할 |
+| --- | --- |
+| `custom/patches/*.patch` | 원본에 얹는 수정. 이름 순서대로 적용 |
+| `custom/assemble.mjs` | 버전 번호와 업데이트 확인 주소를 바꿈 |
+| `custom/plan.mjs` | 새로 빌드할지 판단, 릴리스 안내문 작성 |
+| `custom/NOTES.md` | 릴리스 안내문에 들어가는 변경점 |
+| `.github/workflows/custom-build.yml` | 자동 실행 설정 |
 
-- **생성** — 텍스트→이미지, i2i, 인페인트. NAI 웹과 바이트 단위로 동일한 payload(시드 일관성) + 실시간 스트리밍 미리보기
-- **프롬프트 주석** — `#`부터 그 줄 끝까지 주석으로 처리되어 전송에서 제외됩니다 (기본·캐릭터·조각 프롬프트 공통, 회색 배경으로 표시)
-- **캐릭터 프롬프트** — 라이브러리로 저장·폴더 정리, 위치 지정, 동시 6명까지 활성
-- **조각(와일드카드)** — `<이름>`으로 프롬프트에 삽입, 여러 줄 중 랜덤 선택
-- **바이브 트랜스퍼 / 캐릭터 레퍼런스** — 이미지 라이브러리로 관리, 인코딩 캐시
-- **씬 모드** — 씬별 프롬프트를 미리 저장하고 예약→일괄 생성
-- **디렉터 툴** — 배경 제거·라인아트·스케치·색칠·표정 변경·이미지 정리·업스케일
-- **메타데이터** — PNG/스텔스 청크에서 프롬프트·파라미터·캐릭터·UC 프리셋·퀄리티 태그 읽기
-- **프롬프트 프리셋** — 자주 쓰는 프롬프트+네거티브 저장/불러오기
-- **백업** — 작업 데이터와 라이브러리 자산을 `.nais`로 내보내기/불러오기 (기존 NAIS3·NAIS2 JSON 가져오기 지원)
-- **자동 업데이트** — GitHub Release 기반
-- **기타** — 라이트/다크 테마, Anlas 소모 예상 표시, 태그 자동완성(작가 태그 포함), 단축키
+## 버전 번호
 
-## 다운로드
+원본의 마지막 숫자에 1000을 곱하고, 같은 원본에서 수정이 바뀔 때마다 1씩 올립니다.
 
-[Releases](../../releases)에서 최신 버전을 받으세요. (macOS `.dmg` / Windows `.exe`)
+| 원본 | 커스텀 |
+| --- | --- |
+| 1.0.30 | 1.0.30000 |
+| 1.0.30 (수정 추가) | 1.0.30001 |
+| 1.0.31 | 1.0.31000 |
 
-## 기술 스택
+## 알아둘 점
 
-- [Electron](https://www.electronjs.org/) + [electron-vite](https://electron-vite.org/)
-- [React](https://react.dev/) 19 + [TypeScript](https://www.typescriptlang.org/)
-- [Tailwind CSS](https://tailwindcss.com/) v4
-- [better-sqlite3](https://github.com/WiseLibs/better-sqlite3) (로컬 DB) · [Zustand](https://github.com/pmndrs/zustand) · [sharp](https://sharp.pixelplumbing.com/)
-
-## 개발
-
-```bash
-pnpm install      # 의존성 설치
-pnpm run dev      # 개발 모드 실행
-pnpm run dev:web  # 브라우저 개발 모드 (127.0.0.1:5173)
-pnpm run build    # 타입체크 + 빌드
-pnpm test         # 테스트
-pnpm run test:db  # 실제 SQLite 업그레이드·백업 검증 (Electron Node 모드)
-
-# 패키징
-pnpm run build:mac    # macOS (.dmg)
-pnpm run build:win    # Windows (.exe)
-```
-
-브라우저 개발 모드는 Electron과 별도의 IndexedDB 작업 공간을 사용합니다.
-API 토큰은 개발용 브라우저 프로필에 저장되며, 작업 데이터 JSON 백업에는 포함되지 않습니다.
-브라우저 백업은 브라우저 모드에서 복원하며, 복원 시 현재 등록된 계정은 유지됩니다.
-씬/조각 ZIP 처리 및 내장 웹뷰는 Electron 전용입니다.
-
-태그 빌드·Draft 검증·정식 공개 절차는 [릴리즈 안내](RELEASING.md)를 참고하세요.
-
-## 번역 기여
-
-한국어·영어·간체 중국어 UI를 지원합니다. 설정 → 모양 → 언어에서 변경할 수 있습니다.
-번역은 고정 메시지 ID를 사용하는 언어별 카탈로그로 관리합니다.
-문구 수정·새 언어 추가 방법은 [번역 기여 안내](CONTRIBUTING.md)를 참고하세요.
-번역 변경은 `pnpm i18n:check`로 검증할 수 있습니다.
-
-## 문의 · 후원
-
-- 💬 **Discord**: <https://discord.gg/bFxP5Qvaz>
-- ❤️ **Patreon**: <https://www.patreon.com/c/sunakgo>
-
-## Thanks to
-
-NovelAI API 동작을 이해하는 데 아래 프로젝트들을 참고했습니다.
-
-- **SDStudio**
-- **NAIA 2.0**
+- 프로그램 이름과 앱 ID는 원본과 같아서 원본 위에 덮어 설치되고 데이터는 그대로 남습니다. 설치 전에 백업 내보내기(`.nais`)를 권장합니다.
+- 설치 후에는 업데이트를 이 저장소에서 받습니다.
+- 저장소에 60일간 활동이 없으면 GitHub가 매일 확인을 꺼 버릴 수 있습니다. Actions 탭에서 다시 켤 수 있습니다.
+- 수정 개발은 `custom/import-overwrite` 갈래(원본 소스 + 수정)에서 하고, 거기서 수정 파일을 뽑아 `custom/patches/` 에 넣습니다.
 
 ## 라이선스
 
-이 프로젝트는 [GNU General Public License v3.0](LICENSE) 하에 배포됩니다.
+원본과 같은 GPL-3.0 입니다. [LICENSE](LICENSE) 참고.

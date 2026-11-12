@@ -1,0 +1,125 @@
+name: Custom build
+
+# 원본 최신 릴리스에 custom/patches 의 수정을 얹어 윈도우 설치 파일을 만들고 릴리스로 올린다.
+# 이미 같은 내용으로 만든 릴리스가 있으면 아무것도 하지 않는다.
+on:
+  schedule:
+    - cron: '17 21 * * *' # 매일 06:17 (한국 시간)
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'custom/**'
+      - '.github/workflows/custom-build.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: custom-build
+  cancel-in-progress: false
+
+env:
+  UPSTREAM: sunanakgo/NAIS3
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      build: ${{ steps.plan.outputs.build }}
+      version: ${{ steps.plan.outputs.version }}
+      upstream_tag: ${{ steps.plan.outputs.upstream_tag }}
+      hash: ${{ steps.plan.outputs.hash }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - id: plan
+        run: node custom/plan.mjs plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  build:
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: bash
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+    steps:
+      # 수정 파일(patch)은 줄바꿈이 LF 기준이라 원본도 LF 그대로 받는다.
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+        with:
+          path: builder
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.UPSTREAM }}
+          ref: ${{ needs.plan.outputs.upstream_tag }}
+          path: app
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Apply patches
+        working-directory: app
+        run: |
+          git apply --3way --whitespace=nowarn ../builder/custom/patches/*.patch
+          node ../builder/custom/assemble.mjs "$VERSION" "$GITHUB_REPOSITORY"
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: app/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: app/pnpm-lock.yaml
+      - working-directory: app
+        run: pnpm install --frozen-lockfile
+      - working-directory: app
+        run: pnpm test
+      - working-directory: app
+        run: pnpm run build:win --publish never
+      - working-directory: app
+        run: node scripts/verify-packaged-app.mjs win32 x64
+      - working-directory: app
+        run: node scripts/verify-release.mjs assets win32-x64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-windows
+          path: |
+            app/dist/*.exe
+            app/dist/*.exe.blockmap
+            app/dist/latest.yml
+          if-no-files-found: error
+
+  release:
+    needs: [plan, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-windows
+          path: dist
+      - run: node custom/plan.mjs notes "$VERSION" "${{ needs.plan.outputs.upstream_tag }}" "${{ needs.plan.outputs.hash }}" > notes.md
+      - run: |
+          gh release create "v$VERSION" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "NAIS3 커스텀 $VERSION" \
+            --notes-file notes.md \
+            --latest

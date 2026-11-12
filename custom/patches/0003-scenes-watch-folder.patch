@@ -320,7 +320,7 @@ index 0486d4eb96f265c0295416627db2a2d46e9c9e4c..afcabe2003e069c75438280ba4e9b4a0
    ctx.queue.on('changed', (status) => broadcast('queue:changed', status))
  }
 diff --git a/src/main/scenes/repo.ts b/src/main/scenes/repo.ts
-index d401b3d117b5100813391d3da0ec1cee836aec9a..74ea16a2b413c877e66396be3e6f7de44ea828d5 100644
+index d401b3d117b5100813391d3da0ec1cee836aec9a..669d685fc7abec27964db60fd695e5c5e8f94079 100644
 --- a/src/main/scenes/repo.ts
 +++ b/src/main/scenes/repo.ts
 @@ -16,7 +16,7 @@ import { getDb } from '../db'
@@ -347,7 +347,7 @@ index d401b3d117b5100813391d3da0ec1cee836aec9a..74ea16a2b413c877e66396be3e6f7de4
    return true
  }
  
-@@ -687,6 +693,23 @@ export async function importScenesJson(
+@@ -687,6 +693,25 @@ export async function importScenesJson(
    if (result.canceled || result.filePaths.length === 0) return { count: 0, canceled: true }
    const scenes = parseSceneImport(readFileSync(result.filePaths[0], 'utf-8'))
    if (!scenes) return { count: 0, unrecognized: true }
@@ -360,6 +360,8 @@ index d401b3d117b5100813391d3da0ec1cee836aec9a..74ea16a2b413c877e66396be3e6f7de4
 +  added: number
 +  updated: number
 +  unchanged: number
++  /** 새로 추가했거나 내용이 바뀐 씬 (자동 생성 대상) */
++  sceneIds: number[]
 +}
 +
 +/**
@@ -367,25 +369,31 @@ index d401b3d117b5100813391d3da0ec1cee836aec9a..74ea16a2b413c877e66396be3e6f7de4
 + * 감시 폴더(custom/watch-folder)가 같이 쓴다.
 + */
 +export function applyImportedScenes(presetId: number, scenes: ImportedScene[]): ImportApplyResult {
-+  const outcome: ImportApplyResult = { added: 0, updated: 0, unchanged: 0 }
++  const outcome: ImportApplyResult = { added: 0, updated: 0, unchanged: 0, sceneIds: [] }
    const db = getDb()
    const max = db
      .prepare('SELECT COALESCE(MAX(sort_order), 0) AS m FROM gen_scenes WHERE preset_id = ?')
-@@ -727,9 +750,11 @@ export async function importScenesJson(
+@@ -727,10 +752,13 @@ export async function importScenesJson(
          ) {
            update.run(next.prompt, next.negative, next.width, next.height, existing.id)
            markSceneChanged(existing.id)
 -        }
 +          outcome.updated++
++          outcome.sceneIds.push(existing.id)
 +        } else outcome.unchanged++
          continue
        }
+-      stmt.run(
 +      outcome.added++
-       stmt.run(
++      const inserted = stmt.run(
          presetId,
          name,
-@@ -741,7 +766,7 @@ export async function importScenesJson(
+         s.prompt,
+@@ -739,9 +767,10 @@ export async function importScenesJson(
+         s.height ?? 1216,
+         ++order
        )
++      outcome.sceneIds.push(Number(inserted.lastInsertRowid))
      }
    })()
 -  return { count: scenes.length }
@@ -407,7 +415,7 @@ index 81cb18e8d784466388d54210cfd0fd7d8e405f0f..db42bdbd1a79fbe3d92244c3a557dfd6
    if (channel === 'settings:pickSaveDir') return { dir: null }
    if (channel === 'settings:resetSaveDir') return { dir: 'Browser downloads' }
 diff --git a/src/renderer/src/components/token-dialog.tsx b/src/renderer/src/components/token-dialog.tsx
-index adb3f0160659526f79d83796c76b2b69dbd2b6a2..c8ff7eff3e9ba2471f7f7b90c60550dc0d4d8283 100644
+index adb3f0160659526f79d83796c76b2b69dbd2b6a2..cfe722ba0ccae56ae3d5c430f90dc0f31af35384 100644
 --- a/src/renderer/src/components/token-dialog.tsx
 +++ b/src/renderer/src/components/token-dialog.tsx
 @@ -22,7 +22,7 @@ import {
@@ -419,7 +427,7 @@ index adb3f0160659526f79d83796c76b2b69dbd2b6a2..c8ff7eff3e9ba2471f7f7b90c60550dc
  import discordSvg from '../assets/discord.svg'
  import nais3Logo from '../assets/nais3-logo.svg'
  import { importBackup } from '../lib/backup-import'
-@@ -466,6 +466,50 @@ function SaveDirRow({
+@@ -466,6 +466,63 @@ function SaveDirRow({
    )
  }
  
@@ -427,6 +435,7 @@ index adb3f0160659526f79d83796c76b2b69dbd2b6a2..c8ff7eff3e9ba2471f7f7b90c60550dc
 +function WatchFolderRow(): React.JSX.Element {
 +  const t = useT()
 +  const [config, setConfig] = useState<WatchFolderConfig>({ enabled: false, dir: '' })
++  const [autoGenerate, setAutoGenerate] = useBoolSetting('custom_watch_autogen', false)
 +  useEffect(() => {
 +    void window.nais.invoke('custom:watchGet', undefined).then(setConfig)
 +  }, [])
@@ -463,6 +472,18 @@ index adb3f0160659526f79d83796c76b2b69dbd2b6a2..c8ff7eff3e9ba2471f7f7b90c60550dc
 +          <FolderOpen size={14} /> {t('ui.change')}
 +        </Button>
 +      </div>
++      <div className="flex items-center justify-between gap-6">
++        <div className="min-w-0">
++          <p className="text-[13px] text-ink">{t('ui.customWatchAutoGenerate')}</p>
++          <p className="text-[11.5px] text-faint">{t('ui.customWatchAutoGenerateHint')}</p>
++        </div>
++        <Switch
++          aria-label={t('ui.customWatchAutoGenerate')}
++          checked={autoGenerate && config.enabled}
++          disabled={!config.enabled}
++          onCheckedChange={setAutoGenerate}
++        />
++      </div>
 +    </div>
 +  )
 +}
@@ -470,7 +491,7 @@ index adb3f0160659526f79d83796c76b2b69dbd2b6a2..c8ff7eff3e9ba2471f7f7b90c60550dc
  function StorageSection(): React.JSX.Element {
    const t = useT()
    const [autoSave, setAutoSave] = useBoolSetting('auto_save', true)
-@@ -525,6 +569,8 @@ function StorageSection(): React.JSX.Element {
+@@ -525,6 +582,8 @@ function StorageSection(): React.JSX.Element {
          hint={t('ui.organizedUnderThisFolderByPresetSceneName')}
        />
  
@@ -480,12 +501,13 @@ index adb3f0160659526f79d83796c76b2b69dbd2b6a2..c8ff7eff3e9ba2471f7f7b90c60550dc
          <p className="text-[13px] text-ink">{t('ui.dataBackup')}</p>
          <p className="mt-0.5 text-[11.5px] text-faint">
 diff --git a/src/renderer/src/stores/scenes-store.ts b/src/renderer/src/stores/scenes-store.ts
-index 73f0dee32447cf9b31f9cd4429be536b87c148f9..004a9a7ba0423dfed0f806d9466425af29a33c9c 100644
+index 73f0dee32447cf9b31f9cd4429be536b87c148f9..7118b7809eef296f70749df12ee185a936660391 100644
 --- a/src/renderer/src/stores/scenes-store.ts
 +++ b/src/renderer/src/stores/scenes-store.ts
-@@ -1,13 +1,32 @@
+@@ -1,13 +1,33 @@
  import { create } from 'zustand'
  import { applySceneRequest } from '@shared/scene-request'
++import { WATCH_AUTOGEN_LIMIT, canAutoGenerate } from '@shared/custom-watch'
  import { toast } from './toast-store'
 +import { t } from '../lib/i18n'
  import { recordNav } from '../lib/nav-history'
@@ -517,7 +539,53 @@ index 73f0dee32447cf9b31f9cd4429be536b87c148f9..004a9a7ba0423dfed0f806d9466425af
  const PAGE = 80 // 씬 상세 이미지 페이지 크기 (수만 장 대비: 한 번에 전부 로드 금지)
  let reserving = false
  let loadSeq = 0 // load() 비동기 응답 순서 보장용
-@@ -639,9 +658,31 @@ export function bindSceneEvents(): () => void {
+@@ -614,6 +634,45 @@ export async function loadCasts(): Promise<void> {
+   if (st.activeCastId && !st.casts.some((c) => c.id === st.activeCastId)) st.setActiveCast('')
+ }
+ 
++/**
++ * [custom] 감시 폴더가 바꾼 씬을 1장씩 자동 생성한다 (설정에서 켰을 때만).
++ * 지금 화면에 골라 둔 출연·사이드바 설정으로 뽑는다 — 손으로 씬 하나를 생성할 때와 같다.
++ */
++async function autoGenerateWatched(
++  presetId: number | undefined,
++  sceneIds: number[]
++): Promise<void> {
++  if (presetId == null || sceneIds.length === 0) return
++  try {
++    const { value } = await window.nais.invoke('settings:get', { key: 'custom_watch_autogen' })
++    if (value !== '1') return
++    const status = await window.nais.invoke('queue:status', undefined)
++    const pending = status.items.filter((i) => i.state === 'pending' || i.state === 'generating')
++    if (!canAutoGenerate(sceneIds.length, pending.length)) {
++      toast(t('ui.customWatchAutoGenSkippedValue', sceneIds.length, WATCH_AUTOGEN_LIMIT), 'error')
++      return
++    }
++    const wanted = new Set(sceneIds)
++    const { items } = await window.nais.invoke('scenes:list', { presetId })
++    const st = useScenesStore.getState()
++    const cast =
++      st.activeCastId === '' ? null : (st.casts.find((c) => c.id === st.activeCastId) ?? null)
++    const base = buildCastRequest(cast)
++    let count = 0
++    for (const scene of items) {
++      if (!wanted.has(scene.id)) continue
++      await window.nais.invoke('queue:enqueue', {
++        request: { ...applySceneRequest(base, scene), seed: sceneSeed(0) },
++        count: 1
++      })
++      count++
++    }
++    if (count > 0) toast(t('ui.customWatchAutoGenStartedValue', count), 'info')
++  } catch (error) {
++    toast(error instanceof Error ? error.message : String(error), 'error')
++  }
++}
++
+ /**
+  * 씬 생성 완료 이벤트 바인딩 (목록 썸네일/개수 + 열린 상세 이미지 갱신).
+  * 대량 배치 시 이벤트가 쏟아지므로 디바운스로 DB 부하·리렌더를 줄인다.
+@@ -639,9 +698,32 @@ export function bindSceneEvents(): () => void {
      // Reservation-only changes must not increment image counts or replace thumbnails.
      void useScenesStore.getState().load()
    })
@@ -541,6 +609,7 @@ index 73f0dee32447cf9b31f9cd4429be536b87c148f9..004a9a7ba0423dfed0f806d9466425af
 +    )
 +    const st = useScenesStore.getState()
 +    void (event.presetCreated ? st.loadPresets() : Promise.resolve()).then(() => st.load())
++    void autoGenerateWatched(event.presetId, event.sceneIds ?? [])
 +  })
    return () => {
      clearTimeout(timer)
@@ -549,11 +618,31 @@ index 73f0dee32447cf9b31f9cd4429be536b87c148f9..004a9a7ba0423dfed0f806d9466425af
 +    offWatch()
    }
  }
+diff --git a/src/shared/custom-watch.ts b/src/shared/custom-watch.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..e41724816864c629365a31b86f0a0aa66120b138
+--- /dev/null
++++ b/src/shared/custom-watch.ts
+@@ -0,0 +1,14 @@
++/** [custom] 감시 폴더 자동 생성 — 대기 중인 생성까지 합쳐 이 장수를 넘기면 자동으로 생성하지 않는다 */
++export const WATCH_AUTOGEN_LIMIT = 30
++
++/**
++ * 바뀐 씬을 자동으로 생성해도 되는지. 대기열에 이미 쌓인 것(손으로 건 것 포함)과 합쳐 한도를 넘으면
++ * 하나도 넣지 않는다 — 일부만 넣으면 무엇이 빠졌는지 알기 어렵다.
++ */
++export function canAutoGenerate(
++  changed: number,
++  pending: number,
++  limit = WATCH_AUTOGEN_LIMIT
++): boolean {
++  return changed > 0 && changed + pending <= limit
++}
 diff --git a/src/shared/i18n/catalog-en.ts b/src/shared/i18n/catalog-en.ts
-index ccbe82f9b06b9dfdf723c41941dc1af9724f5734..db809cb579a2e2f2cebae86b771248f87c285540 100644
+index ccbe82f9b06b9dfdf723c41941dc1af9724f5734..b430534314f613d085c7b759ae2eef99a1e350ec 100644
 --- a/src/shared/i18n/catalog-en.ts
 +++ b/src/shared/i18n/catalog-en.ts
-@@ -140,6 +140,19 @@ export const EN = {
+@@ -140,6 +140,25 @@ export const EN = {
    'ui.notGenerated': 'Not generated',
    'ui.showOnlyNotGeneratedValue': 'Show only changed, not yet generated ({0})',
    'ui.markAsChecked': 'Mark as checked',
@@ -570,14 +659,20 @@ index ccbe82f9b06b9dfdf723c41941dc1af9724f5734..db809cb579a2e2f2cebae86b771248f8
 +  'ui.customWatchAmbiguousPreset': 'The file name matches more than one preset.',
 +  'ui.customWatchTooLarge': 'The file is too large (over 20MB).',
 +  'ui.customWatchReadError': 'Could not read the file.',
++  'ui.customWatchAutoGenerate': 'Auto-generate imported scenes',
++  'ui.customWatchAutoGenerateHint':
++    'Generates one image for each scene the watch folder added or changed, using the settings currently on screen. Nothing is generated when that plus the pending queue would exceed 30.',
++  'ui.customWatchAutoGenStartedValue': 'Watch folder: auto-generating {0} changed scene(s)',
++  'ui.customWatchAutoGenSkippedValue':
++    'Watch folder: not auto-generating — {0} changed scene(s) exceed the limit ({1}, including pending).',
    'ui.queuedForCastValue': 'Queued for cast "{0}"',
    'ui.queuedWithSidebarSettings': 'Queued with sidebar settings',
    'ui.deletedCast': 'Deleted cast',
 diff --git a/src/shared/i18n/catalog-ko.ts b/src/shared/i18n/catalog-ko.ts
-index 03d812c6449f282242a171bbe7d2af39d32ae53f..a7bf3f987a67826405040840e60aa5561854ca17 100644
+index 03d812c6449f282242a171bbe7d2af39d32ae53f..15e730fa6ba341fc6b6e2e0ecc7ee9c52d1b7737 100644
 --- a/src/shared/i18n/catalog-ko.ts
 +++ b/src/shared/i18n/catalog-ko.ts
-@@ -139,6 +139,18 @@ export const KO = {
+@@ -139,6 +139,24 @@ export const KO = {
    'ui.notGenerated': '미생성',
    'ui.showOnlyNotGeneratedValue': '변경 후 미생성 씬만 보기 ({0})',
    'ui.markAsChecked': '확인함 (미생성 표시 끄기)',
@@ -593,14 +688,20 @@ index 03d812c6449f282242a171bbe7d2af39d32ae53f..a7bf3f987a67826405040840e60aa556
 +  'ui.customWatchAmbiguousPreset': '파일 이름에 맞는 프리셋이 여러 개입니다.',
 +  'ui.customWatchTooLarge': '파일이 너무 큽니다 (20MB 초과).',
 +  'ui.customWatchReadError': '파일을 읽지 못했습니다.',
++  'ui.customWatchAutoGenerate': '불러온 씬 자동 생성',
++  'ui.customWatchAutoGenerateHint':
++    '감시 폴더가 추가하거나 바꾼 씬을 지금 화면의 설정으로 1장씩 생성합니다. 대기 중인 생성과 합쳐 30장을 넘으면 생성하지 않습니다.',
++  'ui.customWatchAutoGenStartedValue': '감시 폴더: 바뀐 씬 {0}장 자동 생성 시작',
++  'ui.customWatchAutoGenSkippedValue':
++    '감시 폴더: 자동 생성하지 않음 — 바뀐 씬 {0}장이 한도({1}장, 대기 중 포함)를 넘습니다.',
    'ui.queuedForCastValue': '"{0}" 출연 예약',
    'ui.queuedWithSidebarSettings': '사이드바 설정 예약',
    'ui.deletedCast': '삭제된 출연',
 diff --git a/src/shared/i18n/catalog-zh-CN.ts b/src/shared/i18n/catalog-zh-CN.ts
-index 450a0a249ab3ef84f601e5eb901e5f31153d88e2..3f5ce1c0d69ecb18da93e2cd98e7e7f4071fe668 100644
+index 450a0a249ab3ef84f601e5eb901e5f31153d88e2..09a649e880806a2a05c919994d00daa866f579cd 100644
 --- a/src/shared/i18n/catalog-zh-CN.ts
 +++ b/src/shared/i18n/catalog-zh-CN.ts
-@@ -139,6 +139,18 @@ export const ZH_CN = {
+@@ -139,6 +139,24 @@ export const ZH_CN = {
    'ui.notGenerated': '未生成',
    'ui.showOnlyNotGeneratedValue': '仅显示修改后未生成的场景（{0}）',
    'ui.markAsChecked': '标记为已确认',
@@ -616,14 +717,20 @@ index 450a0a249ab3ef84f601e5eb901e5f31153d88e2..3f5ce1c0d69ecb18da93e2cd98e7e7f4
 +  'ui.customWatchAmbiguousPreset': '文件名匹配到多个预设。',
 +  'ui.customWatchTooLarge': '文件过大（超过 20MB）。',
 +  'ui.customWatchReadError': '无法读取文件。',
++  'ui.customWatchAutoGenerate': '自动生成导入的场景',
++  'ui.customWatchAutoGenerateHint':
++    '监视文件夹新增或更改的场景会按当前界面的设置各生成 1 张。与等待中的任务合计超过 30 张时不会生成。',
++  'ui.customWatchAutoGenStartedValue': '监视文件夹：开始自动生成 {0} 个已更改的场景',
++  'ui.customWatchAutoGenSkippedValue':
++    '监视文件夹：未自动生成 — 已更改的 {0} 个场景超过上限（{1} 张，含等待中）。',
    'ui.queuedForCastValue': '已按角色组合「{0}」预约',
    'ui.queuedWithSidebarSettings': '已按左侧当前配置预约',
    'ui.deletedCast': '已删除的角色组合',
 diff --git a/src/shared/types.ts b/src/shared/types.ts
-index 472c89577e0375f860aed479bc0cca14b7580510..0659b7c8dd3ac0dffb7fb4874ada837e2032e4f0 100644
+index 472c89577e0375f860aed479bc0cca14b7580510..b053892d484d145543993401ef631547a9d93432 100644
 --- a/src/shared/types.ts
 +++ b/src/shared/types.ts
-@@ -400,6 +400,31 @@ export interface LibraryStack {
+@@ -400,6 +400,33 @@ export interface LibraryStack {
  }
  
  /** IPC invoke 채널 계약: 채널명 → (요청, 응답) */
@@ -650,12 +757,14 @@ index 472c89577e0375f860aed479bc0cca14b7580510..0659b7c8dd3ac0dffb7fb4874ada837e
 +  added?: number
 +  updated?: number
 +  unchanged?: number
++  /** 새로 추가했거나 내용이 바뀐 씬 (자동 생성 대상) */
++  sceneIds?: number[]
 +}
 +
  export interface IpcInvokeMap {
    'db:status': { req: void; res: { version: number; path: string } }
    /** 앱 버전 */
-@@ -664,6 +689,10 @@ export interface IpcInvokeMap {
+@@ -664,6 +691,10 @@ export interface IpcInvokeMap {
    'scenes:openFolder': { req: { sceneId: number }; res: { ok: boolean } }
    /** 씬 JSON 내보내기/불러오기 (파일 다이얼로그, 활성 프리셋 기준) */
    'scenes:exportJson': { req: { presetId: number }; res: { saved: boolean } }
@@ -666,7 +775,7 @@ index 472c89577e0375f860aed479bc0cca14b7580510..0659b7c8dd3ac0dffb7fb4874ada837e
    'scenes:importJson': {
      req: { presetId: number }
      /** unrecognized = 알 수 없는 JSON 형식, canceled = 파일을 고르지 않음 */
-@@ -769,6 +798,8 @@ export interface IpcEventMap {
+@@ -769,6 +800,8 @@ export interface IpcEventMap {
    /** 씬에 새 이미지가 생성됨 (목록/상세 갱신). filePath로 카드 즉시 낙관적 갱신 */
    'scenes:changed': { sceneId: number; filePath: string }
    'scenes:reservationsChanged': Record<string, never>
@@ -675,12 +784,38 @@ index 472c89577e0375f860aed479bc0cca14b7580510..0659b7c8dd3ac0dffb7fb4874ada837e
    /** 바이브 인코딩 완료 — 카드의 인코딩 표시 갱신용 */
    'vibes:encoded': Record<string, never>
    /** 자동 업데이트 상태 (GitHub release) */
+diff --git a/tests/custom-watch-autogen.test.ts b/tests/custom-watch-autogen.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..cb86c0426ddd812e7525dffeb09d8b35daf391ad
+--- /dev/null
++++ b/tests/custom-watch-autogen.test.ts
+@@ -0,0 +1,20 @@
++import { describe, expect, it } from 'vitest'
++import { WATCH_AUTOGEN_LIMIT, canAutoGenerate } from '../src/shared/custom-watch'
++
++// [custom] 감시 폴더 자동 생성 한도
++describe('custom: canAutoGenerate', () => {
++  it('allows up to the limit, counting what is already pending', () => {
++    expect(WATCH_AUTOGEN_LIMIT).toBe(30)
++    expect(canAutoGenerate(1, 0)).toBe(true)
++    expect(canAutoGenerate(30, 0)).toBe(true)
++    expect(canAutoGenerate(10, 20)).toBe(true)
++  })
++  it('refuses the whole batch once it would exceed the limit', () => {
++    expect(canAutoGenerate(31, 0)).toBe(false)
++    expect(canAutoGenerate(10, 21)).toBe(false)
++    expect(canAutoGenerate(175, 0)).toBe(false)
++  })
++  it('does nothing when no scene changed', () => {
++    expect(canAutoGenerate(0, 0)).toBe(false)
++  })
++})
 diff --git a/tests/custom-watch-folder.integration.ts b/tests/custom-watch-folder.integration.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..b49c183caf25db52adcf211ab0079796af70ad4a
+index 0000000000000000000000000000000000000000..fb6ebbd7f1f898ba9cd41bec646f5d27e9ff950c
 --- /dev/null
 +++ b/tests/custom-watch-folder.integration.ts
-@@ -0,0 +1,234 @@
+@@ -0,0 +1,238 @@
 +import {
 +  existsSync,
 +  mkdirSync,
@@ -809,7 +944,8 @@ index 0000000000000000000000000000000000000000..b49c183caf25db52adcf211ab0079796
 +      presetCreated: false,
 +      added: 1,
 +      updated: 1,
-+      unchanged: 0
++      unchanged: 0,
++      sceneIds: [kept, listScenes(preset).find((s) => s.name === '002')!.id]
 +    })
 +    expect(getScene(kept)?.prompt).toBe('new prompt')
 +    expect(listScenes(preset).map((s) => s.name)).toEqual(['001', '002'])
@@ -843,6 +979,9 @@ index 0000000000000000000000000000000000000000..b49c183caf25db52adcf211ab0079796
 +    expect(settle()).toEqual([])
 +    drop('a.json', { preset: 'D1', scenes: [{ name: '001', prompt: 'three' }] })
 +    expect(settle()[0]).toMatchObject({ ok: true, added: 0, updated: 1, unchanged: 0 })
++    // 내용이 같은 파일을 다시 저장하면 바뀐 씬이 없다 → 자동 생성 대상도 없다
++    drop('a.json', { preset: 'D1', scenes: [{ name: '001', prompt: 'three' }] })
++    expect(settle()[0]).toMatchObject({ ok: true, unchanged: 1, sceneIds: [] })
 +    expect(listScenes(preset)).toHaveLength(1)
 +  })
 +

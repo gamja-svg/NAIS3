@@ -1,0 +1,464 @@
+diff --git a/src/renderer/src/App.tsx b/src/renderer/src/App.tsx
+index 1998e8f0d5892b385ebc82c29a2517da6432873c..bc36c7fd128f5a4b25a9321a89685a0c6e6df527 100644
+--- a/src/renderer/src/App.tsx
++++ b/src/renderer/src/App.tsx
+@@ -31,6 +31,7 @@ import { useLanguageStore } from './lib/i18n'
+ import { cn } from './lib/utils'
+ import { useLayoutStore } from './stores/layout-store'
+ import { useThemeStore } from './stores/theme-store'
++import { bindDragScroll, hydrateTouchMode } from './lib/custom-touch-mode'
+ 
+ // 새 설치 첫 실행에만 뜨므로 평소 실행에선 읽지 않는다
+ const Onboarding = lazy(() =>
+@@ -78,7 +79,8 @@ export default function App(): React.JSX.Element {
+         useVibesStore.getState().load(),
+         useCharRefsStore.getState().load(),
+         useShortcutsStore.getState().hydrate(),
+-        useDirectorStore.getState().hydrate()
++        useDirectorStore.getState().hydrate(),
++        hydrateTouchMode()
+       ])
+       // 스플래시가 너무 순식간에 사라지지 않게 최소 표시 시간 확보
+       setTimeout(() => setReady(true), 350)
+@@ -88,6 +90,7 @@ export default function App(): React.JSX.Element {
+     const unbindKeys = bindShortcuts()
+     const unbindUpdate = bindUpdateEvents()
+     const unbindNav = bindNavMouse() // 마우스 4/5번 버튼 뒤로/앞으로
++    const unbindDragScroll = bindDragScroll() // [custom] 터치·원격 모드: 끌어서 스크롤
+     // F5 새로고침 (프로덕션에서도)
+     const onF5 = (e: KeyboardEvent): void => {
+       if (e.key === 'F5') {
+@@ -97,6 +100,7 @@ export default function App(): React.JSX.Element {
+     }
+     window.addEventListener('keydown', onF5)
+     return () => {
++      unbindDragScroll()
+       unbindGen()
+       unbindScene()
+       unbindKeys()
+diff --git a/src/renderer/src/assets/main.css b/src/renderer/src/assets/main.css
+index 7c7d37a8d4012943eb59e7ae7e210abf3424381d..47669cc2c46cfa437bf249ccc33ba6a50f27c335 100644
+--- a/src/renderer/src/assets/main.css
++++ b/src/renderer/src/assets/main.css
+@@ -274,6 +274,32 @@ input {
+   display: none;
+ }
+ 
++/* [custom] 스크롤바 표시(설정) — 숨긴 스크롤바를 잡아 끌 수 있는 굵기로 되살린다 (휠 없는 원격·터치용) */
++:root[data-custom-scrollbars='on'] .no-scrollbar {
++  scrollbar-width: auto;
++  scrollbar-color: auto;
++}
++:root[data-custom-scrollbars='on'] .no-scrollbar::-webkit-scrollbar {
++  display: block;
++  width: 16px;
++  height: 16px;
++}
++:root[data-custom-scrollbars='on'] .no-scrollbar::-webkit-scrollbar-track {
++  background: color-mix(in srgb, var(--muted) 10%, transparent);
++}
++:root[data-custom-scrollbars='on'] .no-scrollbar::-webkit-scrollbar-thumb {
++  min-height: 48px;
++  min-width: 48px;
++  border: 3px solid transparent;
++  border-radius: 8px;
++  background-color: color-mix(in srgb, var(--muted) 60%, transparent);
++  background-clip: content-box;
++}
++:root[data-custom-scrollbars='on'] .no-scrollbar::-webkit-scrollbar-thumb:hover,
++:root[data-custom-scrollbars='on'] .no-scrollbar::-webkit-scrollbar-thumb:active {
++  background-color: color-mix(in srgb, var(--muted) 85%, transparent);
++}
++
+ /* frameless 창 드래그 영역 */
+ .drag {
+   -webkit-app-region: drag;
+diff --git a/src/renderer/src/components/folder-list-view.tsx b/src/renderer/src/components/folder-list-view.tsx
+index 1af19fceca6c879cded15f56379be6b1ebb186f4..4bb438ce799f4ec7a30cb95181b7ca30543105ca 100644
+--- a/src/renderer/src/components/folder-list-view.tsx
++++ b/src/renderer/src/components/folder-list-view.tsx
+@@ -31,6 +31,7 @@ import {
+ import { Button } from './ui/button'
+ import { Input } from './ui/input'
+ import { Popover, PopoverContent, PopoverTrigger } from './ui/popover'
++import { useSortActivation } from '../lib/custom-touch-mode'
+ 
+ /**
+  * 캐릭터/조각 공용 폴더 리스트 뷰.
+@@ -439,7 +440,10 @@ export function FolderListView<T extends FolderListItem>({
+   renderKey?: unknown
+ }): React.JSX.Element {
+   const grid = renderTile != null && columns != null
+-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }))
++  const sensors = useSensors(
++    // [custom] 터치·원격 모드에서는 길게 누른 뒤에만 자리 이동 시작
++    useSensor(PointerSensor, { activationConstraint: useSortActivation(5) })
++  )
+   // 폴더 드래그 중엔 소속 카드를 임시로 접는다 — "따라오는지 애매한" UX 제거
+   const [draggingFolderId, setDraggingFolderId] = useState<number | null>(null)
+ 
+diff --git a/src/renderer/src/components/library-mode.tsx b/src/renderer/src/components/library-mode.tsx
+index 7d33b2546f02e9ee5c0691b9bee12b0964b64e8e..ccccd293bbdc174c4ce831bd37de68ecbbdd4824 100644
+--- a/src/renderer/src/components/library-mode.tsx
++++ b/src/renderer/src/components/library-mode.tsx
+@@ -48,6 +48,7 @@ import {
+   ContextMenuTrigger
+ } from './ui/context-menu'
+ import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip'
++import { useSortActivation } from '../lib/custom-touch-mode'
+ 
+ /**
+  * 라이브러리 — 사용자가 직접 모아두는 큐레이션 컬렉션 (NAIS2 라이브러리 이식).
+@@ -108,7 +109,10 @@ export function LibraryMode(): React.JSX.Element {
+   const sentinelRef = useRef<HTMLDivElement>(null)
+ 
+   // 드래그 재정렬 (5px 이동해야 시작 — 클릭과 구분). DragOverlay 클론 방식은 씬 그리드와 동일
+-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }))
++  const sensors = useSensors(
++    // [custom] 터치·원격 모드에서는 길게 누른 뒤에만 자리 이동 시작
++    useSensor(PointerSensor, { activationConstraint: useSortActivation(5) })
++  )
+   const [dragImg, setDragImg] = useState<LibraryImage | null>(null)
+   const onDragStart = (e: DragStartEvent): void => {
+     setDragImg(images.find((i) => `img-${i.id}` === e.active.id) ?? null)
+diff --git a/src/renderer/src/components/scene-mode.tsx b/src/renderer/src/components/scene-mode.tsx
+index 37b1781a0e04071d8d1d9210d22d1c67b793601e..34b0583b60c819b032c0bb690b95bea658de0133 100644
+--- a/src/renderer/src/components/scene-mode.tsx
++++ b/src/renderer/src/components/scene-mode.tsx
+@@ -58,6 +58,7 @@ import {
+ import { Popover, PopoverContent, PopoverTrigger } from './ui/popover'
+ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select'
+ import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip'
++import { useSortActivation } from '../lib/custom-touch-mode'
+ 
+ export function SceneMode(): React.JSX.Element {
+   const scenes = useScenesStore((s) => s.scenes)
+@@ -365,7 +366,10 @@ function SceneGrid(): React.JSX.Element {
+ 
+   // 드래그 재정렬 (5px 이동해야 시작 — 클릭과 구분).
+   // DragOverlay 사용: 드래그 중엔 가벼운 클론이 커서를 따라가고 원본은 숨겨 프레임 저하 방지
+-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }))
++  const sensors = useSensors(
++    // [custom] 터치·원격 모드에서는 길게 누른 뒤에만 자리 이동 시작
++    useSensor(PointerSensor, { activationConstraint: useSortActivation(5) })
++  )
+   const [dragScene, setDragScene] = useState<Scene | null>(null)
+   // [custom] 변경 후 미생성 씬만 보기. 걸러 보는 동안에는 순서 바꾸기를 막는다 (부분 목록 기준 재정렬 방지)
+   const [pendingOnly, setPendingOnly] = useState(false)
+diff --git a/src/renderer/src/components/sortable-list.tsx b/src/renderer/src/components/sortable-list.tsx
+index e8ca7c59907bff96473a5cf825669f38c93b6f1b..cfadb5610d1252af1d746f875337f048bda36efc 100644
+--- a/src/renderer/src/components/sortable-list.tsx
++++ b/src/renderer/src/components/sortable-list.tsx
+@@ -15,6 +15,7 @@ import {
+ } from '@dnd-kit/sortable'
+ import { useRef, type CSSProperties } from 'react'
+ import { cn } from '../lib/utils'
++import { useSortActivation } from '../lib/custom-touch-mode'
+ 
+ /** 드롭다운 목록용 세로 드래그 정렬 컨테이너 — onReorder에 새 id 순서 전달 */
+ export function SortableList<Id extends number | string>({
+@@ -26,7 +27,10 @@ export function SortableList<Id extends number | string>({
+   onReorder: (ids: Id[]) => void
+   children: React.ReactNode
+ }): React.JSX.Element {
+-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }))
++  const sensors = useSensors(
++    // [custom] 터치·원격 모드에서는 길게 누른 뒤에만 자리 이동 시작
++    useSensor(PointerSensor, { activationConstraint: useSortActivation(4) })
++  )
+   const onDragEnd = (e: DragEndEvent): void => {
+     const { active, over } = e
+     if (!over || active.id === over.id) return
+diff --git a/src/renderer/src/components/token-dialog.tsx b/src/renderer/src/components/token-dialog.tsx
+index cfe722ba0ccae56ae3d5c430f90dc0f31af35384..b19f459544ab03bcbde173cb60d150a892d050c9 100644
+--- a/src/renderer/src/components/token-dialog.tsx
++++ b/src/renderer/src/components/token-dialog.tsx
+@@ -53,6 +53,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
+ import { Slider } from './ui/slider'
+ import { Switch } from './ui/switch'
+ import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs'
++import { TOUCH_MODE_KEY, applyTouchMode } from '../lib/custom-touch-mode'
+ 
+ type SectionId = 'appearance' | 'generation' | 'storage' | 'shortcuts' | 'account' | 'about'
+ 
+@@ -97,6 +98,7 @@ function AppearanceSection(): React.JSX.Element {
+   const setUiSize = useThemeStore((s) => s.setUiSize)
+   const promptSize = useThemeStore((s) => s.promptSize)
+   const setPromptSize = useThemeStore((s) => s.setPromptSize)
++  const [showScrollbars, setShowScrollbars] = useBoolSetting(TOUCH_MODE_KEY, false)
+ 
+   return (
+     <div className="divide-y divide-line">
+@@ -170,6 +172,16 @@ function AppearanceSection(): React.JSX.Element {
+           onValueChange={([v]) => setPromptSize(v)}
+         />
+       </Row>
++      <Row label={t('ui.customShowScrollbars')} hint={t('ui.customShowScrollbarsHint')}>
++        <Switch
++          aria-label={t('ui.customShowScrollbars')}
++          checked={showScrollbars}
++          onCheckedChange={(on) => {
++            setShowScrollbars(on)
++            applyTouchMode(on)
++          }}
++        />
++      </Row>
+       <Row label={t('ui.visibleTabs')} hint={t('ui.tabsTurnedOffAreHiddenFromTheTopBar')}>
+         <PageToggles />
+       </Row>
+diff --git a/src/renderer/src/components/ui/slider.tsx b/src/renderer/src/components/ui/slider.tsx
+index 9215399aa3159a912e8d226b9fba770630e1653d..eb81013bbb1126078de63ca0956468391417bd68 100644
+--- a/src/renderer/src/components/ui/slider.tsx
++++ b/src/renderer/src/components/ui/slider.tsx
+@@ -10,6 +10,8 @@ export function Slider({
+ }: ComponentProps<typeof SliderPrimitive.Root>) {
+   return (
+     <SliderPrimitive.Root
++      // [custom] 터치·원격 모드의 끌어서 스크롤이 슬라이더 조작을 가로채지 않게
++      data-no-drag-scroll=""
+       className={cn(
+         'relative flex w-full touch-none select-none items-center data-[disabled]:cursor-not-allowed data-[disabled]:opacity-50',
+         className
+diff --git a/src/renderer/src/lib/custom-touch-mode.ts b/src/renderer/src/lib/custom-touch-mode.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..0613e8c3db57ca1e9572c87255b4112c0ffc43ec
+--- /dev/null
++++ b/src/renderer/src/lib/custom-touch-mode.ts
+@@ -0,0 +1,138 @@
++import { useSyncExternalStore } from 'react'
++import { TOUCH_MOVE_TOLERANCE_PX, TOUCH_REORDER_HOLD_MS, dragIntent } from '@shared/custom-touch'
++
++/**
++ * [custom] 터치·원격 모드 — 휠이 없는 환경(원격 접속·터치)에서 목록을 넘길 수 있게 한다.
++ * 켜면: ① 원본이 숨긴 스크롤바를 잡아 끌 수 있는 굵기로 보여 주고, ② 그냥 끌면 목록이 스크롤되며,
++ * ③ 자리 이동(재정렬)은 3초 이상 누른 뒤 끌 때만 시작한다. 끄면 원본 동작 그대로.
++ */
++export const TOUCH_MODE_KEY = 'custom_show_scrollbars'
++
++let enabled = false
++const listeners = new Set<() => void>()
++
++export function applyTouchMode(on: boolean): void {
++  enabled = on
++  document.documentElement.dataset.customScrollbars = on ? 'on' : 'off'
++  for (const listener of listeners) listener()
++}
++
++export async function hydrateTouchMode(): Promise<void> {
++  const { value } = await window.nais.invoke('settings:get', { key: TOUCH_MODE_KEY })
++  applyTouchMode(value === '1')
++}
++
++export function useTouchMode(): boolean {
++  return useSyncExternalStore(
++    (listener) => {
++      listeners.add(listener)
++      return () => listeners.delete(listener)
++    },
++    () => enabled
++  )
++}
++
++type Activation = { distance: number } | { delay: number; tolerance: number }
++
++/** 목록 재정렬(dnd-kit) 시작 조건 — 평소엔 원본대로 조금 끌면 시작, 터치·원격 모드에선 길게 누른 뒤 */
++export function useSortActivation(distance: number): Activation {
++  return useTouchMode()
++    ? { delay: TOUCH_REORDER_HOLD_MS, tolerance: TOUCH_MOVE_TOLERANCE_PX }
++    : { distance }
++}
++
++/** 끌어서 스크롤하면 안 되는 곳 — 글자 입력, 슬라이더, 그리기 캔버스 */
++const NO_DRAG_SCROLL =
++  'input,textarea,select,canvas,[contenteditable="true"],[role="slider"],[data-no-drag-scroll]'
++
++function scrollableAncestor(start: Element | null): HTMLElement | null {
++  for (let el = start; el instanceof HTMLElement; el = el.parentElement) {
++    const style = getComputedStyle(el)
++    const y = /(auto|scroll)/.test(style.overflowY) && el.scrollHeight > el.clientHeight + 1
++    const x = /(auto|scroll)/.test(style.overflowX) && el.scrollWidth > el.clientWidth + 1
++    if (x || y) return el
++  }
++  return null
++}
++
++/** 스크롤바 위를 누른 것인지 (스크롤바는 브라우저가 직접 끈다) */
++function onScrollbar(el: HTMLElement, e: PointerEvent): boolean {
++  const rect = el.getBoundingClientRect()
++  return (
++    e.clientX > rect.left + el.clientLeft + el.clientWidth ||
++    e.clientY > rect.top + el.clientTop + el.clientHeight
++  )
++}
++
++/**
++ * 끌어서 스크롤 — 마우스(원격 접속의 터치는 마우스로 들어온다)로 목록을 누른 채 끌면 그 목록을 넘긴다.
++ * 길게 누른 뒤의 드래그는 건드리지 않는다(자리 이동). 모드가 꺼져 있으면 아무것도 하지 않는다.
++ */
++export function bindDragScroll(): () => void {
++  let session: {
++    el: HTMLElement
++    id: number
++    x: number
++    y: number
++    left: number
++    top: number
++    at: number
++    mode: 'wait' | 'scroll' | 'reorder'
++  } | null = null
++  let swallowClick = false
++
++  const onDown = (e: PointerEvent): void => {
++    session = null
++    swallowClick = false
++    if (!enabled || e.button !== 0 || e.pointerType === 'touch') return
++    const target = e.target instanceof Element ? e.target : null
++    if (!target || target.closest(NO_DRAG_SCROLL)) return
++    const el = scrollableAncestor(target)
++    if (!el || onScrollbar(el, e)) return
++    session = {
++      el,
++      id: e.pointerId,
++      x: e.clientX,
++      y: e.clientY,
++      left: el.scrollLeft,
++      top: el.scrollTop,
++      at: e.timeStamp,
++      mode: 'wait'
++    }
++  }
++  const onMove = (e: PointerEvent): void => {
++    if (!session || e.pointerId !== session.id) return
++    const dx = e.clientX - session.x
++    const dy = e.clientY - session.y
++    if (session.mode === 'wait') {
++      session.mode = dragIntent(e.timeStamp - session.at, Math.hypot(dx, dy))
++    }
++    if (session.mode !== 'scroll') return
++    session.el.scrollLeft = session.left - dx
++    session.el.scrollTop = session.top - dy
++  }
++  const onUp = (e: PointerEvent): void => {
++    if (!session || e.pointerId !== session.id) return
++    // 스크롤하다 뗀 자리의 항목이 눌리지 않게 — 이어지는 클릭 한 번을 삼킨다
++    swallowClick = session.mode === 'scroll'
++    session = null
++  }
++  const onClick = (e: MouseEvent): void => {
++    if (!swallowClick) return
++    swallowClick = false
++    e.preventDefault()
++    e.stopPropagation()
++  }
++  window.addEventListener('pointerdown', onDown, true)
++  window.addEventListener('pointermove', onMove, true)
++  window.addEventListener('pointerup', onUp, true)
++  window.addEventListener('pointercancel', onUp, true)
++  window.addEventListener('click', onClick, true)
++  return () => {
++    window.removeEventListener('pointerdown', onDown, true)
++    window.removeEventListener('pointermove', onMove, true)
++    window.removeEventListener('pointerup', onUp, true)
++    window.removeEventListener('pointercancel', onUp, true)
++    window.removeEventListener('click', onClick, true)
++  }
++}
+diff --git a/src/shared/custom-touch.ts b/src/shared/custom-touch.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..52b352ac0a6e0c2ffc3d2e688800e1f13613a350
+--- /dev/null
++++ b/src/shared/custom-touch.ts
+@@ -0,0 +1,22 @@
++/** [custom] 터치·원격 모드 — 길게 누른 뒤에만 자리 이동(재정렬)을 시작한다 */
++export const TOUCH_REORDER_HOLD_MS = 3000
++/** 이만큼 움직이기 전까지는 '가만히 누르고 있는 것'으로 본다 (손가락 떨림·원격 지연 여유) */
++export const TOUCH_MOVE_TOLERANCE_PX = 8
++
++export type DragIntent = 'wait' | 'scroll' | 'reorder'
++
++/**
++ * 누른 뒤 지난 시간과 움직인 거리로 드래그의 뜻을 정한다.
++ * - 아직 거의 안 움직임 → 기다림
++ * - 길게 누르기 전에 움직임 → 스크롤
++ * - 길게 누른 뒤에 움직임 → 자리 이동(목록 쪽 dnd가 맡는다)
++ */
++export function dragIntent(
++  elapsedMs: number,
++  movedPx: number,
++  holdMs = TOUCH_REORDER_HOLD_MS,
++  tolerancePx = TOUCH_MOVE_TOLERANCE_PX
++): DragIntent {
++  if (movedPx <= tolerancePx) return 'wait'
++  return elapsedMs < holdMs ? 'scroll' : 'reorder'
++}
+diff --git a/src/shared/i18n/catalog-en.ts b/src/shared/i18n/catalog-en.ts
+index b430534314f613d085c7b759ae2eef99a1e350ec..b1b73ae630be6e4723d16d2d892c07f22ef481d3 100644
+--- a/src/shared/i18n/catalog-en.ts
++++ b/src/shared/i18n/catalog-en.ts
+@@ -140,6 +140,9 @@ export const EN = {
+   'ui.notGenerated': 'Not generated',
+   'ui.showOnlyNotGeneratedValue': 'Show only changed, not yet generated ({0})',
+   'ui.markAsChecked': 'Mark as checked',
++  'ui.customShowScrollbars': 'Touch / remote mode',
++  'ui.customShowScrollbarsHint':
++    'For remote or touch use without a mouse wheel. Lists show draggable scrollbars and scroll when dragged. Reordering starts only after holding for 3 seconds.',
+   'ui.customWatchFolder': 'Watch folder',
+   'ui.customWatchFolderHint':
+     'Scene JSON files that are added or changed in this folder (including subfolders) are imported automatically. Files that were already there are left alone, and nothing is moved or deleted. The target preset comes from "preset" in the JSON.',
+diff --git a/src/shared/i18n/catalog-ko.ts b/src/shared/i18n/catalog-ko.ts
+index 15e730fa6ba341fc6b6e2e0ecc7ee9c52d1b7737..9b4be44a49e005100b6fa046a5b3f1e3c02104ea 100644
+--- a/src/shared/i18n/catalog-ko.ts
++++ b/src/shared/i18n/catalog-ko.ts
+@@ -139,6 +139,9 @@ export const KO = {
+   'ui.notGenerated': '미생성',
+   'ui.showOnlyNotGeneratedValue': '변경 후 미생성 씬만 보기 ({0})',
+   'ui.markAsChecked': '확인함 (미생성 표시 끄기)',
++  'ui.customShowScrollbars': '터치·원격 모드',
++  'ui.customShowScrollbarsHint':
++    '휠을 쓸 수 없는 원격 접속·터치 화면용입니다. 목록에 잡아 끌 수 있는 스크롤바가 보이고, 그냥 끌면 스크롤됩니다. 자리 이동은 3초 이상 누른 뒤 끌어야 시작합니다.',
+   'ui.customWatchFolder': '감시 폴더',
+   'ui.customWatchFolderHint':
+     '이 폴더(하위 폴더 포함)에 씬 JSON이 새로 생기거나 바뀌면 자동으로 불러옵니다. 켜기 전부터 있던 파일은 건드리지 않고, 파일을 옮기거나 지우지 않습니다. 넣을 프리셋은 JSON의 "preset" 이름으로 정합니다.',
+diff --git a/src/shared/i18n/catalog-zh-CN.ts b/src/shared/i18n/catalog-zh-CN.ts
+index 09a649e880806a2a05c919994d00daa866f579cd..b1a38dbd2e80e532d17f72a3f8d1a065c14b3665 100644
+--- a/src/shared/i18n/catalog-zh-CN.ts
++++ b/src/shared/i18n/catalog-zh-CN.ts
+@@ -139,6 +139,9 @@ export const ZH_CN = {
+   'ui.notGenerated': '未生成',
+   'ui.showOnlyNotGeneratedValue': '仅显示修改后未生成的场景（{0}）',
+   'ui.markAsChecked': '标记为已确认',
++  'ui.customShowScrollbars': '触屏/远程模式',
++  'ui.customShowScrollbarsHint':
++    '适用于无法使用滚轮的远程或触屏操作。列表显示可拖动的滚动条，直接拖动即可滚动。按住 3 秒后再拖动才会调整顺序。',
+   'ui.customWatchFolder': '监视文件夹',
+   'ui.customWatchFolderHint':
+     '此文件夹（含子文件夹）中新增或更改的场景 JSON 会自动导入。开启前已有的文件不会被处理，也不会移动或删除文件。目标预设由 JSON 中的 "preset" 决定。',
+diff --git a/tests/custom-touch.test.ts b/tests/custom-touch.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..dd3ad00f7e8cc0422b238d353972cb94c497ad5a
+--- /dev/null
++++ b/tests/custom-touch.test.ts
+@@ -0,0 +1,23 @@
++import { describe, expect, it } from 'vitest'
++import {
++  TOUCH_MOVE_TOLERANCE_PX,
++  TOUCH_REORDER_HOLD_MS,
++  dragIntent
++} from '../src/shared/custom-touch'
++
++// [custom] 터치·원격 모드: 그냥 끌면 스크롤, 3초 누른 뒤 끌면 자리 이동
++describe('custom: dragIntent', () => {
++  it('waits while the pointer has barely moved', () => {
++    expect(dragIntent(0, 0)).toBe('wait')
++    expect(dragIntent(5000, TOUCH_MOVE_TOLERANCE_PX)).toBe('wait')
++  })
++  it('scrolls when the pointer moves before the hold time', () => {
++    expect(dragIntent(50, 20)).toBe('scroll')
++    expect(dragIntent(TOUCH_REORDER_HOLD_MS - 1, 9)).toBe('scroll')
++  })
++  it('leaves the drag to reordering after a 3 second hold', () => {
++    expect(TOUCH_REORDER_HOLD_MS).toBe(3000)
++    expect(dragIntent(TOUCH_REORDER_HOLD_MS, 9)).toBe('reorder')
++    expect(dragIntent(10_000, 200)).toBe('reorder')
++  })
++})

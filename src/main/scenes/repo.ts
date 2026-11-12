@@ -622,11 +622,25 @@ export async function importScenesJson(
   const stmt = db.prepare(
     'INSERT INTO gen_scenes (preset_id, name, prompt, negative_prompt, width, height, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?)'
   )
+  // [custom] 같은 프리셋에 같은 이름의 씬이 있으면 새로 추가하지 않고 그 씬의 내용만 교체한다.
+  // 이름이 겹치는 씬이 여럿이면 가장 앞(sort_order 최소)의 것만 교체. 생성 이력·순서는 유지.
+  const findByName = db.prepare(
+    'SELECT id FROM gen_scenes WHERE preset_id = ? AND name = ? ORDER BY sort_order ASC LIMIT 1'
+  )
+  const update = db.prepare(
+    "UPDATE gen_scenes SET prompt = ?, negative_prompt = ?, width = ?, height = ?, updated_at = datetime('now') WHERE id = ?"
+  )
   db.transaction(() => {
     for (const s of scenes) {
+      const name = s.name ?? t('ui.scene')
+      const existing = s.name ? (findByName.get(presetId, name) as { id: number } | undefined) : undefined
+      if (existing) {
+        update.run(s.prompt, s.negativePrompt ?? '', s.width ?? 832, s.height ?? 1216, existing.id)
+        continue
+      }
       stmt.run(
         presetId,
-        s.name ?? t('ui.scene'),
+        name,
         s.prompt,
         s.negativePrompt ?? '',
         s.width ?? 832,

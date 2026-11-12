@@ -1,59 +1,64 @@
 diff --git a/src/main/custom/watch-folder.ts b/src/main/custom/watch-folder.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..9feb5759b3cb2f25fad2b182c1206ad054ecfbf9
+index 0000000000000000000000000000000000000000..ef3e564d7f9e3080c07180f2b826149530ae5933
 --- /dev/null
 +++ b/src/main/custom/watch-folder.ts
-@@ -0,0 +1,254 @@
-+import {
-+  copyFileSync,
-+  existsSync,
-+  mkdirSync,
-+  readFileSync,
-+  readdirSync,
-+  renameSync,
-+  statSync,
-+  unlinkSync,
-+  writeFileSync
-+} from 'fs'
+@@ -0,0 +1,269 @@
++import { readFileSync, readdirSync, statSync } from 'fs'
 +import { basename, extname, join } from 'path'
 +import type { WatchFolderConfig, WatchFolderEvent, WatchFolderFailure } from '../../shared/types'
 +import { getSetting, setSetting } from '../db/settings'
-+import { t } from '../i18n'
 +import { parseSceneImport } from '../scenes/import-formats'
 +import { applyImportedScenes, createPreset, listPresets } from '../scenes/repo'
 +
 +/**
-+ * [custom] 감시 폴더 — 지정한 폴더에 씬 JSON이 들어오면 자동으로 불러온다.
++ * [custom] 감시 폴더 — 지정한 폴더(하위 폴더 포함)에 씬 JSON이 새로 생기거나 바뀌면 자동으로 불러온다.
 + *
-+ * - 불러오기 자체는 파일 고르기와 같은 applyImportedScenes를 쓴다: 같은 이름 씬은 내용만 교체,
-+ *   새 이름은 추가. 씬을 지우거나 이미지를 만들지는 않는다.
++ * - 보관 폴더를 그대로 감시한다: 파일을 옮기거나 지우거나 고치지 않는다.
++ * - 감시를 켠(또는 폴더를 고른) 시각 이후에 생기거나 수정된 파일만 불러온다. 원래 있던 파일(옛 버전
++ *   포함)은 건드리지 않는다. 처리한 파일은 크기·수정 시각을 기억해, 다시 바뀔 때까지 또 불러오지 않는다
++ *   (프로그램을 껐다 켜도 유지).
++ * - 불러오기는 파일 고르기와 같은 applyImportedScenes: 같은 이름 씬은 내용만 교체, 새 이름은 추가.
++ *   씬을 지우거나 이미지를 만들지는 않는다.
 + * - 프리셋 정하기: JSON 최상위 `preset` 이름(없으면 새로 만듦) → 없으면 파일 이름에 든 프리셋 이름.
-+ *   파일 이름만으로는 프리셋을 새로 만들지 않는다(오타로 프리셋이 생기는 것 방지).
-+ * - 처리한 파일은 `완료`/`실패` 하위 폴더로 옮긴다. 폴더 최상위의 .json만 본다.
-+ * - fs.watch 대신 주기 확인: 동기화 폴더·네트워크 드라이브에서도 같게 동작하고, 쓰는 도중인
-+ *   파일을 크기·수정 시각이 두 번 연속 같을 때까지 기다리기 쉽다.
++ *   파일 이름만으로는 프리셋을 새로 만들지 않는다.
++ * - fs.watch 대신 주기 확인: 동기화 폴더에서도 같게 동작하고, 쓰는 도중인 파일을 크기·수정 시각이
++ *   두 번 연속 같을 때까지 기다리기 쉽다.
 + */
 +
 +const ENABLED_KEY = 'custom_watch_enabled'
 +const DIR_KEY = 'custom_watch_dir'
-+export const WATCH_DONE_DIR = '완료'
-+export const WATCH_FAILED_DIR = '실패'
-+const POLL_MS = 2000
++const SINCE_KEY = 'custom_watch_since'
++const DONE_KEY = 'custom_watch_done'
++const POLL_MS = 3000
 +const MAX_BYTES = 20 * 1024 * 1024
++const MAX_DEPTH = 6
++/** 한 번 훑을 때 보는 폴더 수 상한 — 실수로 드라이브 전체를 골라도 멈추지 않게 */
++const MAX_DIRS = 3000
++const SKIP_DIRS = new Set(['node_modules', '$recycle.bin', 'system volume information'])
 +
 +export function getWatchFolderConfig(): WatchFolderConfig {
 +  return { enabled: getSetting(ENABLED_KEY) === '1', dir: getSetting(DIR_KEY) ?? '' }
 +}
 +
-+export function setWatchFolderEnabled(enabled: boolean): WatchFolderConfig {
-+  setSetting(ENABLED_KEY, enabled ? '1' : '0')
++/** 기준 시각을 지금으로 — 이 시각 이전부터 있던 파일은 불러오지 않는다 */
++function rebase(now: number): void {
++  setSetting(SINCE_KEY, String(now))
++  setSetting(DONE_KEY, '{}')
 +  seen.clear()
++  done = null
++}
++
++export function setWatchFolderEnabled(enabled: boolean, now = Date.now()): WatchFolderConfig {
++  const was = getSetting(ENABLED_KEY) === '1'
++  setSetting(ENABLED_KEY, enabled ? '1' : '0')
++  if (enabled && !was) rebase(now)
 +  return getWatchFolderConfig()
 +}
 +
-+export function setWatchFolderDir(dir: string): WatchFolderConfig {
++export function setWatchFolderDir(dir: string, now = Date.now()): WatchFolderConfig {
 +  setSetting(DIR_KEY, dir)
-+  seen.clear()
++  rebase(now)
 +  return getWatchFolderConfig()
 +}
 +
@@ -103,58 +108,14 @@ index 0000000000000000000000000000000000000000..9feb5759b3cb2f25fad2b182c1206ad0
 +  return null
 +}
 +
-+const FAILURE_TEXT: Record<WatchFolderFailure, Parameters<typeof t>[0]> = {
-+  unrecognized: 'ui.unrecognizedSceneJson',
-+  empty: 'ui.noScenesToImport',
-+  noPreset: 'ui.customWatchNoPreset',
-+  ambiguousPreset: 'ui.customWatchAmbiguousPreset',
-+  tooLarge: 'ui.customWatchTooLarge',
-+  readError: 'ui.customWatchReadError'
-+}
-+
-+function stamp(now: Date): string {
-+  const p = (n: number): string => String(n).padStart(2, '0')
-+  return `${now.getFullYear()}${p(now.getMonth() + 1)}${p(now.getDate())}-${p(now.getHours())}${p(now.getMinutes())}${p(now.getSeconds())}`
-+}
-+
-+/** 처리한 파일을 하위 폴더로 옮긴다. 옮긴 경로(실패하면 null) */
-+function moveTo(dir: string, sub: string, file: string, now: Date): string | null {
-+  try {
-+    const targetDir = join(dir, sub)
-+    mkdirSync(targetDir, { recursive: true })
-+    let target = join(targetDir, `${stamp(now)}_${file}`)
-+    for (let i = 2; existsSync(target); i++) target = join(targetDir, `${stamp(now)}_${i}_${file}`)
-+    const source = join(dir, file)
-+    try {
-+      renameSync(source, target)
-+    } catch {
-+      copyFileSync(source, target)
-+      unlinkSync(source)
-+    }
-+    return target
-+  } catch {
-+    return null
-+  }
-+}
-+
-+/** 감시 폴더의 파일 하나를 불러오고 완료/실패 폴더로 옮긴다 */
-+export function importWatchFile(dir: string, file: string, now = new Date()): WatchFolderEvent {
-+  const fail = (reason: WatchFolderFailure): WatchFolderEvent => {
-+    const moved = moveTo(dir, WATCH_FAILED_DIR, file, now)
-+    if (moved) {
-+      try {
-+        writeFileSync(`${moved}.txt`, `${t(FAILURE_TEXT[reason])}\n`, 'utf-8')
-+      } catch {
-+        // 사유 파일은 부가 정보
-+      }
-+    }
-+    return { file, ok: false, reason, moved: moved !== null }
-+  }
-+
++/** 감시 폴더의 파일 하나를 불러온다. file은 감시 폴더 기준 상대 경로(`/` 구분) */
++export function importWatchFile(dir: string, file: string): WatchFolderEvent {
++  const fail = (reason: WatchFolderFailure): WatchFolderEvent => ({ file, ok: false, reason })
 +  let raw: string
 +  try {
-+    if (statSync(join(dir, file)).size > MAX_BYTES) return fail('tooLarge')
-+    raw = readFileSync(join(dir, file), 'utf-8')
++    const path = join(dir, file)
++    if (statSync(path).size > MAX_BYTES) return fail('tooLarge')
++    raw = readFileSync(path, 'utf-8')
 +  } catch {
 +    return fail('readError')
 +  }
@@ -183,58 +144,112 @@ index 0000000000000000000000000000000000000000..9feb5759b3cb2f25fad2b182c1206ad0
 +  }
 +
 +  const outcome = applyImportedScenes(preset.id, scenes)
-+  const moved = moveTo(dir, WATCH_DONE_DIR, file, now)
 +  return {
 +    file,
 +    ok: true,
 +    presetId: preset.id,
 +    presetName: preset.name,
 +    presetCreated: created,
-+    ...outcome,
-+    moved: moved !== null
++    ...outcome
 +  }
++}
++
++interface Found {
++  /** 감시 폴더 기준 상대 경로 (`/` 구분) */
++  file: string
++  signature: string
++  /** 수정 시각과 만든 시각 중 늦은 쪽 — 복사해 넣은 파일은 수정 시각이 옛날 그대로라 만든 시각도 본다 */
++  touched: number
++}
++
++function listJson(dir: string): Found[] {
++  const out: Found[] = []
++  let dirs = 0
++  const walk = (rel: string, depth: number): void => {
++    if (++dirs > MAX_DIRS) return
++    let entries
++    try {
++      entries = readdirSync(join(dir, rel), { withFileTypes: true })
++    } catch {
++      return
++    }
++    for (const entry of entries) {
++      const child = rel ? `${rel}/${entry.name}` : entry.name
++      if (entry.isDirectory()) {
++        if (depth >= MAX_DEPTH || entry.name.startsWith('.')) continue
++        if (SKIP_DIRS.has(entry.name.toLowerCase())) continue
++        walk(child, depth + 1)
++      } else if (entry.isFile() && extname(entry.name).toLowerCase() === '.json') {
++        try {
++          const st = statSync(join(dir, child))
++          out.push({
++            file: child,
++            signature: `${st.size}:${Math.round(st.mtimeMs)}`,
++            touched: Math.max(st.mtimeMs, st.birthtimeMs || 0)
++          })
++        } catch {
++          // 방금 지워진 파일
++        }
++      }
++    }
++  }
++  walk('', 0)
++  return out.sort((a, b) => a.file.localeCompare(b.file))
 +}
 +
 +/** 파일별 직전 확인 값 — 크기·수정 시각이 두 번 연속 같아야(다 써진 뒤) 처리한다 */
 +const seen = new Map<string, string>()
-+/** 옮기지 못한 파일을 매번 다시 불러오지 않게 기억 (값이 바뀌면 다시 처리) */
-+const stuck = new Map<string, string>()
++/** 처리한 파일의 크기·수정 시각 (설정에 저장) */
++let done: Record<string, string> | null = null
 +
-+/** 폴더를 한 번 훑어, 다 써진 .json을 불러온다. 꺼져 있거나 폴더가 없으면 아무것도 하지 않는다 */
-+export function scanWatchFolder(now = new Date()): WatchFolderEvent[] {
++function loadDone(): Record<string, string> {
++  if (done) return done
++  try {
++    const parsed = JSON.parse(getSetting(DONE_KEY) ?? '{}') as unknown
++    done =
++      typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
++        ? (parsed as Record<string, string>)
++        : {}
++  } catch {
++    done = {}
++  }
++  return done
++}
++
++/** 폴더를 한 번 훑어, 켠 뒤에 새로 생기거나 바뀐 .json을 불러온다 */
++export function scanWatchFolder(): WatchFolderEvent[] {
 +  const { enabled, dir } = getWatchFolderConfig()
 +  if (!enabled || !dir) return []
-+  let names: string[]
 +  try {
-+    names = readdirSync(dir, { withFileTypes: true })
-+      .filter((e) => e.isFile() && extname(e.name).toLowerCase() === '.json')
-+      .map((e) => e.name)
-+      .sort()
++    if (!statSync(dir).isDirectory()) return []
 +  } catch {
-+    return []
++    return [] // 폴더가 잠깐 안 보일 때(외장·동기화) 기록을 지우지 않는다
++  }
++  const since = Number(getSetting(SINCE_KEY) ?? 0) || 0
++  const processed = loadDone()
++  const found = listJson(dir)
++  const present = new Set(found.map((f) => f.file))
++  for (const key of seen.keys()) if (!present.has(key)) seen.delete(key)
++  let dirty = false
++  for (const key of Object.keys(processed)) {
++    if (!present.has(key)) {
++      delete processed[key]
++      dirty = true
++    }
 +  }
 +  const events: WatchFolderEvent[] = []
-+  const present = new Set(names)
-+  for (const key of seen.keys()) if (!present.has(key)) seen.delete(key)
-+  for (const key of stuck.keys()) if (!present.has(key)) stuck.delete(key)
-+  for (const name of names) {
-+    let signature: string
-+    try {
-+      const st = statSync(join(dir, name))
-+      signature = `${st.size}:${st.mtimeMs}`
-+    } catch {
++  for (const { file, signature, touched } of found) {
++    if (touched <= since || processed[file] === signature) continue
++    if (seen.get(file) !== signature) {
++      seen.set(file, signature)
 +      continue
 +    }
-+    if (seen.get(name) !== signature) {
-+      seen.set(name, signature)
-+      continue
-+    }
-+    if (stuck.get(name) === signature) continue
-+    const event = importWatchFile(dir, name, now)
-+    if (event.moved) seen.delete(name)
-+    else stuck.set(name, signature)
-+    events.push(event)
++    seen.delete(file)
++    events.push(importWatchFile(dir, file))
++    processed[file] = signature
++    dirty = true
 +  }
++  if (dirty) setSetting(DONE_KEY, JSON.stringify(processed))
 +  return events
 +}
 +
@@ -256,7 +271,7 @@ index 0000000000000000000000000000000000000000..9feb5759b3cb2f25fad2b182c1206ad0
 +  if (timer) clearInterval(timer)
 +  timer = undefined
 +  seen.clear()
-+  stuck.clear()
++  done = null
 +}
 diff --git a/src/main/ipc.ts b/src/main/ipc.ts
 index 0486d4eb96f265c0295416627db2a2d46e9c9e4c..afcabe2003e069c75438280ba4e9b4a040960688 100644
@@ -305,7 +320,7 @@ index 0486d4eb96f265c0295416627db2a2d46e9c9e4c..afcabe2003e069c75438280ba4e9b4a0
    ctx.queue.on('changed', (status) => broadcast('queue:changed', status))
  }
 diff --git a/src/main/scenes/repo.ts b/src/main/scenes/repo.ts
-index d401b3d117b5100813391d3da0ec1cee836aec9a..e75c8569de5a462f0d7812cbe71008fe5a96400b 100644
+index d401b3d117b5100813391d3da0ec1cee836aec9a..74ea16a2b413c877e66396be3e6f7de44ea828d5 100644
 --- a/src/main/scenes/repo.ts
 +++ b/src/main/scenes/repo.ts
 @@ -16,7 +16,7 @@ import { getDb } from '../db'
@@ -317,7 +332,22 @@ index d401b3d117b5100813391d3da0ec1cee836aec9a..e75c8569de5a462f0d7812cbe71008fe
  
  interface Row {
    id: number
-@@ -687,6 +687,23 @@ export async function importScenesJson(
+@@ -671,7 +671,13 @@ export async function exportScenesJson(presetId: number): Promise<boolean> {
+     width: s.width,
+     height: s.height
+   }))
+-  writeFileSync(result.filePath, JSON.stringify({ version: 1, scenes: data }, null, 2), 'utf-8')
++  // [custom] 프리셋 이름을 같이 적는다 — 감시 폴더가 이 이름으로 넣을 프리셋을 정한다
++  const preset = getPresetName(presetId)
++  writeFileSync(
++    result.filePath,
++    JSON.stringify({ version: 1, ...(preset ? { preset } : {}), scenes: data }, null, 2),
++    'utf-8'
++  )
+   return true
+ }
+ 
+@@ -687,6 +693,23 @@ export async function importScenesJson(
    if (result.canceled || result.filePaths.length === 0) return { count: 0, canceled: true }
    const scenes = parseSceneImport(readFileSync(result.filePaths[0], 'utf-8'))
    if (!scenes) return { count: 0, unrecognized: true }
@@ -341,7 +371,7 @@ index d401b3d117b5100813391d3da0ec1cee836aec9a..e75c8569de5a462f0d7812cbe71008fe
    const db = getDb()
    const max = db
      .prepare('SELECT COALESCE(MAX(sort_order), 0) AS m FROM gen_scenes WHERE preset_id = ?')
-@@ -727,9 +744,11 @@ export async function importScenesJson(
+@@ -727,9 +750,11 @@ export async function importScenesJson(
          ) {
            update.run(next.prompt, next.negative, next.width, next.height, existing.id)
            markSceneChanged(existing.id)
@@ -354,7 +384,7 @@ index d401b3d117b5100813391d3da0ec1cee836aec9a..e75c8569de5a462f0d7812cbe71008fe
        stmt.run(
          presetId,
          name,
-@@ -741,7 +760,7 @@ export async function importScenesJson(
+@@ -741,7 +766,7 @@ export async function importScenesJson(
        )
      }
    })()
@@ -520,7 +550,7 @@ index 73f0dee32447cf9b31f9cd4429be536b87c148f9..004a9a7ba0423dfed0f806d9466425af
    }
  }
 diff --git a/src/shared/i18n/catalog-en.ts b/src/shared/i18n/catalog-en.ts
-index ccbe82f9b06b9dfdf723c41941dc1af9724f5734..0e9448e1d6a043d141e6cdd0d72f52f7fe6a407c 100644
+index ccbe82f9b06b9dfdf723c41941dc1af9724f5734..db809cb579a2e2f2cebae86b771248f87c285540 100644
 --- a/src/shared/i18n/catalog-en.ts
 +++ b/src/shared/i18n/catalog-en.ts
 @@ -140,6 +140,19 @@ export const EN = {
@@ -529,7 +559,7 @@ index ccbe82f9b06b9dfdf723c41941dc1af9724f5734..0e9448e1d6a043d141e6cdd0d72f52f7
    'ui.markAsChecked': 'Mark as checked',
 +  'ui.customWatchFolder': 'Watch folder',
 +  'ui.customWatchFolderHint':
-+    'Scene JSON files dropped into this folder are imported automatically. Same-name scenes are updated in place, and processed files move to the done/failed subfolders.',
++    'Scene JSON files that are added or changed in this folder (including subfolders) are imported automatically. Files that were already there are left alone, and nothing is moved or deleted. The target preset comes from "preset" in the JSON.',
 +  'ui.customWatchNotChosen': 'No folder chosen',
 +  'ui.customWatchChooseFolder': 'Choose watch folder',
 +  'ui.customWatchImportedValue':
@@ -544,7 +574,7 @@ index ccbe82f9b06b9dfdf723c41941dc1af9724f5734..0e9448e1d6a043d141e6cdd0d72f52f7
    'ui.queuedWithSidebarSettings': 'Queued with sidebar settings',
    'ui.deletedCast': 'Deleted cast',
 diff --git a/src/shared/i18n/catalog-ko.ts b/src/shared/i18n/catalog-ko.ts
-index 03d812c6449f282242a171bbe7d2af39d32ae53f..8e3b16d54f3663123f96ec5b89b656149104f05d 100644
+index 03d812c6449f282242a171bbe7d2af39d32ae53f..a7bf3f987a67826405040840e60aa5561854ca17 100644
 --- a/src/shared/i18n/catalog-ko.ts
 +++ b/src/shared/i18n/catalog-ko.ts
 @@ -139,6 +139,18 @@ export const KO = {
@@ -553,13 +583,13 @@ index 03d812c6449f282242a171bbe7d2af39d32ae53f..8e3b16d54f3663123f96ec5b89b65614
    'ui.markAsChecked': '확인함 (미생성 표시 끄기)',
 +  'ui.customWatchFolder': '감시 폴더',
 +  'ui.customWatchFolderHint':
-+    '이 폴더에 씬 JSON을 넣으면 자동으로 불러옵니다. 같은 이름 씬은 내용만 바뀌고, 처리한 파일은 완료·실패 폴더로 옮겨집니다.',
++    '이 폴더(하위 폴더 포함)에 씬 JSON이 새로 생기거나 바뀌면 자동으로 불러옵니다. 켜기 전부터 있던 파일은 건드리지 않고, 파일을 옮기거나 지우지 않습니다. 넣을 프리셋은 JSON의 "preset" 이름으로 정합니다.',
 +  'ui.customWatchNotChosen': '폴더를 고르지 않음',
 +  'ui.customWatchChooseFolder': '감시 폴더 선택',
 +  'ui.customWatchImportedValue': '감시 폴더: {0} → {1} (추가 {2} · 변경 {3} · 그대로 {4})',
 +  'ui.customWatchFailedValue': '감시 폴더: {0} 불러오기 실패 — {1}',
 +  'ui.customWatchNoPreset':
-+    '어느 프리셋에 넣을지 알 수 없습니다. 파일 이름에 프리셋 이름을 넣거나 JSON에 "preset"을 적어 주세요.',
++    '어느 프리셋에 넣을지 알 수 없습니다. JSON 맨 위에 "preset": "프리셋 이름"을 적어 주세요.',
 +  'ui.customWatchAmbiguousPreset': '파일 이름에 맞는 프리셋이 여러 개입니다.',
 +  'ui.customWatchTooLarge': '파일이 너무 큽니다 (20MB 초과).',
 +  'ui.customWatchReadError': '파일을 읽지 못했습니다.',
@@ -567,7 +597,7 @@ index 03d812c6449f282242a171bbe7d2af39d32ae53f..8e3b16d54f3663123f96ec5b89b65614
    'ui.queuedWithSidebarSettings': '사이드바 설정 예약',
    'ui.deletedCast': '삭제된 출연',
 diff --git a/src/shared/i18n/catalog-zh-CN.ts b/src/shared/i18n/catalog-zh-CN.ts
-index 450a0a249ab3ef84f601e5eb901e5f31153d88e2..b97e975cf3bd5a3616859e0c2b54bea1c981445b 100644
+index 450a0a249ab3ef84f601e5eb901e5f31153d88e2..3f5ce1c0d69ecb18da93e2cd98e7e7f4071fe668 100644
 --- a/src/shared/i18n/catalog-zh-CN.ts
 +++ b/src/shared/i18n/catalog-zh-CN.ts
 @@ -139,6 +139,18 @@ export const ZH_CN = {
@@ -576,7 +606,7 @@ index 450a0a249ab3ef84f601e5eb901e5f31153d88e2..b97e975cf3bd5a3616859e0c2b54bea1
    'ui.markAsChecked': '标记为已确认',
 +  'ui.customWatchFolder': '监视文件夹',
 +  'ui.customWatchFolderHint':
-+    '放入此文件夹的场景 JSON 会自动导入。同名场景只替换内容，处理过的文件会移到完成/失败子文件夹。',
++    '此文件夹（含子文件夹）中新增或更改的场景 JSON 会自动导入。开启前已有的文件不会被处理，也不会移动或删除文件。目标预设由 JSON 中的 "preset" 决定。',
 +  'ui.customWatchNotChosen': '未选择文件夹',
 +  'ui.customWatchChooseFolder': '选择监视文件夹',
 +  'ui.customWatchImportedValue': '监视文件夹：{0} → {1}（新增 {2} · 更改 {3} · 未变 {4}）',
@@ -590,10 +620,10 @@ index 450a0a249ab3ef84f601e5eb901e5f31153d88e2..b97e975cf3bd5a3616859e0c2b54bea1
    'ui.queuedWithSidebarSettings': '已按左侧当前配置预约',
    'ui.deletedCast': '已删除的角色组合',
 diff --git a/src/shared/types.ts b/src/shared/types.ts
-index 472c89577e0375f860aed479bc0cca14b7580510..66fc3d8aa977043b5aa40c3b4e44c7cfefdf2d5a 100644
+index 472c89577e0375f860aed479bc0cca14b7580510..0659b7c8dd3ac0dffb7fb4874ada837e2032e4f0 100644
 --- a/src/shared/types.ts
 +++ b/src/shared/types.ts
-@@ -400,6 +400,32 @@ export interface LibraryStack {
+@@ -400,6 +400,31 @@ export interface LibraryStack {
  }
  
  /** IPC invoke 채널 계약: 채널명 → (요청, 응답) */
@@ -609,6 +639,7 @@ index 472c89577e0375f860aed479bc0cca14b7580510..66fc3d8aa977043b5aa40c3b4e44c7cf
 +
 +/** [custom] 감시 폴더가 파일 하나를 처리한 결과 */
 +export interface WatchFolderEvent {
++  /** 감시 폴더 기준 상대 경로 */
 +  file: string
 +  ok: boolean
 +  reason?: WatchFolderFailure
@@ -619,14 +650,12 @@ index 472c89577e0375f860aed479bc0cca14b7580510..66fc3d8aa977043b5aa40c3b4e44c7cf
 +  added?: number
 +  updated?: number
 +  unchanged?: number
-+  /** 완료/실패 폴더로 옮겼는지 (못 옮기면 같은 내용으로는 다시 처리하지 않음) */
-+  moved: boolean
 +}
 +
  export interface IpcInvokeMap {
    'db:status': { req: void; res: { version: number; path: string } }
    /** 앱 버전 */
-@@ -664,6 +690,10 @@ export interface IpcInvokeMap {
+@@ -664,6 +689,10 @@ export interface IpcInvokeMap {
    'scenes:openFolder': { req: { sceneId: number }; res: { ok: boolean } }
    /** 씬 JSON 내보내기/불러오기 (파일 다이얼로그, 활성 프리셋 기준) */
    'scenes:exportJson': { req: { presetId: number }; res: { saved: boolean } }
@@ -637,7 +666,7 @@ index 472c89577e0375f860aed479bc0cca14b7580510..66fc3d8aa977043b5aa40c3b4e44c7cf
    'scenes:importJson': {
      req: { presetId: number }
      /** unrecognized = 알 수 없는 JSON 형식, canceled = 파일을 고르지 않음 */
-@@ -769,6 +799,8 @@ export interface IpcEventMap {
+@@ -769,6 +798,8 @@ export interface IpcEventMap {
    /** 씬에 새 이미지가 생성됨 (목록/상세 갱신). filePath로 카드 즉시 낙관적 갱신 */
    'scenes:changed': { sceneId: number; filePath: string }
    'scenes:reservationsChanged': Record<string, never>
@@ -648,14 +677,15 @@ index 472c89577e0375f860aed479bc0cca14b7580510..66fc3d8aa977043b5aa40c3b4e44c7cf
    /** 자동 업데이트 상태 (GitHub release) */
 diff --git a/tests/custom-watch-folder.integration.ts b/tests/custom-watch-folder.integration.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..7b6510f857b7a5674aa4b12575432d4c6aba51ad
+index 0000000000000000000000000000000000000000..b49c183caf25db52adcf211ab0079796af70ad4a
 --- /dev/null
 +++ b/tests/custom-watch-folder.integration.ts
-@@ -0,0 +1,211 @@
+@@ -0,0 +1,234 @@
 +import {
 +  existsSync,
 +  mkdirSync,
 +  mkdtempSync,
++  readFileSync,
 +  readdirSync,
 +  rmSync,
 +  utimesSync,
@@ -666,8 +696,6 @@ index 0000000000000000000000000000000000000000..7b6510f857b7a5674aa4b12575432d4c
 +import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 +import { closeDb, initDb } from '../src/main/db'
 +import {
-+  WATCH_DONE_DIR,
-+  WATCH_FAILED_DIR,
 +  pickPresetByFileName,
 +  scanWatchFolder,
 +  setWatchFolderDir,
@@ -677,27 +705,34 @@ index 0000000000000000000000000000000000000000..7b6510f857b7a5674aa4b12575432d4c
 +import {
 +  createPreset,
 +  createScene,
++  exportScenesJson,
 +  getScene,
 +  listPresets,
 +  listScenes
 +} from '../src/main/scenes/repo'
 +
-+// [custom] 감시 폴더: 프리셋 정하기, 덮어쓰기 불러오기, 완료/실패 폴더 이동 검증
-+const environment = vi.hoisted(() => ({ directory: '' }))
++// [custom] 감시 폴더(보관함 방식): 켠 뒤 생기거나 바뀐 파일만 불러오고, 파일은 건드리지 않는다
++const environment = vi.hoisted(() => ({ directory: '', exportFile: '' }))
 +vi.mock('electron', () => ({
 +  app: { getPath: () => environment.directory, getLocale: () => 'ko' },
 +  BrowserWindow: { getFocusedWindow: () => null, getAllWindows: () => [] },
-+  dialog: {}
++  dialog: { showSaveDialog: async () => ({ canceled: false, filePath: environment.exportFile }) }
 +}))
 +
 +let watchDir = ''
++/** 감시를 켠 시각 — 테스트 파일은 이보다 뒤(또는 앞)로 시각을 직접 찍는다 */
++const SINCE = Date.now() - 60_000
++let clock = 0
++
 +beforeEach(() => {
 +  environment.directory = mkdtempSync(join(tmpdir(), 'nais3-custom-watch-'))
++  environment.exportFile = join(environment.directory, 'export.json')
 +  watchDir = join(environment.directory, 'watch')
 +  mkdirSync(watchDir)
++  clock = 0
 +  initDb()
-+  setWatchFolderDir(watchDir)
-+  setWatchFolderEnabled(true)
++  setWatchFolderDir(watchDir, SINCE)
++  setWatchFolderEnabled(true, SINCE)
 +})
 +afterEach(() => {
 +  stopWatchFolder()
@@ -705,17 +740,24 @@ index 0000000000000000000000000000000000000000..7b6510f857b7a5674aa4b12575432d4c
 +  rmSync(environment.directory, { recursive: true, force: true })
 +})
 +
-+function drop(name: string, body: unknown): void {
-+  writeFileSync(join(watchDir, name), typeof body === 'string' ? body : JSON.stringify(body))
++/** 파일을 쓰고 수정 시각을 켠 시각 이후로 찍는다 (쓸 때마다 1초씩 뒤로) */
++function drop(rel: string, body: unknown): void {
++  const path = join(watchDir, rel)
++  mkdirSync(join(path, '..'), { recursive: true })
++  writeFileSync(path, typeof body === 'string' ? body : JSON.stringify(body))
++  const at = new Date(SINCE + 10_000 + ++clock * 1000)
++  utimesSync(path, at, at)
 +}
-+/** 파일이 다 써졌는지 보려고 첫 확인은 건너뛴다 — 두 번째 확인에서 처리된다 */
++/** 다 써졌는지 보려고 첫 확인은 건너뛴다 — 두 번째 확인에서 처리된다 */
 +function settle(): ReturnType<typeof scanWatchFolder> {
 +  expect(scanWatchFolder()).toEqual([])
 +  return scanWatchFolder()
 +}
-+const jsonLeft = (): string[] => readdirSync(watchDir).filter((n) => n.endsWith('.json'))
-+const sub = (name: string): string[] =>
-+  existsSync(join(watchDir, name)) ? readdirSync(join(watchDir, name)) : []
++function tree(dir = watchDir, rel = ''): string[] {
++  return readdirSync(join(dir, rel), { withFileTypes: true }).flatMap((e) =>
++    e.isDirectory() ? tree(dir, `${rel}${e.name}/`) : [`${rel}${e.name}`]
++  )
++}
 +
 +describe('custom: pickPresetByFileName', () => {
 +  const presets = [
@@ -727,7 +769,7 @@ index 0000000000000000000000000000000000000000..7b6510f857b7a5674aa4b12575432d4c
 +  it('matches a preset name bounded by non-word characters', () => {
 +    expect(pickPresetByFileName('0NURA_D1_v3.json', presets)).toEqual(presets[0])
 +    expect(pickPresetByFileName('0NURA_D10.json', presets)).toEqual(presets[1])
-+    expect(pickPresetByFileName('d1.json', presets)).toEqual(presets[0])
++    expect(pickPresetByFileName('sub/d1.json', presets)).toEqual(presets[0])
 +    expect(pickPresetByFileName('0NURA 일상복 (2).json', presets)).toEqual(presets[3])
 +  })
 +  it('does not match inside a longer word', () => {
@@ -736,130 +778,140 @@ index 0000000000000000000000000000000000000000..7b6510f857b7a5674aa4b12575432d4c
 +  })
 +  it('refuses to guess between presets', () => {
 +    expect(pickPresetByFileName('0NURA_D1_N1.json', presets)).toBe('ambiguous')
-+    expect(
-+      pickPresetByFileName('D1.json', [
-+        { id: 1, name: 'D1' },
-+        { id: 9, name: 'd1' }
-+      ])
-+    ).toBe('ambiguous')
 +  })
 +  it('prefers the longest matching name', () => {
 +    const both = [
 +      { id: 1, name: 'D1' },
-+      { id: 2, name: '0NURA D1' }
++      { id: 2, name: '윤초아 D1' }
 +    ]
-+    expect(pickPresetByFileName('0NURA D1.json', both)).toEqual(both[1])
++    expect(pickPresetByFileName('윤초아 D1.json', both)).toEqual(both[1])
 +  })
 +})
 +
 +describe('custom: watch folder', () => {
-+  it('waits until the file stops changing, then imports and moves it to the done folder', () => {
-+    const preset = createPreset('D1')
++  it('imports a new file in a subfolder into the preset named in the JSON, leaving the file in place', () => {
++    const preset = createPreset('윤초아 D1')
 +    const kept = createScene(preset, '001')
-+    drop('0NURA_D1.json', {
++    const body = {
++      preset: '윤초아 D1',
 +      scenes: [
 +        { name: '001', prompt: 'new prompt' },
 +        { name: '002', prompt: 'added' }
 +      ]
-+    })
-+    expect(scanWatchFolder()).toEqual([])
-+    // 쓰는 중: 내용이 또 바뀌면 다시 한 번 기다린다
-+    drop('0NURA_D1.json', {
-+      scenes: [
-+        { name: '001', prompt: 'final prompt' },
-+        { name: '002', prompt: 'added' }
-+      ]
-+    })
-+    utimesSync(join(watchDir, '0NURA_D1.json'), new Date(), new Date(Date.now() + 5000))
++    }
++    drop('옆집 뒷계/json 모음/0NURA_D1_001-175_v21.json', body)
 +    const [event] = settle()
-+    expect(event).toMatchObject({
-+      file: '0NURA_D1.json',
++    expect(event).toEqual({
++      file: '옆집 뒷계/json 모음/0NURA_D1_001-175_v21.json',
 +      ok: true,
 +      presetId: preset,
-+      presetName: 'D1',
++      presetName: '윤초아 D1',
 +      presetCreated: false,
 +      added: 1,
 +      updated: 1,
-+      unchanged: 0,
-+      moved: true
++      unchanged: 0
 +    })
-+    expect(getScene(kept)?.prompt).toBe('final prompt')
++    expect(getScene(kept)?.prompt).toBe('new prompt')
 +    expect(listScenes(preset).map((s) => s.name)).toEqual(['001', '002'])
-+    expect(jsonLeft()).toEqual([])
-+    expect(sub(WATCH_DONE_DIR)).toHaveLength(1)
-+    expect(sub(WATCH_DONE_DIR)[0]).toMatch(/^\d{8}-\d{6}_0NURA_D1\.json$/)
++    // 파일은 그 자리에 그대로, 다른 파일·폴더도 생기지 않는다
++    expect(tree()).toEqual(['옆집 뒷계/json 모음/0NURA_D1_001-175_v21.json'])
++    expect(JSON.parse(readFileSync(join(watchDir, event.file), 'utf-8'))).toEqual(body)
++    expect(scanWatchFolder()).toEqual([])
 +    expect(scanWatchFolder()).toEqual([])
 +  })
 +
-+  it('reports unchanged scenes when the same file is dropped again', () => {
++  it('leaves files that were there before watching was switched on', () => {
 +    const preset = createPreset('D1')
-+    drop('D1.json', { scenes: [{ name: '001', prompt: 'p' }] })
-+    expect(settle()[0]).toMatchObject({ added: 1, updated: 0, unchanged: 0 })
-+    drop('D1.json', { scenes: [{ name: '001', prompt: 'p' }] })
-+    expect(settle()[0]).toMatchObject({ added: 0, updated: 0, unchanged: 1 })
++    const old = join(watchDir, 'old.json')
++    writeFileSync(old, JSON.stringify({ preset: 'D1', scenes: [{ name: 'x', prompt: 'old' }] }))
++    const before = new Date(SINCE - 3_600_000)
++    utimesSync(old, before, before)
++    // 만든 시각까지 과거인 파일만 '원래 있던 것'으로 본다 — 테스트에서는 기준 시각을 지금 이후로 당겨 확인
++    setWatchFolderDir(watchDir, Date.now() + 60_000)
++    expect(settle()).toEqual([])
++    expect(listScenes(preset)).toHaveLength(0)
++    expect(existsSync(old)).toBe(true)
++  })
++
++  it('imports again only when the file changes, and waits while it is still being written', () => {
++    const preset = createPreset('D1')
++    drop('a.json', { preset: 'D1', scenes: [{ name: '001', prompt: 'one' }] })
++    expect(scanWatchFolder()).toEqual([])
++    drop('a.json', { preset: 'D1', scenes: [{ name: '001', prompt: 'two' }] }) // 쓰는 중
++    expect(settle()).toHaveLength(1)
++    expect(listScenes(preset)[0].prompt).toBe('two')
++    expect(settle()).toEqual([])
++    drop('a.json', { preset: 'D1', scenes: [{ name: '001', prompt: 'three' }] })
++    expect(settle()[0]).toMatchObject({ ok: true, added: 0, updated: 1, unchanged: 0 })
 +    expect(listScenes(preset)).toHaveLength(1)
-+    expect(sub(WATCH_DONE_DIR)).toHaveLength(2)
 +  })
 +
-+  it('uses the preset named in the JSON and creates it when missing', () => {
-+    const d1 = createPreset('D1')
-+    drop('0NURA_D1.json', { preset: 'D5', scenes: [{ name: '001', prompt: 'p' }] })
-+    expect(settle()[0]).toMatchObject({ ok: true, presetName: 'D5', presetCreated: true, added: 1 })
-+    const d5 = listPresets().find((p) => p.name === 'D5')!
-+    expect(listScenes(d5.id)).toHaveLength(1)
-+    expect(listScenes(d1)).toHaveLength(0)
++  it('remembers handled files across a restart', () => {
++    createPreset('D1')
++    drop('a.json', { preset: 'D1', scenes: [{ name: '001', prompt: 'p' }] })
++    expect(settle()).toHaveLength(1)
++    stopWatchFolder() // 프로그램 종료 흉내 — 메모리 기록이 사라진다
++    expect(settle()).toEqual([])
++    drop('b.json', { preset: 'D1', scenes: [{ name: '002', prompt: 'p' }] })
++    stopWatchFolder() // 꺼져 있는 동안 들어온 파일은 다음에 켰을 때 불러온다
++    expect(settle().map((e) => e.file)).toEqual(['b.json'])
++  })
++
++  it('creates the preset named in the JSON, but never from the file name alone', () => {
++    const count = listPresets().length
++    drop('0NURA_D5.json', { scenes: [{ name: '001', prompt: 'p' }] })
++    expect(settle()[0]).toEqual({ file: '0NURA_D5.json', ok: false, reason: 'noPreset' })
++    expect(listPresets()).toHaveLength(count)
 +    drop(
-+      'again.json',
-+      '﻿' + JSON.stringify({ preset: ' d5 ', scenes: [{ name: '002', prompt: 'p' }] })
++      '0NURA_D5.json',
++      '\uFEFF' + JSON.stringify({ preset: ' 윤초아 D5 ', scenes: [{ name: '001', prompt: 'p' }] })
 +    )
-+    expect(settle()[0]).toMatchObject({ ok: true, presetId: d5.id, presetCreated: false })
-+    expect(listPresets().filter((p) => p.name.toLowerCase() === 'd5')).toHaveLength(1)
++    expect(settle()[0]).toMatchObject({ ok: true, presetName: '윤초아 D5', presetCreated: true })
++    expect(listPresets().filter((p) => p.name === '윤초아 D5')).toHaveLength(1)
 +  })
 +
-+  it('moves files it cannot place to the failed folder with a reason, without touching scenes', () => {
++  it('reports files it cannot use once, without touching scenes or files', () => {
 +    const preset = createPreset('D1')
 +    createPreset('N1')
-+    const presetCount = listPresets().length
-+    drop('nothing.json', { scenes: [{ name: '001', prompt: 'p' }] })
 +    drop('D1_N1.json', { scenes: [{ name: '001', prompt: 'p' }] })
-+    drop('D1_broken.json', '{ not json')
-+    drop('D1_empty.json', { scenes: [] })
-+    const events = settle()
-+    expect(events.map((e) => [e.file, e.ok, e.reason])).toEqual([
++    drop('broken.json', '{ not json')
++    drop('empty.json', { preset: 'D1', scenes: [] })
++    drop('settings.json', { theme: 'dark' })
++    expect(settle().map((e) => [e.file, e.ok, e.reason])).toEqual([
++      ['broken.json', false, 'unrecognized'],
 +      ['D1_N1.json', false, 'ambiguousPreset'],
-+      ['D1_broken.json', false, 'unrecognized'],
-+      ['D1_empty.json', false, 'empty'],
-+      ['nothing.json', false, 'noPreset']
++      ['empty.json', false, 'empty'],
++      ['settings.json', false, 'unrecognized']
 +    ])
 +    expect(listScenes(preset)).toHaveLength(0)
-+    expect(listPresets()).toHaveLength(presetCount)
-+    expect(jsonLeft()).toEqual([])
-+    const failed = sub(WATCH_FAILED_DIR)
-+    expect(failed.filter((n) => n.endsWith('.json'))).toHaveLength(4)
-+    expect(failed.filter((n) => n.endsWith('.json.txt'))).toHaveLength(4)
++    expect(tree().sort()).toEqual(['D1_N1.json', 'broken.json', 'empty.json', 'settings.json'])
++    expect(settle()).toEqual([])
 +  })
 +
-+  it('ignores subfolders, other file types, and does nothing while switched off', () => {
++  it('ignores other file types and hidden folders, and does nothing while switched off', () => {
 +    const preset = createPreset('D1')
-+    mkdirSync(join(watchDir, 'D1'))
-+    writeFileSync(
-+      join(watchDir, 'D1', 'D1.json'),
-+      JSON.stringify({ scenes: [{ name: 'x', prompt: 'p' }] })
-+    )
-+    drop('D1.txt', { scenes: [{ name: 'x', prompt: 'p' }] })
++    const body = { preset: 'D1', scenes: [{ name: 'x', prompt: 'p' }] }
++    drop('D1.txt', body)
++    drop('.git/D1.json', body)
++    drop('node_modules/pkg/package.json', body)
 +    expect(settle()).toEqual([])
 +    setWatchFolderEnabled(false)
-+    drop('D1.json', { scenes: [{ name: '001', prompt: 'p' }] })
++    drop('D1.json', body)
 +    expect(settle()).toEqual([])
 +    expect(listScenes(preset)).toHaveLength(0)
-+    expect(jsonLeft()).toEqual(['D1.json'])
-+    setWatchFolderEnabled(true)
-+    expect(settle()).toHaveLength(1)
-+    expect(listScenes(preset)).toHaveLength(1)
 +  })
 +
 +  it('does nothing when the folder is missing', () => {
-+    setWatchFolderDir(join(environment.directory, 'gone'))
++    setWatchFolderDir(join(environment.directory, 'gone'), SINCE)
 +    expect(settle()).toEqual([])
++  })
++
++  it('writes the preset name into exported scene JSON', async () => {
++    const preset = createPreset('윤초아 D1')
++    createScene(preset, '001')
++    await exportScenesJson(preset)
++    const exported = JSON.parse(readFileSync(environment.exportFile, 'utf-8'))
++    expect(exported.preset).toBe('윤초아 D1')
++    expect(exported.scenes).toHaveLength(1)
 +  })
 +})

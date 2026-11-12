@@ -28,6 +28,7 @@ interface Row {
   height: number
   reserve_count: number
   reserve_json?: string | null
+  pending?: number
 }
 
 /** 출연별 예약 내역 파싱 (키 '' = 사이드바) */
@@ -83,8 +84,61 @@ function toScene(
     thumbnailUrl: storedThumbnailUrl('image', r.thumb_id, r.thumb_created_at, r.thumb_size),
     thumbnailPath: r.thumb_path ?? '',
     imageCount: r.image_count,
-    hasFavorite: r.has_favorite === 1
+    hasFavorite: r.has_favorite === 1,
+    pending: r.pending === 1
   }
+}
+
+// ── [custom] 변경 후 미생성 표시 ────────────────────────────
+// 원본의 마이그레이션 번호와 겹치지 않도록 gen_scenes에 칸을 추가하지 않고 전용 표를 따로 둔다.
+// changed_at = 씬 내용(프롬프트·네거티브·크기)이 마지막으로 실제로 달라진 시각, acked = 수동 확인 여부.
+const marksReady = new WeakSet<object>()
+function marksDb(): ReturnType<typeof getDb> {
+  const db = getDb()
+  if (!marksReady.has(db)) {
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS custom_scene_marks (
+         scene_id INTEGER PRIMARY KEY,
+         changed_at TEXT NOT NULL DEFAULT (datetime('now')),
+         acked INTEGER NOT NULL DEFAULT 0
+       )`
+    )
+    marksReady.add(db)
+  }
+  return db
+}
+
+/** 미생성 판정 SQL — ref는 gen_scenes 행을 가리키는 별칭(또는 표 이름) */
+function pendingSql(ref: string): string {
+  return `(CASE
+    WHEN COALESCE((SELECT acked FROM custom_scene_marks WHERE scene_id = ${ref}.id), 0) = 1 THEN 0
+    WHEN NOT EXISTS (SELECT 1 FROM images WHERE scene_id = ${ref}.id) THEN 1
+    WHEN EXISTS (
+      SELECT 1 FROM custom_scene_marks m
+      WHERE m.scene_id = ${ref}.id
+        AND NOT EXISTS (SELECT 1 FROM images i WHERE i.scene_id = ${ref}.id AND i.created_at > m.changed_at)
+    ) THEN 1
+    ELSE 0
+  END)`
+}
+
+function markSceneChanged(id: number): void {
+  marksDb()
+    .prepare(
+      `INSERT INTO custom_scene_marks (scene_id, changed_at, acked) VALUES (?, datetime('now'), 0)
+       ON CONFLICT(scene_id) DO UPDATE SET changed_at = excluded.changed_at, acked = 0`
+    )
+    .run(id)
+}
+
+/** '변경 후 미생성' 표시를 수동으로 끈다. 다음 내용 변경 때 다시 켜진다. */
+export function clearScenePending(id: number): void {
+  marksDb()
+    .prepare(
+      `INSERT INTO custom_scene_marks (scene_id, acked) VALUES (?, 1)
+       ON CONFLICT(scene_id) DO UPDATE SET acked = 1`
+    )
+    .run(id)
 }
 
 // ── 프리셋 ──────────────────────────────────────────────
@@ -158,10 +212,11 @@ export function listScenes(presetId: number): Scene[] {
   // 카드 썸네일: 즐겨찾기가 있으면 최상단(최신) 즐겨찾기, 없으면 최신 이미지 (NAIS2 방식)
   // The cover row is looked up once and joined. Because favorites sort first, the cover
   // is a favorite exactly when the scene has one, so it also answers has_favorite.
-  const rows = getDb()
+  const rows = marksDb()
     .prepare(
       `SELECT s.id, s.preset_id, s.name, s.prompt, s.negative_prompt, s.width, s.height, s.reserve_count, s.reserve_json,
               (SELECT COUNT(*) FROM images WHERE scene_id = s.id) AS image_count,
+              ${pendingSql('s')} AS pending,
               cover.id AS thumb_id,
               cover.created_at AS thumb_created_at,
               length(cover.thumbnail) AS thumb_size,
@@ -201,10 +256,11 @@ export function getPresetName(id: number): string | null {
 }
 
 export function getScene(id: number): Scene | null {
-  const r = getDb()
+  const r = marksDb()
     .prepare(
       `SELECT id, preset_id, name, prompt, negative_prompt, width, height, reserve_count, reserve_json,
-              (SELECT COUNT(*) FROM images WHERE scene_id = ?) AS image_count
+              (SELECT COUNT(*) FROM images WHERE scene_id = ?) AS image_count,
+              ${pendingSql('gen_scenes')} AS pending
        FROM gen_scenes WHERE id = ?`
     )
     .get(id, id) as (Row & { image_count: number }) | undefined
@@ -272,6 +328,22 @@ export function updateScene(id: number, patch: Record<string, unknown>): void {
     values.push(patch[key])
   }
   if (sets.length === 0) return
+  // [custom] 내용이 실제로 달라졌을 때만 '변경 후 미생성' 시각을 찍는다 (이름·예약 수 변경은 제외)
+  const contentKeys = ['prompt', 'negativePrompt', 'width', 'height'] as const
+  if (contentKeys.some((k) => patch[k] !== undefined)) {
+    const cur = getDb()
+      .prepare('SELECT prompt, negative_prompt, width, height FROM gen_scenes WHERE id = ?')
+      .get(id) as
+      { prompt: string; negative_prompt: string; width: number; height: number } | undefined
+    if (
+      cur &&
+      ((patch.prompt !== undefined && patch.prompt !== cur.prompt) ||
+        (patch.negativePrompt !== undefined && patch.negativePrompt !== cur.negative_prompt) ||
+        (patch.width !== undefined && patch.width !== cur.width) ||
+        (patch.height !== undefined && patch.height !== cur.height))
+    )
+      markSceneChanged(id)
+  }
   sets.push(`updated_at = datetime('now')`)
   getDb()
     .prepare(`UPDATE gen_scenes SET ${sets.join(', ')} WHERE id = ?`)
@@ -280,6 +352,7 @@ export function updateScene(id: number, patch: Record<string, unknown>): void {
 
 export function deleteScene(id: number): void {
   getDb().prepare('DELETE FROM gen_scenes WHERE id = ?').run(id)
+  marksDb().prepare('DELETE FROM custom_scene_marks WHERE scene_id = ?').run(id) // [custom]
   sceneEvents.emit('deleted', [id])
 }
 
@@ -625,7 +698,7 @@ export async function importScenesJson(
   // [custom] 같은 프리셋에 같은 이름의 씬이 있으면 새로 추가하지 않고 그 씬의 내용만 교체한다.
   // 이름이 겹치는 씬이 여럿이면 가장 앞(sort_order 최소)의 것만 교체. 생성 이력·순서는 유지.
   const findByName = db.prepare(
-    'SELECT id FROM gen_scenes WHERE preset_id = ? AND name = ? ORDER BY sort_order ASC LIMIT 1'
+    'SELECT id, prompt, negative_prompt, width, height FROM gen_scenes WHERE preset_id = ? AND name = ? ORDER BY sort_order ASC LIMIT 1'
   )
   const update = db.prepare(
     "UPDATE gen_scenes SET prompt = ?, negative_prompt = ?, width = ?, height = ?, updated_at = datetime('now') WHERE id = ?"
@@ -633,9 +706,28 @@ export async function importScenesJson(
   db.transaction(() => {
     for (const s of scenes) {
       const name = s.name ?? t('ui.scene')
-      const existing = s.name ? (findByName.get(presetId, name) as { id: number } | undefined) : undefined
+      const existing = s.name
+        ? (findByName.get(presetId, name) as
+            | { id: number; prompt: string; negative_prompt: string; width: number; height: number }
+            | undefined)
+        : undefined
       if (existing) {
-        update.run(s.prompt, s.negativePrompt ?? '', s.width ?? 832, s.height ?? 1216, existing.id)
+        const next = {
+          prompt: s.prompt,
+          negative: s.negativePrompt ?? '',
+          width: s.width ?? 832,
+          height: s.height ?? 1216
+        }
+        // 내용이 같으면 건드리지 않는다 — 전체 JSON을 다시 불러와도 실제로 바뀐 씬에만 표시가 붙는다
+        if (
+          existing.prompt !== next.prompt ||
+          existing.negative_prompt !== next.negative ||
+          existing.width !== next.width ||
+          existing.height !== next.height
+        ) {
+          update.run(next.prompt, next.negative, next.width, next.height, existing.id)
+          markSceneChanged(existing.id)
+        }
         continue
       }
       stmt.run(

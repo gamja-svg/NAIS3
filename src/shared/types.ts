@@ -366,6 +366,8 @@ export interface Scene {
   imageCount: number
   /** 즐겨찾기 보유 여부 — 카드 낙관적 썸네일 교체 억제용 (즐겨찾기가 썸네일 고정) */
   hasFavorite: boolean
+  /** [custom] 내용(프롬프트·네거티브·크기) 변경 뒤 아직 한 장도 생성하지 않았거나, 이미지가 0장인 씬 */
+  pending?: boolean
 }
 
 /** 씬 상세의 생성 이미지 (페이지네이션 단위) */
@@ -626,6 +628,8 @@ export interface IpcInvokeMap {
   }
   'scenes:duplicate': { req: { id: number }; res: { id: number } }
   'scenes:delete': { req: { id: number }; res: void }
+  /** [custom] '변경 후 미생성' 표시를 수동으로 끈다 (다음 내용 변경 때 다시 켜짐) */
+  'scenes:clearPending': { req: { id: number }; res: void }
   'scenes:reorder': { req: { ids: number[] }; res: void }
   /** 예약: 전체 취소(count=0 등 절대값 설정 — 출연 내역도 함께 초기화) */
   'scenes:setReserveAll': { req: { presetId: number; count: number }; res: void }

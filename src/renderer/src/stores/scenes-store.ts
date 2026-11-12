@@ -256,7 +256,17 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
     await get().load()
   },
   update: async (id, patch) => {
-    set({ scenes: get().scenes.map((s) => (s.id === id ? { ...s, ...patch } : s)) })
+    // [custom] 내용이 실제로 달라지면 카드의 '미생성' 표시도 바로 켠다 (서버 판정과 같은 기준)
+    const changesContent = (s: Scene): boolean =>
+      (patch.prompt !== undefined && patch.prompt !== s.prompt) ||
+      (patch.negativePrompt !== undefined && patch.negativePrompt !== s.negativePrompt) ||
+      (patch.width !== undefined && patch.width !== s.width) ||
+      (patch.height !== undefined && patch.height !== s.height)
+    set({
+      scenes: get().scenes.map((s) =>
+        s.id === id ? { ...s, ...patch, pending: s.pending || changesContent(s) } : s
+      )
+    })
     await window.nais.invoke('scenes:update', {
       id,
       patch: {
@@ -402,8 +412,14 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
       scenes: get().scenes.map((s) =>
         s.id === sceneId
           ? s.hasFavorite
-            ? { ...s, imageCount: s.imageCount + 1 }
-            : { ...s, thumbnailUrl: '', thumbnailPath: filePath, imageCount: s.imageCount + 1 }
+            ? { ...s, imageCount: s.imageCount + 1, pending: false }
+            : {
+                ...s,
+                thumbnailUrl: '',
+                thumbnailPath: filePath,
+                imageCount: s.imageCount + 1,
+                pending: false
+              }
           : s
       )
     }),

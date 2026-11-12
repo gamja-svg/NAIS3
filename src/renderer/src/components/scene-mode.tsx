@@ -1,4 +1,5 @@
 import {
+  CircleDashed,
   CalendarPlus,
   CalendarX,
   ChevronDown,
@@ -366,12 +367,17 @@ function SceneGrid(): React.JSX.Element {
   // DragOverlay 사용: 드래그 중엔 가벼운 클론이 커서를 따라가고 원본은 숨겨 프레임 저하 방지
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }))
   const [dragScene, setDragScene] = useState<Scene | null>(null)
+  // [custom] 변경 후 미생성 씬만 보기. 걸러 보는 동안에는 순서 바꾸기를 막는다 (부분 목록 기준 재정렬 방지)
+  const [pendingOnly, setPendingOnly] = useState(false)
+  const pendingCount = scenes.filter((s) => s.pending).length
+  const shownScenes = pendingOnly ? scenes.filter((s) => s.pending) : scenes
   const onDragStart = (e: DragStartEvent): void => {
     setDragScene(scenes.find((s) => `scene-${s.id}` === e.active.id) ?? null)
   }
   const onDragEnd = (e: DragEndEvent): void => {
     setDragScene(null)
     const { active, over } = e
+    if (pendingOnly) return
     if (!over || active.id === over.id) return
     const ids = scenes.map((s) => `scene-${s.id}`)
     const from = ids.indexOf(String(active.id))
@@ -427,6 +433,12 @@ function SceneGrid(): React.JSX.Element {
           tip={t('ui.editMode')}
           active={editMode}
           onClick={() => setEditMode(!editMode)}
+        />
+        <IconBtn
+          icon={<CircleDashed size={16} />}
+          tip={t('ui.showOnlyNotGeneratedValue', pendingCount)}
+          active={pendingOnly}
+          onClick={() => setPendingOnly(!pendingOnly)}
         />
 
         <div className="flex-1" />
@@ -524,14 +536,14 @@ function SceneGrid(): React.JSX.Element {
           onDragEnd={onDragEnd}
         >
           <SortableContext
-            items={scenes.map((s) => `scene-${s.id}`)}
+            items={shownScenes.map((s) => `scene-${s.id}`)}
             strategy={rectSortingStrategy}
           >
             <div
               className="grid gap-3"
               style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}
             >
-              {scenes.map((scene) => (
+              {shownScenes.map((scene) => (
                 <SceneCard
                   key={scene.id}
                   scene={scene}
@@ -845,6 +857,13 @@ const SceneCard = memo(function SceneCard({
     const { ok } = await window.nais.invoke('scenes:openFolder', { sceneId: scene.id })
     if (!ok) toast(t('ui.noGeneratedImageFolderYet'), 'info')
   }
+  // [custom] '미생성' 표시를 수동으로 끈다
+  const clearPending = async (): Promise<void> => {
+    await window.nais.invoke('scenes:clearPending', { id: scene.id })
+    useScenesStore.setState((st) => ({
+      scenes: st.scenes.map((s) => (s.id === scene.id ? { ...s, pending: false } : s))
+    }))
+  }
   const removeScene = async (): Promise<void> => {
     if (
       await askConfirm(t('ui.deleteScene'), {
@@ -938,6 +957,13 @@ const SceneCard = memo(function SceneCard({
                 </div>
               )
             })()}
+
+          {/* [custom] 변경 후 미생성 표시 — 3점 메뉴 왼쪽 */}
+          {scene.pending && (
+            <span className="pointer-events-none absolute right-9 top-1.5 rounded-full bg-accent px-1.5 py-0.5 text-[11px] font-bold leading-none text-on-accent shadow">
+              {t('ui.notGenerated')}
+            </span>
+          )}
 
           {/* 우측 상단 — 편집 모드 체크박스 / 일반 3점 메뉴 */}
           {editMode ? (
@@ -1058,6 +1084,11 @@ const SceneCard = memo(function SceneCard({
         <ContextMenuItem onSelect={() => void openFolder()}>
           <FolderOpen size={13} className="text-hue-amber" /> {t('ui.openFolder')}
         </ContextMenuItem>
+        {scene.pending && (
+          <ContextMenuItem onSelect={() => void clearPending()}>
+            <CircleDashed size={13} /> {t('ui.markAsChecked')}
+          </ContextMenuItem>
+        )}
         <ContextMenuSeparator />
         <ContextMenuItem danger onSelect={() => void removeScene()}>
           <Trash2 size={13} /> {t('ui.delete')}

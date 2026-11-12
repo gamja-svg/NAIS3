@@ -85,6 +85,7 @@ import {
   getPresetName,
   updateScene,
   duplicateScene,
+  clearScenePending,
   deleteScene,
   reorderScenes,
   setReserveAll,
@@ -417,6 +418,9 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
   handle('scenes:duplicate', ({ id }) => ({ id: duplicateScene(id) }))
   handle('scenes:delete', ({ id }) => {
     deleteScene(id)
+  })
+  handle('scenes:clearPending', ({ id }) => {
+    clearScenePending(id)
   })
   handle('scenes:reorder', ({ ids }) => {
     reorderScenes(ids)

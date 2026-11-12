@@ -1,0 +1,157 @@
+diff --git a/src/renderer/src/App.tsx b/src/renderer/src/App.tsx
+index 1998e8f0d5892b385ebc82c29a2517da6432873c..4bf6eb66df1e6d61f0401ec78a619b3ec5d0d4c7 100644
+--- a/src/renderer/src/App.tsx
++++ b/src/renderer/src/App.tsx
+@@ -31,6 +31,7 @@ import { useLanguageStore } from './lib/i18n'
+ import { cn } from './lib/utils'
+ import { useLayoutStore } from './stores/layout-store'
+ import { useThemeStore } from './stores/theme-store'
++import { hydrateShowScrollbars } from './lib/custom-scrollbars'
+ 
+ // 새 설치 첫 실행에만 뜨므로 평소 실행에선 읽지 않는다
+ const Onboarding = lazy(() =>
+@@ -78,7 +79,8 @@ export default function App(): React.JSX.Element {
+         useVibesStore.getState().load(),
+         useCharRefsStore.getState().load(),
+         useShortcutsStore.getState().hydrate(),
+-        useDirectorStore.getState().hydrate()
++        useDirectorStore.getState().hydrate(),
++        hydrateShowScrollbars()
+       ])
+       // 스플래시가 너무 순식간에 사라지지 않게 최소 표시 시간 확보
+       setTimeout(() => setReady(true), 350)
+diff --git a/src/renderer/src/assets/main.css b/src/renderer/src/assets/main.css
+index 7c7d37a8d4012943eb59e7ae7e210abf3424381d..47669cc2c46cfa437bf249ccc33ba6a50f27c335 100644
+--- a/src/renderer/src/assets/main.css
++++ b/src/renderer/src/assets/main.css
+@@ -274,6 +274,32 @@ input {
+   display: none;
+ }
+ 
++/* [custom] 스크롤바 표시(설정) — 숨긴 스크롤바를 잡아 끌 수 있는 굵기로 되살린다 (휠 없는 원격·터치용) */
++:root[data-custom-scrollbars='on'] .no-scrollbar {
++  scrollbar-width: auto;
++  scrollbar-color: auto;
++}
++:root[data-custom-scrollbars='on'] .no-scrollbar::-webkit-scrollbar {
++  display: block;
++  width: 16px;
++  height: 16px;
++}
++:root[data-custom-scrollbars='on'] .no-scrollbar::-webkit-scrollbar-track {
++  background: color-mix(in srgb, var(--muted) 10%, transparent);
++}
++:root[data-custom-scrollbars='on'] .no-scrollbar::-webkit-scrollbar-thumb {
++  min-height: 48px;
++  min-width: 48px;
++  border: 3px solid transparent;
++  border-radius: 8px;
++  background-color: color-mix(in srgb, var(--muted) 60%, transparent);
++  background-clip: content-box;
++}
++:root[data-custom-scrollbars='on'] .no-scrollbar::-webkit-scrollbar-thumb:hover,
++:root[data-custom-scrollbars='on'] .no-scrollbar::-webkit-scrollbar-thumb:active {
++  background-color: color-mix(in srgb, var(--muted) 85%, transparent);
++}
++
+ /* frameless 창 드래그 영역 */
+ .drag {
+   -webkit-app-region: drag;
+diff --git a/src/renderer/src/components/token-dialog.tsx b/src/renderer/src/components/token-dialog.tsx
+index cfe722ba0ccae56ae3d5c430f90dc0f31af35384..7573af8b202c3ef620e215211b925816206a8ba9 100644
+--- a/src/renderer/src/components/token-dialog.tsx
++++ b/src/renderer/src/components/token-dialog.tsx
+@@ -53,6 +53,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
+ import { Slider } from './ui/slider'
+ import { Switch } from './ui/switch'
+ import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs'
++import { SHOW_SCROLLBARS_KEY, applyShowScrollbars } from '../lib/custom-scrollbars'
+ 
+ type SectionId = 'appearance' | 'generation' | 'storage' | 'shortcuts' | 'account' | 'about'
+ 
+@@ -97,6 +98,7 @@ function AppearanceSection(): React.JSX.Element {
+   const setUiSize = useThemeStore((s) => s.setUiSize)
+   const promptSize = useThemeStore((s) => s.promptSize)
+   const setPromptSize = useThemeStore((s) => s.setPromptSize)
++  const [showScrollbars, setShowScrollbars] = useBoolSetting(SHOW_SCROLLBARS_KEY, false)
+ 
+   return (
+     <div className="divide-y divide-line">
+@@ -170,6 +172,16 @@ function AppearanceSection(): React.JSX.Element {
+           onValueChange={([v]) => setPromptSize(v)}
+         />
+       </Row>
++      <Row label={t('ui.customShowScrollbars')} hint={t('ui.customShowScrollbarsHint')}>
++        <Switch
++          aria-label={t('ui.customShowScrollbars')}
++          checked={showScrollbars}
++          onCheckedChange={(on) => {
++            setShowScrollbars(on)
++            applyShowScrollbars(on)
++          }}
++        />
++      </Row>
+       <Row label={t('ui.visibleTabs')} hint={t('ui.tabsTurnedOffAreHiddenFromTheTopBar')}>
+         <PageToggles />
+       </Row>
+diff --git a/src/renderer/src/lib/custom-scrollbars.ts b/src/renderer/src/lib/custom-scrollbars.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..42ff48aa2ff23f1fa3969ca34066931b992fc66a
+--- /dev/null
++++ b/src/renderer/src/lib/custom-scrollbars.ts
+@@ -0,0 +1,14 @@
++/**
++ * [custom] 스크롤바 표시 — 원본은 목록의 스크롤바를 숨겨 휠로만 넘길 수 있다. 휠이 없는 환경
++ * (원격 접속·터치)에서도 넘길 수 있게, 켜면 숨긴 스크롤바를 잡아 끌 수 있는 굵기로 보여 준다.
++ */
++export const SHOW_SCROLLBARS_KEY = 'custom_show_scrollbars'
++
++export function applyShowScrollbars(on: boolean): void {
++  document.documentElement.dataset.customScrollbars = on ? 'on' : 'off'
++}
++
++export async function hydrateShowScrollbars(): Promise<void> {
++  const { value } = await window.nais.invoke('settings:get', { key: SHOW_SCROLLBARS_KEY })
++  applyShowScrollbars(value === '1')
++}
+diff --git a/src/shared/i18n/catalog-en.ts b/src/shared/i18n/catalog-en.ts
+index b430534314f613d085c7b759ae2eef99a1e350ec..092c2de15fc1b7ff7a1e94c52a0a8d210235aab8 100644
+--- a/src/shared/i18n/catalog-en.ts
++++ b/src/shared/i18n/catalog-en.ts
+@@ -140,6 +140,9 @@ export const EN = {
+   'ui.notGenerated': 'Not generated',
+   'ui.showOnlyNotGeneratedValue': 'Show only changed, not yet generated ({0})',
+   'ui.markAsChecked': 'Mark as checked',
++  'ui.customShowScrollbars': 'Show scrollbars',
++  'ui.customShowScrollbarsHint':
++    'Shows draggable scrollbars next to lists, for remote or touch use where there is no mouse wheel.',
+   'ui.customWatchFolder': 'Watch folder',
+   'ui.customWatchFolderHint':
+     'Scene JSON files that are added or changed in this folder (including subfolders) are imported automatically. Files that were already there are left alone, and nothing is moved or deleted. The target preset comes from "preset" in the JSON.',
+diff --git a/src/shared/i18n/catalog-ko.ts b/src/shared/i18n/catalog-ko.ts
+index 15e730fa6ba341fc6b6e2e0ecc7ee9c52d1b7737..0bf3a0cc15bef7eeea276ecd4c37804570cc7608 100644
+--- a/src/shared/i18n/catalog-ko.ts
++++ b/src/shared/i18n/catalog-ko.ts
+@@ -139,6 +139,9 @@ export const KO = {
+   'ui.notGenerated': '미생성',
+   'ui.showOnlyNotGeneratedValue': '변경 후 미생성 씬만 보기 ({0})',
+   'ui.markAsChecked': '확인함 (미생성 표시 끄기)',
++  'ui.customShowScrollbars': '스크롤바 표시',
++  'ui.customShowScrollbarsHint':
++    '목록 옆에 잡아 끌 수 있는 스크롤바를 보여 줍니다. 휠을 쓸 수 없는 원격 접속·터치 화면용입니다.',
+   'ui.customWatchFolder': '감시 폴더',
+   'ui.customWatchFolderHint':
+     '이 폴더(하위 폴더 포함)에 씬 JSON이 새로 생기거나 바뀌면 자동으로 불러옵니다. 켜기 전부터 있던 파일은 건드리지 않고, 파일을 옮기거나 지우지 않습니다. 넣을 프리셋은 JSON의 "preset" 이름으로 정합니다.',
+diff --git a/src/shared/i18n/catalog-zh-CN.ts b/src/shared/i18n/catalog-zh-CN.ts
+index 09a649e880806a2a05c919994d00daa866f579cd..ab395579bcd1837b66a8df961d922fe93f948f95 100644
+--- a/src/shared/i18n/catalog-zh-CN.ts
++++ b/src/shared/i18n/catalog-zh-CN.ts
+@@ -139,6 +139,8 @@ export const ZH_CN = {
+   'ui.notGenerated': '未生成',
+   'ui.showOnlyNotGeneratedValue': '仅显示修改后未生成的场景（{0}）',
+   'ui.markAsChecked': '标记为已确认',
++  'ui.customShowScrollbars': '显示滚动条',
++  'ui.customShowScrollbarsHint': '在列表旁显示可拖动的滚动条，适用于无法使用滚轮的远程或触屏操作。',
+   'ui.customWatchFolder': '监视文件夹',
+   'ui.customWatchFolderHint':
+     '此文件夹（含子文件夹）中新增或更改的场景 JSON 会自动导入。开启前已有的文件不会被处理，也不会移动或删除文件。目标预设由 JSON 中的 "preset" 决定。',

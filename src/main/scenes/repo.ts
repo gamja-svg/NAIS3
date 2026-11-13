@@ -702,6 +702,8 @@ export interface ImportApplyResult {
   added: number
   updated: number
   unchanged: number
+  /** 새로 추가했거나 내용이 바뀐 씬 (자동 생성 대상) */
+  sceneIds: number[]
 }
 
 /**
@@ -709,7 +711,7 @@ export interface ImportApplyResult {
  * 감시 폴더(custom/watch-folder)가 같이 쓴다.
  */
 export function applyImportedScenes(presetId: number, scenes: ImportedScene[]): ImportApplyResult {
-  const outcome: ImportApplyResult = { added: 0, updated: 0, unchanged: 0 }
+  const outcome: ImportApplyResult = { added: 0, updated: 0, unchanged: 0, sceneIds: [] }
   const db = getDb()
   const max = db
     .prepare('SELECT COALESCE(MAX(sort_order), 0) AS m FROM gen_scenes WHERE preset_id = ?')
@@ -751,11 +753,12 @@ export function applyImportedScenes(presetId: number, scenes: ImportedScene[]): 
           update.run(next.prompt, next.negative, next.width, next.height, existing.id)
           markSceneChanged(existing.id)
           outcome.updated++
+          outcome.sceneIds.push(existing.id)
         } else outcome.unchanged++
         continue
       }
       outcome.added++
-      stmt.run(
+      const inserted = stmt.run(
         presetId,
         name,
         s.prompt,
@@ -764,6 +767,7 @@ export function applyImportedScenes(presetId: number, scenes: ImportedScene[]): 
         s.height ?? 1216,
         ++order
       )
+      outcome.sceneIds.push(Number(inserted.lastInsertRowid))
     }
   })()
   return outcome

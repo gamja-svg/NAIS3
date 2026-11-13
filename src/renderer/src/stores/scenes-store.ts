@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { applySceneRequest } from '@shared/scene-request'
+import { WATCH_AUTOGEN_LIMIT, canAutoGenerate } from '@shared/custom-watch'
 import { toast } from './toast-store'
 import { t } from '../lib/i18n'
 import { recordNav } from '../lib/nav-history'
@@ -634,6 +635,45 @@ export async function loadCasts(): Promise<void> {
 }
 
 /**
+ * [custom] 감시 폴더가 바꾼 씬을 1장씩 자동 생성한다 (설정에서 켰을 때만).
+ * 지금 화면에 골라 둔 출연·사이드바 설정으로 뽑는다 — 손으로 씬 하나를 생성할 때와 같다.
+ */
+async function autoGenerateWatched(
+  presetId: number | undefined,
+  sceneIds: number[]
+): Promise<void> {
+  if (presetId == null || sceneIds.length === 0) return
+  try {
+    const { value } = await window.nais.invoke('settings:get', { key: 'custom_watch_autogen' })
+    if (value !== '1') return
+    const status = await window.nais.invoke('queue:status', undefined)
+    const pending = status.items.filter((i) => i.state === 'pending' || i.state === 'generating')
+    if (!canAutoGenerate(sceneIds.length, pending.length)) {
+      toast(t('ui.customWatchAutoGenSkippedValue', sceneIds.length, WATCH_AUTOGEN_LIMIT), 'error')
+      return
+    }
+    const wanted = new Set(sceneIds)
+    const { items } = await window.nais.invoke('scenes:list', { presetId })
+    const st = useScenesStore.getState()
+    const cast =
+      st.activeCastId === '' ? null : (st.casts.find((c) => c.id === st.activeCastId) ?? null)
+    const base = buildCastRequest(cast)
+    let count = 0
+    for (const scene of items) {
+      if (!wanted.has(scene.id)) continue
+      await window.nais.invoke('queue:enqueue', {
+        request: { ...applySceneRequest(base, scene), seed: sceneSeed(0) },
+        count: 1
+      })
+      count++
+    }
+    if (count > 0) toast(t('ui.customWatchAutoGenStartedValue', count), 'info')
+  } catch (error) {
+    toast(error instanceof Error ? error.message : String(error), 'error')
+  }
+}
+
+/**
  * 씬 생성 완료 이벤트 바인딩 (목록 썸네일/개수 + 열린 상세 이미지 갱신).
  * 대량 배치 시 이벤트가 쏟아지므로 디바운스로 DB 부하·리렌더를 줄인다.
  */
@@ -678,6 +718,7 @@ export function bindSceneEvents(): () => void {
     )
     const st = useScenesStore.getState()
     void (event.presetCreated ? st.loadPresets() : Promise.resolve()).then(() => st.load())
+    void autoGenerateWatched(event.presetId, event.sceneIds ?? [])
   })
   return () => {
     clearTimeout(timer)

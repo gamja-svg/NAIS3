@@ -153,6 +153,12 @@ export const EN = {
   'ui.customWatchAmbiguousPreset': 'The file name matches more than one preset.',
   'ui.customWatchTooLarge': 'The file is too large (over 20MB).',
   'ui.customWatchReadError': 'Could not read the file.',
+  'ui.customWatchAutoGenerate': 'Auto-generate imported scenes',
+  'ui.customWatchAutoGenerateHint':
+    'Generates one image for each scene the watch folder added or changed, using the settings currently on screen. Nothing is generated when that plus the pending queue would exceed 30.',
+  'ui.customWatchAutoGenStartedValue': 'Watch folder: auto-generating {0} changed scene(s)',
+  'ui.customWatchAutoGenSkippedValue':
+    'Watch folder: not auto-generating — {0} changed scene(s) exceed the limit ({1}, including pending).',
   'ui.queuedForCastValue': 'Queued for cast "{0}"',
   'ui.queuedWithSidebarSettings': 'Queued with sidebar settings',
   'ui.deletedCast': 'Deleted cast',

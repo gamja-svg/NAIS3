@@ -126,7 +126,8 @@ describe('custom: watch folder', () => {
       presetCreated: false,
       added: 1,
       updated: 1,
-      unchanged: 0
+      unchanged: 0,
+      sceneIds: [kept, listScenes(preset).find((s) => s.name === '002')!.id]
     })
     expect(getScene(kept)?.prompt).toBe('new prompt')
     expect(listScenes(preset).map((s) => s.name)).toEqual(['001', '002'])
@@ -160,6 +161,9 @@ describe('custom: watch folder', () => {
     expect(settle()).toEqual([])
     drop('a.json', { preset: 'D1', scenes: [{ name: '001', prompt: 'three' }] })
     expect(settle()[0]).toMatchObject({ ok: true, added: 0, updated: 1, unchanged: 0 })
+    // 내용이 같은 파일을 다시 저장하면 바뀐 씬이 없다 → 자동 생성 대상도 없다
+    drop('a.json', { preset: 'D1', scenes: [{ name: '001', prompt: 'three' }] })
+    expect(settle()[0]).toMatchObject({ ok: true, unchanged: 1, sceneIds: [] })
     expect(listScenes(preset)).toHaveLength(1)
   })
 

@@ -423,6 +423,8 @@ export interface WatchFolderEvent {
   added?: number
   updated?: number
   unchanged?: number
+  /** 새로 추가했거나 내용이 바뀐 씬 (자동 생성 대상) */
+  sceneIds?: number[]
 }
 
 export interface IpcInvokeMap {

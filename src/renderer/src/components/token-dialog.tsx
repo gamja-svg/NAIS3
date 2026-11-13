@@ -470,6 +470,7 @@ function SaveDirRow({
 function WatchFolderRow(): React.JSX.Element {
   const t = useT()
   const [config, setConfig] = useState<WatchFolderConfig>({ enabled: false, dir: '' })
+  const [autoGenerate, setAutoGenerate] = useBoolSetting('custom_watch_autogen', false)
   useEffect(() => {
     void window.nais.invoke('custom:watchGet', undefined).then(setConfig)
   }, [])
@@ -505,6 +506,18 @@ function WatchFolderRow(): React.JSX.Element {
         >
           <FolderOpen size={14} /> {t('ui.change')}
         </Button>
+      </div>
+      <div className="flex items-center justify-between gap-6">
+        <div className="min-w-0">
+          <p className="text-[13px] text-ink">{t('ui.customWatchAutoGenerate')}</p>
+          <p className="text-[11.5px] text-faint">{t('ui.customWatchAutoGenerateHint')}</p>
+        </div>
+        <Switch
+          aria-label={t('ui.customWatchAutoGenerate')}
+          checked={autoGenerate && config.enabled}
+          disabled={!config.enabled}
+          onCheckedChange={setAutoGenerate}
+        />
       </div>
     </div>
   )

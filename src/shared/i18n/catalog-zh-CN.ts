@@ -151,6 +151,12 @@ export const ZH_CN = {
   'ui.customWatchAmbiguousPreset': '文件名匹配到多个预设。',
   'ui.customWatchTooLarge': '文件过大（超过 20MB）。',
   'ui.customWatchReadError': '无法读取文件。',
+  'ui.customWatchAutoGenerate': '自动生成导入的场景',
+  'ui.customWatchAutoGenerateHint':
+    '监视文件夹新增或更改的场景会按当前界面的设置各生成 1 张。与等待中的任务合计超过 30 张时不会生成。',
+  'ui.customWatchAutoGenStartedValue': '监视文件夹：开始自动生成 {0} 个已更改的场景',
+  'ui.customWatchAutoGenSkippedValue':
+    '监视文件夹：未自动生成 — 已更改的 {0} 个场景超过上限（{1} 张，含等待中）。',
   'ui.queuedForCastValue': '已按角色组合「{0}」预约',
   'ui.queuedWithSidebarSettings': '已按左侧当前配置预约',
   'ui.deletedCast': '已删除的角色组合',

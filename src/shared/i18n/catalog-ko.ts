@@ -151,6 +151,12 @@ export const KO = {
   'ui.customWatchAmbiguousPreset': '파일 이름에 맞는 프리셋이 여러 개입니다.',
   'ui.customWatchTooLarge': '파일이 너무 큽니다 (20MB 초과).',
   'ui.customWatchReadError': '파일을 읽지 못했습니다.',
+  'ui.customWatchAutoGenerate': '불러온 씬 자동 생성',
+  'ui.customWatchAutoGenerateHint':
+    '감시 폴더가 추가하거나 바꾼 씬을 지금 화면의 설정으로 1장씩 생성합니다. 대기 중인 생성과 합쳐 30장을 넘으면 생성하지 않습니다.',
+  'ui.customWatchAutoGenStartedValue': '감시 폴더: 바뀐 씬 {0}장 자동 생성 시작',
+  'ui.customWatchAutoGenSkippedValue':
+    '감시 폴더: 자동 생성하지 않음 — 바뀐 씬 {0}장이 한도({1}장, 대기 중 포함)를 넘습니다.',
   'ui.queuedForCastValue': '"{0}" 출연 예약',
   'ui.queuedWithSidebarSettings': '사이드바 설정 예약',
   'ui.deletedCast': '삭제된 출연',

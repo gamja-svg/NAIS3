@@ -412,6 +412,7 @@ export type WatchFolderFailure =
 
 /** [custom] 감시 폴더가 파일 하나를 처리한 결과 */
 export interface WatchFolderEvent {
+  /** 감시 폴더 기준 상대 경로 */
   file: string
   ok: boolean
   reason?: WatchFolderFailure
@@ -422,8 +423,6 @@ export interface WatchFolderEvent {
   added?: number
   updated?: number
   unchanged?: number
-  /** 완료/실패 폴더로 옮겼는지 (못 옮기면 같은 내용으로는 다시 처리하지 않음) */
-  moved: boolean
 }
 
 export interface IpcInvokeMap {

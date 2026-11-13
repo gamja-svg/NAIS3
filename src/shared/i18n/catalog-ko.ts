@@ -141,13 +141,13 @@ export const KO = {
   'ui.markAsChecked': '확인함 (미생성 표시 끄기)',
   'ui.customWatchFolder': '감시 폴더',
   'ui.customWatchFolderHint':
-    '이 폴더에 씬 JSON을 넣으면 자동으로 불러옵니다. 같은 이름 씬은 내용만 바뀌고, 처리한 파일은 완료·실패 폴더로 옮겨집니다.',
+    '이 폴더(하위 폴더 포함)에 씬 JSON이 새로 생기거나 바뀌면 자동으로 불러옵니다. 켜기 전부터 있던 파일은 건드리지 않고, 파일을 옮기거나 지우지 않습니다. 넣을 프리셋은 JSON의 "preset" 이름으로 정합니다.',
   'ui.customWatchNotChosen': '폴더를 고르지 않음',
   'ui.customWatchChooseFolder': '감시 폴더 선택',
   'ui.customWatchImportedValue': '감시 폴더: {0} → {1} (추가 {2} · 변경 {3} · 그대로 {4})',
   'ui.customWatchFailedValue': '감시 폴더: {0} 불러오기 실패 — {1}',
   'ui.customWatchNoPreset':
-    '어느 프리셋에 넣을지 알 수 없습니다. 파일 이름에 프리셋 이름을 넣거나 JSON에 "preset"을 적어 주세요.',
+    '어느 프리셋에 넣을지 알 수 없습니다. JSON 맨 위에 "preset": "프리셋 이름"을 적어 주세요.',
   'ui.customWatchAmbiguousPreset': '파일 이름에 맞는 프리셋이 여러 개입니다.',
   'ui.customWatchTooLarge': '파일이 너무 큽니다 (20MB 초과).',
   'ui.customWatchReadError': '파일을 읽지 못했습니다.',

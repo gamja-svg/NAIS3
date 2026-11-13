@@ -2,6 +2,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   readdirSync,
   rmSync,
   utimesSync,
@@ -12,8 +13,6 @@ import { join } from 'path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { closeDb, initDb } from '../src/main/db'
 import {
-  WATCH_DONE_DIR,
-  WATCH_FAILED_DIR,
   pickPresetByFileName,
   scanWatchFolder,
   setWatchFolderDir,
@@ -23,27 +22,34 @@ import {
 import {
   createPreset,
   createScene,
+  exportScenesJson,
   getScene,
   listPresets,
   listScenes
 } from '../src/main/scenes/repo'
 
-// [custom] 감시 폴더: 프리셋 정하기, 덮어쓰기 불러오기, 완료/실패 폴더 이동 검증
-const environment = vi.hoisted(() => ({ directory: '' }))
+// [custom] 감시 폴더(보관함 방식): 켠 뒤 생기거나 바뀐 파일만 불러오고, 파일은 건드리지 않는다
+const environment = vi.hoisted(() => ({ directory: '', exportFile: '' }))
 vi.mock('electron', () => ({
   app: { getPath: () => environment.directory, getLocale: () => 'ko' },
   BrowserWindow: { getFocusedWindow: () => null, getAllWindows: () => [] },
-  dialog: {}
+  dialog: { showSaveDialog: async () => ({ canceled: false, filePath: environment.exportFile }) }
 }))
 
 let watchDir = ''
+/** 감시를 켠 시각 — 테스트 파일은 이보다 뒤(또는 앞)로 시각을 직접 찍는다 */
+const SINCE = Date.now() - 60_000
+let clock = 0
+
 beforeEach(() => {
   environment.directory = mkdtempSync(join(tmpdir(), 'nais3-custom-watch-'))
+  environment.exportFile = join(environment.directory, 'export.json')
   watchDir = join(environment.directory, 'watch')
   mkdirSync(watchDir)
+  clock = 0
   initDb()
-  setWatchFolderDir(watchDir)
-  setWatchFolderEnabled(true)
+  setWatchFolderDir(watchDir, SINCE)
+  setWatchFolderEnabled(true, SINCE)
 })
 afterEach(() => {
   stopWatchFolder()
@@ -51,17 +57,24 @@ afterEach(() => {
   rmSync(environment.directory, { recursive: true, force: true })
 })
 
-function drop(name: string, body: unknown): void {
-  writeFileSync(join(watchDir, name), typeof body === 'string' ? body : JSON.stringify(body))
+/** 파일을 쓰고 수정 시각을 켠 시각 이후로 찍는다 (쓸 때마다 1초씩 뒤로) */
+function drop(rel: string, body: unknown): void {
+  const path = join(watchDir, rel)
+  mkdirSync(join(path, '..'), { recursive: true })
+  writeFileSync(path, typeof body === 'string' ? body : JSON.stringify(body))
+  const at = new Date(SINCE + 10_000 + ++clock * 1000)
+  utimesSync(path, at, at)
 }
-/** 파일이 다 써졌는지 보려고 첫 확인은 건너뛴다 — 두 번째 확인에서 처리된다 */
+/** 다 써졌는지 보려고 첫 확인은 건너뛴다 — 두 번째 확인에서 처리된다 */
 function settle(): ReturnType<typeof scanWatchFolder> {
   expect(scanWatchFolder()).toEqual([])
   return scanWatchFolder()
 }
-const jsonLeft = (): string[] => readdirSync(watchDir).filter((n) => n.endsWith('.json'))
-const sub = (name: string): string[] =>
-  existsSync(join(watchDir, name)) ? readdirSync(join(watchDir, name)) : []
+function tree(dir = watchDir, rel = ''): string[] {
+  return readdirSync(join(dir, rel), { withFileTypes: true }).flatMap((e) =>
+    e.isDirectory() ? tree(dir, `${rel}${e.name}/`) : [`${rel}${e.name}`]
+  )
+}
 
 describe('custom: pickPresetByFileName', () => {
   const presets = [
@@ -73,7 +86,7 @@ describe('custom: pickPresetByFileName', () => {
   it('matches a preset name bounded by non-word characters', () => {
     expect(pickPresetByFileName('0NURA_D1_v3.json', presets)).toEqual(presets[0])
     expect(pickPresetByFileName('0NURA_D10.json', presets)).toEqual(presets[1])
-    expect(pickPresetByFileName('d1.json', presets)).toEqual(presets[0])
+    expect(pickPresetByFileName('sub/d1.json', presets)).toEqual(presets[0])
     expect(pickPresetByFileName('0NURA 일상복 (2).json', presets)).toEqual(presets[3])
   })
   it('does not match inside a longer word', () => {
@@ -82,130 +95,140 @@ describe('custom: pickPresetByFileName', () => {
   })
   it('refuses to guess between presets', () => {
     expect(pickPresetByFileName('0NURA_D1_N1.json', presets)).toBe('ambiguous')
-    expect(
-      pickPresetByFileName('D1.json', [
-        { id: 1, name: 'D1' },
-        { id: 9, name: 'd1' }
-      ])
-    ).toBe('ambiguous')
   })
   it('prefers the longest matching name', () => {
     const both = [
       { id: 1, name: 'D1' },
-      { id: 2, name: '0NURA D1' }
+      { id: 2, name: '윤초아 D1' }
     ]
-    expect(pickPresetByFileName('0NURA D1.json', both)).toEqual(both[1])
+    expect(pickPresetByFileName('윤초아 D1.json', both)).toEqual(both[1])
   })
 })
 
 describe('custom: watch folder', () => {
-  it('waits until the file stops changing, then imports and moves it to the done folder', () => {
-    const preset = createPreset('D1')
+  it('imports a new file in a subfolder into the preset named in the JSON, leaving the file in place', () => {
+    const preset = createPreset('윤초아 D1')
     const kept = createScene(preset, '001')
-    drop('0NURA_D1.json', {
+    const body = {
+      preset: '윤초아 D1',
       scenes: [
         { name: '001', prompt: 'new prompt' },
         { name: '002', prompt: 'added' }
       ]
-    })
-    expect(scanWatchFolder()).toEqual([])
-    // 쓰는 중: 내용이 또 바뀌면 다시 한 번 기다린다
-    drop('0NURA_D1.json', {
-      scenes: [
-        { name: '001', prompt: 'final prompt' },
-        { name: '002', prompt: 'added' }
-      ]
-    })
-    utimesSync(join(watchDir, '0NURA_D1.json'), new Date(), new Date(Date.now() + 5000))
+    }
+    drop('옆집 뒷계/json 모음/0NURA_D1_001-175_v21.json', body)
     const [event] = settle()
-    expect(event).toMatchObject({
-      file: '0NURA_D1.json',
+    expect(event).toEqual({
+      file: '옆집 뒷계/json 모음/0NURA_D1_001-175_v21.json',
       ok: true,
       presetId: preset,
-      presetName: 'D1',
+      presetName: '윤초아 D1',
       presetCreated: false,
       added: 1,
       updated: 1,
-      unchanged: 0,
-      moved: true
+      unchanged: 0
     })
-    expect(getScene(kept)?.prompt).toBe('final prompt')
+    expect(getScene(kept)?.prompt).toBe('new prompt')
     expect(listScenes(preset).map((s) => s.name)).toEqual(['001', '002'])
-    expect(jsonLeft()).toEqual([])
-    expect(sub(WATCH_DONE_DIR)).toHaveLength(1)
-    expect(sub(WATCH_DONE_DIR)[0]).toMatch(/^\d{8}-\d{6}_0NURA_D1\.json$/)
+    // 파일은 그 자리에 그대로, 다른 파일·폴더도 생기지 않는다
+    expect(tree()).toEqual(['옆집 뒷계/json 모음/0NURA_D1_001-175_v21.json'])
+    expect(JSON.parse(readFileSync(join(watchDir, event.file), 'utf-8'))).toEqual(body)
+    expect(scanWatchFolder()).toEqual([])
     expect(scanWatchFolder()).toEqual([])
   })
 
-  it('reports unchanged scenes when the same file is dropped again', () => {
+  it('leaves files that were there before watching was switched on', () => {
     const preset = createPreset('D1')
-    drop('D1.json', { scenes: [{ name: '001', prompt: 'p' }] })
-    expect(settle()[0]).toMatchObject({ added: 1, updated: 0, unchanged: 0 })
-    drop('D1.json', { scenes: [{ name: '001', prompt: 'p' }] })
-    expect(settle()[0]).toMatchObject({ added: 0, updated: 0, unchanged: 1 })
+    const old = join(watchDir, 'old.json')
+    writeFileSync(old, JSON.stringify({ preset: 'D1', scenes: [{ name: 'x', prompt: 'old' }] }))
+    const before = new Date(SINCE - 3_600_000)
+    utimesSync(old, before, before)
+    // 만든 시각까지 과거인 파일만 '원래 있던 것'으로 본다 — 테스트에서는 기준 시각을 지금 이후로 당겨 확인
+    setWatchFolderDir(watchDir, Date.now() + 60_000)
+    expect(settle()).toEqual([])
+    expect(listScenes(preset)).toHaveLength(0)
+    expect(existsSync(old)).toBe(true)
+  })
+
+  it('imports again only when the file changes, and waits while it is still being written', () => {
+    const preset = createPreset('D1')
+    drop('a.json', { preset: 'D1', scenes: [{ name: '001', prompt: 'one' }] })
+    expect(scanWatchFolder()).toEqual([])
+    drop('a.json', { preset: 'D1', scenes: [{ name: '001', prompt: 'two' }] }) // 쓰는 중
+    expect(settle()).toHaveLength(1)
+    expect(listScenes(preset)[0].prompt).toBe('two')
+    expect(settle()).toEqual([])
+    drop('a.json', { preset: 'D1', scenes: [{ name: '001', prompt: 'three' }] })
+    expect(settle()[0]).toMatchObject({ ok: true, added: 0, updated: 1, unchanged: 0 })
     expect(listScenes(preset)).toHaveLength(1)
-    expect(sub(WATCH_DONE_DIR)).toHaveLength(2)
   })
 
-  it('uses the preset named in the JSON and creates it when missing', () => {
-    const d1 = createPreset('D1')
-    drop('0NURA_D1.json', { preset: 'D5', scenes: [{ name: '001', prompt: 'p' }] })
-    expect(settle()[0]).toMatchObject({ ok: true, presetName: 'D5', presetCreated: true, added: 1 })
-    const d5 = listPresets().find((p) => p.name === 'D5')!
-    expect(listScenes(d5.id)).toHaveLength(1)
-    expect(listScenes(d1)).toHaveLength(0)
+  it('remembers handled files across a restart', () => {
+    createPreset('D1')
+    drop('a.json', { preset: 'D1', scenes: [{ name: '001', prompt: 'p' }] })
+    expect(settle()).toHaveLength(1)
+    stopWatchFolder() // 프로그램 종료 흉내 — 메모리 기록이 사라진다
+    expect(settle()).toEqual([])
+    drop('b.json', { preset: 'D1', scenes: [{ name: '002', prompt: 'p' }] })
+    stopWatchFolder() // 꺼져 있는 동안 들어온 파일은 다음에 켰을 때 불러온다
+    expect(settle().map((e) => e.file)).toEqual(['b.json'])
+  })
+
+  it('creates the preset named in the JSON, but never from the file name alone', () => {
+    const count = listPresets().length
+    drop('0NURA_D5.json', { scenes: [{ name: '001', prompt: 'p' }] })
+    expect(settle()[0]).toEqual({ file: '0NURA_D5.json', ok: false, reason: 'noPreset' })
+    expect(listPresets()).toHaveLength(count)
     drop(
-      'again.json',
-      '﻿' + JSON.stringify({ preset: ' d5 ', scenes: [{ name: '002', prompt: 'p' }] })
+      '0NURA_D5.json',
+      '\uFEFF' + JSON.stringify({ preset: ' 윤초아 D5 ', scenes: [{ name: '001', prompt: 'p' }] })
     )
-    expect(settle()[0]).toMatchObject({ ok: true, presetId: d5.id, presetCreated: false })
-    expect(listPresets().filter((p) => p.name.toLowerCase() === 'd5')).toHaveLength(1)
+    expect(settle()[0]).toMatchObject({ ok: true, presetName: '윤초아 D5', presetCreated: true })
+    expect(listPresets().filter((p) => p.name === '윤초아 D5')).toHaveLength(1)
   })
 
-  it('moves files it cannot place to the failed folder with a reason, without touching scenes', () => {
+  it('reports files it cannot use once, without touching scenes or files', () => {
     const preset = createPreset('D1')
     createPreset('N1')
-    const presetCount = listPresets().length
-    drop('nothing.json', { scenes: [{ name: '001', prompt: 'p' }] })
     drop('D1_N1.json', { scenes: [{ name: '001', prompt: 'p' }] })
-    drop('D1_broken.json', '{ not json')
-    drop('D1_empty.json', { scenes: [] })
-    const events = settle()
-    expect(events.map((e) => [e.file, e.ok, e.reason])).toEqual([
+    drop('broken.json', '{ not json')
+    drop('empty.json', { preset: 'D1', scenes: [] })
+    drop('settings.json', { theme: 'dark' })
+    expect(settle().map((e) => [e.file, e.ok, e.reason])).toEqual([
+      ['broken.json', false, 'unrecognized'],
       ['D1_N1.json', false, 'ambiguousPreset'],
-      ['D1_broken.json', false, 'unrecognized'],
-      ['D1_empty.json', false, 'empty'],
-      ['nothing.json', false, 'noPreset']
+      ['empty.json', false, 'empty'],
+      ['settings.json', false, 'unrecognized']
     ])
     expect(listScenes(preset)).toHaveLength(0)
-    expect(listPresets()).toHaveLength(presetCount)
-    expect(jsonLeft()).toEqual([])
-    const failed = sub(WATCH_FAILED_DIR)
-    expect(failed.filter((n) => n.endsWith('.json'))).toHaveLength(4)
-    expect(failed.filter((n) => n.endsWith('.json.txt'))).toHaveLength(4)
+    expect(tree().sort()).toEqual(['D1_N1.json', 'broken.json', 'empty.json', 'settings.json'])
+    expect(settle()).toEqual([])
   })
 
-  it('ignores subfolders, other file types, and does nothing while switched off', () => {
+  it('ignores other file types and hidden folders, and does nothing while switched off', () => {
     const preset = createPreset('D1')
-    mkdirSync(join(watchDir, 'D1'))
-    writeFileSync(
-      join(watchDir, 'D1', 'D1.json'),
-      JSON.stringify({ scenes: [{ name: 'x', prompt: 'p' }] })
-    )
-    drop('D1.txt', { scenes: [{ name: 'x', prompt: 'p' }] })
+    const body = { preset: 'D1', scenes: [{ name: 'x', prompt: 'p' }] }
+    drop('D1.txt', body)
+    drop('.git/D1.json', body)
+    drop('node_modules/pkg/package.json', body)
     expect(settle()).toEqual([])
     setWatchFolderEnabled(false)
-    drop('D1.json', { scenes: [{ name: '001', prompt: 'p' }] })
+    drop('D1.json', body)
     expect(settle()).toEqual([])
     expect(listScenes(preset)).toHaveLength(0)
-    expect(jsonLeft()).toEqual(['D1.json'])
-    setWatchFolderEnabled(true)
-    expect(settle()).toHaveLength(1)
-    expect(listScenes(preset)).toHaveLength(1)
   })
 
   it('does nothing when the folder is missing', () => {
-    setWatchFolderDir(join(environment.directory, 'gone'))
+    setWatchFolderDir(join(environment.directory, 'gone'), SINCE)
     expect(settle()).toEqual([])
+  })
+
+  it('writes the preset name into exported scene JSON', async () => {
+    const preset = createPreset('윤초아 D1')
+    createScene(preset, '001')
+    await exportScenesJson(preset)
+    const exported = JSON.parse(readFileSync(environment.exportFile, 'utf-8'))
+    expect(exported.preset).toBe('윤초아 D1')
+    expect(exported.scenes).toHaveLength(1)
   })
 })

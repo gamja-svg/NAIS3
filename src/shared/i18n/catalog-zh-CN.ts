@@ -141,7 +141,7 @@ export const ZH_CN = {
   'ui.markAsChecked': '标记为已确认',
   'ui.customWatchFolder': '监视文件夹',
   'ui.customWatchFolderHint':
-    '放入此文件夹的场景 JSON 会自动导入。同名场景只替换内容，处理过的文件会移到完成/失败子文件夹。',
+    '此文件夹（含子文件夹）中新增或更改的场景 JSON 会自动导入。开启前已有的文件不会被处理，也不会移动或删除文件。目标预设由 JSON 中的 "preset" 决定。',
   'ui.customWatchNotChosen': '未选择文件夹',
   'ui.customWatchChooseFolder': '选择监视文件夹',
   'ui.customWatchImportedValue': '监视文件夹：{0} → {1}（新增 {2} · 更改 {3} · 未变 {4}）',

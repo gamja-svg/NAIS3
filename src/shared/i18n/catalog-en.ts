@@ -142,7 +142,7 @@ export const EN = {
   'ui.markAsChecked': 'Mark as checked',
   'ui.customWatchFolder': 'Watch folder',
   'ui.customWatchFolderHint':
-    'Scene JSON files dropped into this folder are imported automatically. Same-name scenes are updated in place, and processed files move to the done/failed subfolders.',
+    'Scene JSON files that are added or changed in this folder (including subfolders) are imported automatically. Files that were already there are left alone, and nothing is moved or deleted. The target preset comes from "preset" in the JSON.',
   'ui.customWatchNotChosen': 'No folder chosen',
   'ui.customWatchChooseFolder': 'Choose watch folder',
   'ui.customWatchImportedValue':

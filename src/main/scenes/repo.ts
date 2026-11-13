@@ -671,7 +671,13 @@ export async function exportScenesJson(presetId: number): Promise<boolean> {
     width: s.width,
     height: s.height
   }))
-  writeFileSync(result.filePath, JSON.stringify({ version: 1, scenes: data }, null, 2), 'utf-8')
+  // [custom] 프리셋 이름을 같이 적는다 — 감시 폴더가 이 이름으로 넣을 프리셋을 정한다
+  const preset = getPresetName(presetId)
+  writeFileSync(
+    result.filePath,
+    JSON.stringify({ version: 1, ...(preset ? { preset } : {}), scenes: data }, null, 2),
+    'utf-8'
+  )
   return true
 }
 

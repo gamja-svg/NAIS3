@@ -22,7 +22,7 @@ import {
   opusUsagePurchasedPercent
 } from '@shared/anlas'
 import { isLang, LANGUAGES, SUPPORTED_LANGUAGES, type MessageId } from '@shared/i18n'
-import type { NaiAccountInfo } from '@shared/types'
+import type { NaiAccountInfo, WatchFolderConfig } from '@shared/types'
 import discordSvg from '../assets/discord.svg'
 import nais3Logo from '../assets/nais3-logo.svg'
 import { importBackup } from '../lib/backup-import'
@@ -466,6 +466,50 @@ function SaveDirRow({
   )
 }
 
+/** [custom] 감시 폴더 — 켜고 끄기 + 폴더 고르기 */
+function WatchFolderRow(): React.JSX.Element {
+  const t = useT()
+  const [config, setConfig] = useState<WatchFolderConfig>({ enabled: false, dir: '' })
+  useEffect(() => {
+    void window.nais.invoke('custom:watchGet', undefined).then(setConfig)
+  }, [])
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="flex items-center justify-between gap-6">
+        <div className="min-w-0">
+          <p className="text-[13px] text-ink">{t('ui.customWatchFolder')}</p>
+          <p className="text-[11.5px] text-faint">{t('ui.customWatchFolderHint')}</p>
+        </div>
+        <Switch
+          aria-label={t('ui.customWatchFolder')}
+          checked={config.enabled}
+          disabled={!config.dir}
+          onCheckedChange={async (enabled) =>
+            setConfig(await window.nais.invoke('custom:watchSetEnabled', { enabled }))
+          }
+        />
+      </div>
+      <div className="flex w-full min-w-0 items-center gap-1.5 overflow-hidden">
+        <div
+          className="w-0 min-w-0 flex-1 truncate rounded-md border border-line bg-surface-2/60 px-3 py-2 font-mono text-[12px] text-muted"
+          title={config.dir}
+        >
+          {config.dir || t('ui.customWatchNotChosen')}
+        </div>
+        <Button
+          variant="default"
+          className="gap-1"
+          onClick={async () =>
+            setConfig(await window.nais.invoke('custom:watchPickDir', undefined))
+          }
+        >
+          <FolderOpen size={14} /> {t('ui.change')}
+        </Button>
+      </div>
+    </div>
+  )
+}
+
 function StorageSection(): React.JSX.Element {
   const t = useT()
   const [autoSave, setAutoSave] = useBoolSetting('auto_save', true)
@@ -524,6 +568,8 @@ function StorageSection(): React.JSX.Element {
         label={t('ui.sceneSaveFolder')}
         hint={t('ui.organizedUnderThisFolderByPresetSceneName')}
       />
+
+      {window.nais.runtime !== 'browser' && <WatchFolderRow />}
 
       <div className="mt-1 border-t border-line pt-3">
         <p className="text-[13px] text-ink">{t('ui.dataBackup')}</p>

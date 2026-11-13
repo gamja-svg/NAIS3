@@ -1,12 +1,31 @@
 import { create } from 'zustand'
 import { applySceneRequest } from '@shared/scene-request'
 import { toast } from './toast-store'
+import { t } from '../lib/i18n'
 import { recordNav } from '../lib/nav-history'
-import type { GenerationRequest, Scene, SceneCast, SceneImage, ScenePreset } from '@shared/types'
+import type { MessageId } from '@shared/i18n'
+import type {
+  GenerationRequest,
+  Scene,
+  SceneCast,
+  SceneImage,
+  ScenePreset,
+  WatchFolderFailure
+} from '@shared/types'
 import { enabledCharacters, useCharactersStore } from './characters-store'
 import { randomSeed, useGenerationStore } from './generation-store'
 
 export { appendPrompt } from '@shared/scene-request'
+
+// [custom] 감시 폴더 실패 사유 문구
+const WATCH_FAILURE_TEXT: Record<WatchFolderFailure, MessageId> = {
+  unrecognized: 'ui.unrecognizedSceneJson',
+  empty: 'ui.noScenesToImport',
+  noPreset: 'ui.customWatchNoPreset',
+  ambiguousPreset: 'ui.customWatchAmbiguousPreset',
+  tooLarge: 'ui.customWatchTooLarge',
+  readError: 'ui.customWatchReadError'
+}
 
 const PAGE = 80 // 씬 상세 이미지 페이지 크기 (수만 장 대비: 한 번에 전부 로드 금지)
 let reserving = false
@@ -639,9 +658,31 @@ export function bindSceneEvents(): () => void {
     // Reservation-only changes must not increment image counts or replace thumbnails.
     void useScenesStore.getState().load()
   })
+  // [custom] 감시 폴더가 파일을 불러옴 — 결과를 알리고 목록을 다시 읽는다
+  const offWatch = window.nais.on('custom:watchImported', (event) => {
+    if (!event.ok) {
+      const reason = t(WATCH_FAILURE_TEXT[event.reason ?? 'readError'])
+      toast(t('ui.customWatchFailedValue', event.file, reason), 'error')
+      return
+    }
+    toast(
+      t(
+        'ui.customWatchImportedValue',
+        event.file,
+        event.presetName ?? '',
+        event.added ?? 0,
+        event.updated ?? 0,
+        event.unchanged ?? 0
+      ),
+      'success'
+    )
+    const st = useScenesStore.getState()
+    void (event.presetCreated ? st.loadPresets() : Promise.resolve()).then(() => st.load())
+  })
   return () => {
     clearTimeout(timer)
     offImages()
     offReservations()
+    offWatch()
   }
 }

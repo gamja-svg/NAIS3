@@ -872,6 +872,8 @@ async function dispatch(channel: string, rawRequest: unknown): Promise<unknown> 
   if (channel.startsWith('promptPresets:')) return promptPresetsDispatch(channel, request)
   if (channel.startsWith('library:')) return libraryDispatch(channel, request)
 
+  // [custom] 감시 폴더는 데스크톱 전용
+  if (channel.startsWith('custom:watch')) return { enabled: false, dir: '' }
   if (channel === 'settings:getSaveDir') return { dir: 'Browser downloads', isDefault: true }
   if (channel === 'settings:pickSaveDir') return { dir: null }
   if (channel === 'settings:resetSaveDir') return { dir: 'Browser downloads' }

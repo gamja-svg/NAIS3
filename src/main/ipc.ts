@@ -109,6 +109,12 @@ import {
   exportZip
 } from './scenes/repo'
 import {
+  getWatchFolderConfig,
+  setWatchFolderDir,
+  setWatchFolderEnabled,
+  startWatchFolder
+} from './custom/watch-folder'
+import {
   listPromptPresets,
   createPromptPreset,
   updatePromptPreset,
@@ -501,6 +507,21 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
 
   handle('scenes:exportJson', async ({ presetId }) => ({ saved: await exportScenesJson(presetId) }))
   handle('scenes:importJson', ({ presetId }) => importScenesJson(presetId))
+  // [custom] 감시 폴더
+  handle('custom:watchGet', () => getWatchFolderConfig())
+  handle('custom:watchSetEnabled', ({ enabled }) => setWatchFolderEnabled(enabled))
+  handle('custom:watchPickDir', async () => {
+    const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
+    const result = await dialog.showOpenDialog(win, {
+      title: t('ui.customWatchChooseFolder'),
+      properties: ['openDirectory', 'createDirectory']
+    })
+    if (result.canceled || result.filePaths.length === 0) return getWatchFolderConfig()
+    // 처음 고를 때는 바로 켠다 (이미 골라 둔 폴더를 바꿀 때는 켜짐 상태 유지)
+    const first = !getWatchFolderConfig().dir
+    setWatchFolderDir(result.filePaths[0])
+    return first ? setWatchFolderEnabled(true) : getWatchFolderConfig()
+  })
   handle('scenes:exportZip', async ({ presetId }) => ({ count: await exportZip(presetId) }))
 
   handle('settings:get', ({ key }) => ({ value: getSetting(key) }))
@@ -895,5 +916,6 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
   })
 
   bindSceneReservationRecovery(ctx.queue, () => broadcast('scenes:reservationsChanged', {}))
+  startWatchFolder((event) => broadcast('custom:watchImported', event))
   ctx.queue.on('changed', (status) => broadcast('queue:changed', status))
 }

@@ -140,6 +140,19 @@ export const EN = {
   'ui.notGenerated': 'Not generated',
   'ui.showOnlyNotGeneratedValue': 'Show only changed, not yet generated ({0})',
   'ui.markAsChecked': 'Mark as checked',
+  'ui.customWatchFolder': 'Watch folder',
+  'ui.customWatchFolderHint':
+    'Scene JSON files dropped into this folder are imported automatically. Same-name scenes are updated in place, and processed files move to the done/failed subfolders.',
+  'ui.customWatchNotChosen': 'No folder chosen',
+  'ui.customWatchChooseFolder': 'Choose watch folder',
+  'ui.customWatchImportedValue':
+    'Watch folder: {0} → {1} (added {2} · changed {3} · unchanged {4})',
+  'ui.customWatchFailedValue': 'Watch folder: failed to import {0} — {1}',
+  'ui.customWatchNoPreset':
+    'Cannot tell which preset to use. Put the preset name in the file name or add "preset" to the JSON.',
+  'ui.customWatchAmbiguousPreset': 'The file name matches more than one preset.',
+  'ui.customWatchTooLarge': 'The file is too large (over 20MB).',
+  'ui.customWatchReadError': 'Could not read the file.',
   'ui.queuedForCastValue': 'Queued for cast "{0}"',
   'ui.queuedWithSidebarSettings': 'Queued with sidebar settings',
   'ui.deletedCast': 'Deleted cast',

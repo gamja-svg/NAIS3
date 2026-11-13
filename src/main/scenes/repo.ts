@@ -16,7 +16,7 @@ import { getDb } from '../db'
 import { dropMemoryImage, isMemoryPath, libraryRoot, storedThumbnailUrl } from '../images/storage'
 import { t } from '../i18n'
 import { sceneEvents } from './events'
-import { parseSceneImport } from './import-formats'
+import { parseSceneImport, type ImportedScene } from './import-formats'
 
 interface Row {
   id: number
@@ -687,6 +687,23 @@ export async function importScenesJson(
   if (result.canceled || result.filePaths.length === 0) return { count: 0, canceled: true }
   const scenes = parseSceneImport(readFileSync(result.filePaths[0], 'utf-8'))
   if (!scenes) return { count: 0, unrecognized: true }
+  applyImportedScenes(presetId, scenes)
+  return { count: scenes.length }
+}
+
+/** [custom] 불러온 씬을 프리셋에 반영한 결과 (감시 폴더 알림용) */
+export interface ImportApplyResult {
+  added: number
+  updated: number
+  unchanged: number
+}
+
+/**
+ * [custom] 해석이 끝난 씬 목록을 프리셋에 반영한다 — 파일 고르기(importScenesJson)와
+ * 감시 폴더(custom/watch-folder)가 같이 쓴다.
+ */
+export function applyImportedScenes(presetId: number, scenes: ImportedScene[]): ImportApplyResult {
+  const outcome: ImportApplyResult = { added: 0, updated: 0, unchanged: 0 }
   const db = getDb()
   const max = db
     .prepare('SELECT COALESCE(MAX(sort_order), 0) AS m FROM gen_scenes WHERE preset_id = ?')
@@ -727,9 +744,11 @@ export async function importScenesJson(
         ) {
           update.run(next.prompt, next.negative, next.width, next.height, existing.id)
           markSceneChanged(existing.id)
-        }
+          outcome.updated++
+        } else outcome.unchanged++
         continue
       }
+      outcome.added++
       stmt.run(
         presetId,
         name,
@@ -741,7 +760,7 @@ export async function importScenesJson(
       )
     }
   })()
-  return { count: scenes.length }
+  return outcome
 }
 
 type ZipEntry = { file_path: string; name: string }

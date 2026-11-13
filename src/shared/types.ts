@@ -400,6 +400,32 @@ export interface LibraryStack {
 }
 
 /** IPC invoke 채널 계약: 채널명 → (요청, 응답) */
+/** [custom] 감시 폴더 설정 */
+export interface WatchFolderConfig {
+  enabled: boolean
+  /** 비어 있으면 아직 고르지 않음 */
+  dir: string
+}
+
+export type WatchFolderFailure =
+  'unrecognized' | 'empty' | 'noPreset' | 'ambiguousPreset' | 'tooLarge' | 'readError'
+
+/** [custom] 감시 폴더가 파일 하나를 처리한 결과 */
+export interface WatchFolderEvent {
+  file: string
+  ok: boolean
+  reason?: WatchFolderFailure
+  presetId?: number
+  presetName?: string
+  /** JSON의 `preset` 이름으로 프리셋을 새로 만듦 */
+  presetCreated?: boolean
+  added?: number
+  updated?: number
+  unchanged?: number
+  /** 완료/실패 폴더로 옮겼는지 (못 옮기면 같은 내용으로는 다시 처리하지 않음) */
+  moved: boolean
+}
+
 export interface IpcInvokeMap {
   'db:status': { req: void; res: { version: number; path: string } }
   /** 앱 버전 */
@@ -664,6 +690,10 @@ export interface IpcInvokeMap {
   'scenes:openFolder': { req: { sceneId: number }; res: { ok: boolean } }
   /** 씬 JSON 내보내기/불러오기 (파일 다이얼로그, 활성 프리셋 기준) */
   'scenes:exportJson': { req: { presetId: number }; res: { saved: boolean } }
+  /** [custom] 감시 폴더 설정 읽기 / 켜고 끄기 / 폴더 고르기(다이얼로그) */
+  'custom:watchGet': { req: void; res: WatchFolderConfig }
+  'custom:watchSetEnabled': { req: { enabled: boolean }; res: WatchFolderConfig }
+  'custom:watchPickDir': { req: void; res: WatchFolderConfig }
   'scenes:importJson': {
     req: { presetId: number }
     /** unrecognized = 알 수 없는 JSON 형식, canceled = 파일을 고르지 않음 */
@@ -769,6 +799,8 @@ export interface IpcEventMap {
   /** 씬에 새 이미지가 생성됨 (목록/상세 갱신). filePath로 카드 즉시 낙관적 갱신 */
   'scenes:changed': { sceneId: number; filePath: string }
   'scenes:reservationsChanged': Record<string, never>
+  /** [custom] 감시 폴더가 파일 하나를 처리함 */
+  'custom:watchImported': WatchFolderEvent
   /** 바이브 인코딩 완료 — 카드의 인코딩 표시 갱신용 */
   'vibes:encoded': Record<string, never>
   /** 자동 업데이트 상태 (GitHub release) */

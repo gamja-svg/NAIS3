@@ -1,0 +1,108 @@
+diff --git a/src/renderer/src/components/scene-mode.tsx b/src/renderer/src/components/scene-mode.tsx
+index 34b0583b60c819b032c0bb690b95bea658de0133..35b643d7a4abac36661598d5612bf5c202946363 100644
+--- a/src/renderer/src/components/scene-mode.tsx
++++ b/src/renderer/src/components/scene-mode.tsx
+@@ -351,6 +351,7 @@ function SceneGrid(): React.JSX.Element {
+   const setCardOrientation = useScenesStore((s) => s.setCardOrientation)
+   const adjustReserveAll = useScenesStore((s) => s.adjustReserveAll)
+   const clearReserveAll = useScenesStore((s) => s.clearReserveAll)
++  const adjustReserveScenes = useScenesStore((s) => s.adjustReserveScenes)
+   const reorder = useScenesStore((s) => s.reorder)
+   const t = useT()
+ 
+@@ -449,8 +450,18 @@ function SceneGrid(): React.JSX.Element {
+ 
+         <IconBtn
+           icon={<CalendarPlus size={16} />}
+-          tip={t('ui.queue1ForAll')}
+-          onClick={() => void adjustReserveAll(1)}
++          // [custom] 미생성만 보는 중에는 보이는 씬(미생성)에만 예약한다
++          tip={
++            pendingOnly ? t('ui.customQueue1ForPendingValue', pendingCount) : t('ui.queue1ForAll')
++          }
++          onClick={() =>
++            void (pendingOnly
++              ? adjustReserveScenes(
++                  shownScenes.map((s) => s.id),
++                  1
++                )
++              : adjustReserveAll(1))
++          }
+         />
+         <IconBtn
+           icon={<CalendarX size={16} />}
+diff --git a/src/renderer/src/stores/scenes-store.ts b/src/renderer/src/stores/scenes-store.ts
+index 7118b7809eef296f70749df12ee185a936660391..17a481e818478987a4b76f4c1a60959e9d26f961 100644
+--- a/src/renderer/src/stores/scenes-store.ts
++++ b/src/renderer/src/stores/scenes-store.ts
+@@ -96,6 +96,8 @@ interface ScenesState {
+   /** 예약 수 직접 지정 — 배지 숫자를 클릭해 입력 (배치 단위 증감과 달리 입력값 그대로) */
+   setReserve: (id: number, count: number) => Promise<void>
+   adjustReserveAll: (delta: number) => Promise<void>
++  /** [custom] 고른 씬들만 예약 증감 (미생성만 보기에서 '전체 1장 예약'이 쓰는 경로) */
++  adjustReserveScenes: (ids: number[], delta: number) => Promise<void>
+   clearReserveAll: () => Promise<void>
+ 
+   // 편집 모드 일괄
+@@ -352,6 +354,25 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
+     await window.nais.invoke('scenes:setReserves', { id, reserves })
+     void get().refreshReservedTotal()
+   },
++  adjustReserveScenes: async (ids, delta) => {
++    const castId = get().activeCastId
++    const step = delta * (useGenerationStore.getState().batchCount || 1)
++    const wanted = new Set(ids)
++    const changed: { id: number; reserves: Record<string, number> }[] = []
++    set({
++      scenes: get().scenes.map((s) => {
++        if (!wanted.has(s.id)) return s
++        const reserves = { ...s.reserves }
++        const next = Math.max(0, (reserves[castId] ?? 0) + step)
++        if (next > 0) reserves[castId] = next
++        else delete reserves[castId]
++        changed.push({ id: s.id, reserves })
++        return { ...s, reserves, reserveCount: Object.values(reserves).reduce((a, b) => a + b, 0) }
++      })
++    })
++    for (const item of changed) await window.nais.invoke('scenes:setReserves', item)
++    void get().refreshReservedTotal()
++  },
+   adjustReserveAll: async (delta) => {
+     const castId = get().activeCastId
+     const step = delta * (useGenerationStore.getState().batchCount || 1)
+diff --git a/src/shared/i18n/catalog-en.ts b/src/shared/i18n/catalog-en.ts
+index b1b73ae630be6e4723d16d2d892c07f22ef481d3..7eabed31cf7ca5e23c52b43f414eee8883ceb5ab 100644
+--- a/src/shared/i18n/catalog-en.ts
++++ b/src/shared/i18n/catalog-en.ts
+@@ -140,6 +140,7 @@ export const EN = {
+   'ui.notGenerated': 'Not generated',
+   'ui.showOnlyNotGeneratedValue': 'Show only changed, not yet generated ({0})',
+   'ui.markAsChecked': 'Mark as checked',
++  'ui.customQueue1ForPendingValue': 'Queue 1 for the {0} not-yet-generated scene(s) only',
+   'ui.customShowScrollbars': 'Touch / remote mode',
+   'ui.customShowScrollbarsHint':
+     'For remote or touch use without a mouse wheel. Lists show draggable scrollbars and scroll when dragged. Reordering starts only after holding for 3 seconds.',
+diff --git a/src/shared/i18n/catalog-ko.ts b/src/shared/i18n/catalog-ko.ts
+index 9b4be44a49e005100b6fa046a5b3f1e3c02104ea..1f114593b9665538f276ee0b4b4141f9783f0ae6 100644
+--- a/src/shared/i18n/catalog-ko.ts
++++ b/src/shared/i18n/catalog-ko.ts
+@@ -139,6 +139,7 @@ export const KO = {
+   'ui.notGenerated': '미생성',
+   'ui.showOnlyNotGeneratedValue': '변경 후 미생성 씬만 보기 ({0})',
+   'ui.markAsChecked': '확인함 (미생성 표시 끄기)',
++  'ui.customQueue1ForPendingValue': '미생성 씬 {0}개에만 1장씩 예약',
+   'ui.customShowScrollbars': '터치·원격 모드',
+   'ui.customShowScrollbarsHint':
+     '휠을 쓸 수 없는 원격 접속·터치 화면용입니다. 목록에 잡아 끌 수 있는 스크롤바가 보이고, 그냥 끌면 스크롤됩니다. 자리 이동은 3초 이상 누른 뒤 끌어야 시작합니다.',
+diff --git a/src/shared/i18n/catalog-zh-CN.ts b/src/shared/i18n/catalog-zh-CN.ts
+index b1a38dbd2e80e532d17f72a3f8d1a065c14b3665..eff5b7680194879f2035089c0ef694882489e9e7 100644
+--- a/src/shared/i18n/catalog-zh-CN.ts
++++ b/src/shared/i18n/catalog-zh-CN.ts
+@@ -139,6 +139,7 @@ export const ZH_CN = {
+   'ui.notGenerated': '未生成',
+   'ui.showOnlyNotGeneratedValue': '仅显示修改后未生成的场景（{0}）',
+   'ui.markAsChecked': '标记为已确认',
++  'ui.customQueue1ForPendingValue': '仅为 {0} 个未生成的场景各预约 1 张',
+   'ui.customShowScrollbars': '触屏/远程模式',
+   'ui.customShowScrollbarsHint':
+     '适用于无法使用滚轮的远程或触屏操作。列表显示可拖动的滚动条，直接拖动即可滚动。按住 3 秒后再拖动才会调整顺序。',

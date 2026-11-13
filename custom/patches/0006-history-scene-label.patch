@@ -1,0 +1,148 @@
+diff --git a/src/main/images/storage.ts b/src/main/images/storage.ts
+index ee6e8e79407f9669a37a0b7569f008f14d2028b8..600b0743ebedaae9b64900cca151cf799b278020 100644
+--- a/src/main/images/storage.ts
++++ b/src/main/images/storage.ts
+@@ -329,8 +329,13 @@ export function listImages(limit: number, offset: number): { items: HistoryItem[
+   const total = (db.prepare('SELECT COUNT(*) AS c FROM images').get() as { c: number }).c
+   const rows = db
+     .prepare(
+-      `SELECT id, file_path, length(thumbnail) AS thumb_size, kind, seed, created_at
+-       FROM images ORDER BY id DESC LIMIT ? OFFSET ?`
++      // [custom] 씬 이미지는 씬·프리셋 이름을 같이 읽는다 (히스토리에 출처 표시)
++      `SELECT i.id, i.file_path, length(i.thumbnail) AS thumb_size, i.kind, i.seed, i.created_at,
++              s.name AS scene_name, p.name AS preset_name
++       FROM images i
++       LEFT JOIN gen_scenes s ON s.id = i.scene_id
++       LEFT JOIN scene_presets p ON p.id = s.preset_id
++       ORDER BY i.id DESC LIMIT ? OFFSET ?`
+     )
+     .all(limit, offset) as {
+     id: number
+@@ -339,6 +344,8 @@ export function listImages(limit: number, offset: number): { items: HistoryItem[
+     kind: string
+     seed: number | null
+     created_at: string
++    scene_name: string | null
++    preset_name: string | null
+   }[]
+ 
+   return {
+@@ -349,7 +356,9 @@ export function listImages(limit: number, offset: number): { items: HistoryItem[
+       thumbnailUrl: storedThumbnailUrl('image', r.id, r.created_at, r.thumb_size),
+       kind: r.kind,
+       seed: r.seed,
+-      createdAt: r.created_at
++      createdAt: r.created_at,
++      sceneName: r.scene_name,
++      presetName: r.preset_name
+     }))
+   }
+ }
+diff --git a/src/renderer/src/components/history-panel.tsx b/src/renderer/src/components/history-panel.tsx
+index 86617ab227f4070f436ab1556c5f2d7052cb9ff2..368bebfd339daccbd47d00e3c4d89e05dfc416a6 100644
+--- a/src/renderer/src/components/history-panel.tsx
++++ b/src/renderer/src/components/history-panel.tsx
+@@ -74,7 +74,11 @@ export function HistoryPanel(): React.JSX.Element {
+                     'group relative aspect-square overflow-hidden rounded-md border border-line bg-paper transition-all',
+                     viewingFilePath === item.filePath && 'ring-2 ring-accent'
+                   )}
+-                  title={`seed ${item.seed ?? '?'}`}
++                  title={
++                    item.sceneName != null
++                      ? `${item.presetName ?? ''} · ${item.sceneName}\nseed ${item.seed ?? '?'}`
++                      : `seed ${item.seed ?? '?'}`
++                  }
+                   onClick={() => {
+                     view(item.filePath)
+                     setCenterMode('main') // 씬/디렉터 페이지에서도 클릭 시 메인으로 이동해 원본 표시
+@@ -95,6 +99,17 @@ export function HistoryPanel(): React.JSX.Element {
+                       alt=""
+                     />
+                   )}
++                  {/* [custom] 씬 이미지의 출처 — 프리셋 이름 / 씬 이름 */}
++                  {item.sceneName != null && (
++                    <span className="pointer-events-none absolute inset-x-0 bottom-0 flex flex-col bg-gradient-to-t from-black/80 via-black/55 to-transparent pb-1 pl-8 pr-2 pt-5 text-left text-white">
++                      <span className="truncate text-[10.5px] leading-tight opacity-85">
++                        {item.presetName ?? ''}
++                      </span>
++                      <span className="truncate text-[12.5px] font-semibold leading-tight">
++                        {item.sceneName}
++                      </span>
++                    </span>
++                  )}
+                   <KindBadge kind={item.kind} />
+                   {/* 호버 삭제 — 기록만 삭제 (파일 보존) */}
+                   <span
+diff --git a/src/shared/types.ts b/src/shared/types.ts
+index b053892d484d145543993401ef631547a9d93432..c8b50fd1dd9e4858592ece72cc76f64a38b97536 100644
+--- a/src/shared/types.ts
++++ b/src/shared/types.ts
+@@ -221,6 +221,9 @@ export interface HistoryItem {
+   kind: string
+   seed: number | null
+   createdAt: string
++  /** [custom] 씬 모드로 만든 이미지면 그 씬·프리셋 이름 (씬이 지워졌거나 씬 이미지가 아니면 없음) */
++  sceneName?: string | null
++  presetName?: string | null
+ }
+ 
+ /** 디렉터 툴 (augment-image req_type) */
+diff --git a/tests/custom-history-scene.integration.ts b/tests/custom-history-scene.integration.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..46b8ca759df2a9a0a3803387b560daf2bd019011
+--- /dev/null
++++ b/tests/custom-history-scene.integration.ts
+@@ -0,0 +1,53 @@
++import { mkdtempSync, rmSync } from 'fs'
++import { tmpdir } from 'os'
++import { join } from 'path'
++import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
++import { closeDb, getDb, initDb } from '../src/main/db'
++import { listImages } from '../src/main/images/storage'
++import { createPreset, createScene, deleteScene } from '../src/main/scenes/repo'
++
++// [custom] 히스토리 항목에 씬·프리셋 이름이 같이 온다
++const environment = vi.hoisted(() => ({ directory: '' }))
++vi.mock('electron', () => ({
++  app: { getPath: () => environment.directory, getLocale: () => 'ko' },
++  BrowserWindow: { getFocusedWindow: () => null, getAllWindows: () => [] },
++  dialog: {}
++}))
++
++beforeEach(() => {
++  environment.directory = mkdtempSync(join(tmpdir(), 'nais3-custom-history-'))
++  initDb()
++})
++afterEach(() => {
++  closeDb()
++  rmSync(environment.directory, { recursive: true, force: true })
++})
++
++function addImage(name: string, sceneId: number | null): void {
++  getDb()
++    .prepare(`INSERT INTO images (file_path, payload_json, kind, scene_id) VALUES (?, '{}', ?, ?)`)
++    .run(join(environment.directory, name), sceneId == null ? 't2i' : 'scene', sceneId)
++}
++
++describe('custom: history shows where a scene image came from', () => {
++  it('returns the preset and scene name for scene images, and nothing for others', () => {
++    const preset = createPreset('윤초아 D3 v16')
++    const scene = createScene(preset, '42')
++    addImage('plain.png', null)
++    addImage('scene.png', scene)
++    const { items, total } = listImages(10, 0)
++    expect(total).toBe(2)
++    expect(items.map((i) => [i.kind, i.presetName, i.sceneName])).toEqual([
++      ['scene', '윤초아 D3 v16', '42'],
++      ['t2i', null, null]
++    ])
++  })
++
++  it('drops the names once the scene is deleted', () => {
++    const scene = createScene(createPreset('P'), 'gone')
++    addImage('scene.png', scene)
++    deleteScene(scene)
++    const { items } = listImages(10, 0)
++    expect(items.every((i) => i.sceneName == null && i.presetName == null)).toBe(true)
++  })
++})

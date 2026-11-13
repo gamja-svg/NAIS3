@@ -221,6 +221,9 @@ export interface HistoryItem {
   kind: string
   seed: number | null
   createdAt: string
+  /** [custom] 씬 모드로 만든 이미지면 그 씬·프리셋 이름 (씬이 지워졌거나 씬 이미지가 아니면 없음) */
+  sceneName?: string | null
+  presetName?: string | null
 }
 
 /** 디렉터 툴 (augment-image req_type) */

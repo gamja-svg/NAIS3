@@ -74,7 +74,11 @@ export function HistoryPanel(): React.JSX.Element {
                     'group relative aspect-square overflow-hidden rounded-md border border-line bg-paper transition-all',
                     viewingFilePath === item.filePath && 'ring-2 ring-accent'
                   )}
-                  title={`seed ${item.seed ?? '?'}`}
+                  title={
+                    item.sceneName != null
+                      ? `${item.presetName ?? ''} · ${item.sceneName}\nseed ${item.seed ?? '?'}`
+                      : `seed ${item.seed ?? '?'}`
+                  }
                   onClick={() => {
                     view(item.filePath)
                     setCenterMode('main') // 씬/디렉터 페이지에서도 클릭 시 메인으로 이동해 원본 표시
@@ -94,6 +98,17 @@ export function HistoryPanel(): React.JSX.Element {
                       }}
                       alt=""
                     />
+                  )}
+                  {/* [custom] 씬 이미지의 출처 — 프리셋 이름 / 씬 이름 */}
+                  {item.sceneName != null && (
+                    <span className="pointer-events-none absolute inset-x-0 bottom-0 flex flex-col bg-gradient-to-t from-black/80 via-black/55 to-transparent pb-1 pl-8 pr-2 pt-5 text-left text-white">
+                      <span className="truncate text-[10.5px] leading-tight opacity-85">
+                        {item.presetName ?? ''}
+                      </span>
+                      <span className="truncate text-[12.5px] font-semibold leading-tight">
+                        {item.sceneName}
+                      </span>
+                    </span>
                   )}
                   <KindBadge kind={item.kind} />
                   {/* 호버 삭제 — 기록만 삭제 (파일 보존) */}

@@ -329,8 +329,13 @@ export function listImages(limit: number, offset: number): { items: HistoryItem[
   const total = (db.prepare('SELECT COUNT(*) AS c FROM images').get() as { c: number }).c
   const rows = db
     .prepare(
-      `SELECT id, file_path, length(thumbnail) AS thumb_size, kind, seed, created_at
-       FROM images ORDER BY id DESC LIMIT ? OFFSET ?`
+      // [custom] 씬 이미지는 씬·프리셋 이름을 같이 읽는다 (히스토리에 출처 표시)
+      `SELECT i.id, i.file_path, length(i.thumbnail) AS thumb_size, i.kind, i.seed, i.created_at,
+              s.name AS scene_name, p.name AS preset_name
+       FROM images i
+       LEFT JOIN gen_scenes s ON s.id = i.scene_id
+       LEFT JOIN scene_presets p ON p.id = s.preset_id
+       ORDER BY i.id DESC LIMIT ? OFFSET ?`
     )
     .all(limit, offset) as {
     id: number
@@ -339,6 +344,8 @@ export function listImages(limit: number, offset: number): { items: HistoryItem[
     kind: string
     seed: number | null
     created_at: string
+    scene_name: string | null
+    preset_name: string | null
   }[]
 
   return {
@@ -349,7 +356,9 @@ export function listImages(limit: number, offset: number): { items: HistoryItem[
       thumbnailUrl: storedThumbnailUrl('image', r.id, r.created_at, r.thumb_size),
       kind: r.kind,
       seed: r.seed,
-      createdAt: r.created_at
+      createdAt: r.created_at,
+      sceneName: r.scene_name,
+      presetName: r.preset_name
     }))
   }
 }

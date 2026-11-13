@@ -139,6 +139,7 @@ export const KO = {
   'ui.notGenerated': '미생성',
   'ui.showOnlyNotGeneratedValue': '변경 후 미생성 씬만 보기 ({0})',
   'ui.markAsChecked': '확인함 (미생성 표시 끄기)',
+  'ui.customQueue1ForPendingValue': '미생성 씬 {0}개에만 1장씩 예약',
   'ui.customShowScrollbars': '터치·원격 모드',
   'ui.customShowScrollbarsHint':
     '휠을 쓸 수 없는 원격 접속·터치 화면용입니다. 목록에 잡아 끌 수 있는 스크롤바가 보이고, 그냥 끌면 스크롤됩니다. 자리 이동은 3초 이상 누른 뒤 끌어야 시작합니다.',

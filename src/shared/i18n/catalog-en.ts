@@ -140,6 +140,7 @@ export const EN = {
   'ui.notGenerated': 'Not generated',
   'ui.showOnlyNotGeneratedValue': 'Show only changed, not yet generated ({0})',
   'ui.markAsChecked': 'Mark as checked',
+  'ui.customQueue1ForPendingValue': 'Queue 1 for the {0} not-yet-generated scene(s) only',
   'ui.customShowScrollbars': 'Touch / remote mode',
   'ui.customShowScrollbarsHint':
     'For remote or touch use without a mouse wheel. Lists show draggable scrollbars and scroll when dragged. Reordering starts only after holding for 3 seconds.',

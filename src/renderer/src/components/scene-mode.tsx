@@ -351,6 +351,7 @@ function SceneGrid(): React.JSX.Element {
   const setCardOrientation = useScenesStore((s) => s.setCardOrientation)
   const adjustReserveAll = useScenesStore((s) => s.adjustReserveAll)
   const clearReserveAll = useScenesStore((s) => s.clearReserveAll)
+  const adjustReserveScenes = useScenesStore((s) => s.adjustReserveScenes)
   const reorder = useScenesStore((s) => s.reorder)
   const t = useT()
 
@@ -449,8 +450,18 @@ function SceneGrid(): React.JSX.Element {
 
         <IconBtn
           icon={<CalendarPlus size={16} />}
-          tip={t('ui.queue1ForAll')}
-          onClick={() => void adjustReserveAll(1)}
+          // [custom] 미생성만 보는 중에는 보이는 씬(미생성)에만 예약한다
+          tip={
+            pendingOnly ? t('ui.customQueue1ForPendingValue', pendingCount) : t('ui.queue1ForAll')
+          }
+          onClick={() =>
+            void (pendingOnly
+              ? adjustReserveScenes(
+                  shownScenes.map((s) => s.id),
+                  1
+                )
+              : adjustReserveAll(1))
+          }
         />
         <IconBtn
           icon={<CalendarX size={16} />}

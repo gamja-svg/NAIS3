@@ -96,6 +96,8 @@ interface ScenesState {
   /** 예약 수 직접 지정 — 배지 숫자를 클릭해 입력 (배치 단위 증감과 달리 입력값 그대로) */
   setReserve: (id: number, count: number) => Promise<void>
   adjustReserveAll: (delta: number) => Promise<void>
+  /** [custom] 고른 씬들만 예약 증감 (미생성만 보기에서 '전체 1장 예약'이 쓰는 경로) */
+  adjustReserveScenes: (ids: number[], delta: number) => Promise<void>
   clearReserveAll: () => Promise<void>
 
   // 편집 모드 일괄
@@ -350,6 +352,25 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
       scenes: get().scenes.map((s) => (s.id === id ? { ...s, reserves, reserveCount } : s))
     })
     await window.nais.invoke('scenes:setReserves', { id, reserves })
+    void get().refreshReservedTotal()
+  },
+  adjustReserveScenes: async (ids, delta) => {
+    const castId = get().activeCastId
+    const step = delta * (useGenerationStore.getState().batchCount || 1)
+    const wanted = new Set(ids)
+    const changed: { id: number; reserves: Record<string, number> }[] = []
+    set({
+      scenes: get().scenes.map((s) => {
+        if (!wanted.has(s.id)) return s
+        const reserves = { ...s.reserves }
+        const next = Math.max(0, (reserves[castId] ?? 0) + step)
+        if (next > 0) reserves[castId] = next
+        else delete reserves[castId]
+        changed.push({ id: s.id, reserves })
+        return { ...s, reserves, reserveCount: Object.values(reserves).reduce((a, b) => a + b, 0) }
+      })
+    })
+    for (const item of changed) await window.nais.invoke('scenes:setReserves', item)
     void get().refreshReservedTotal()
   },
   adjustReserveAll: async (delta) => {

@@ -140,6 +140,9 @@ export const EN = {
   'ui.notGenerated': 'Not generated',
   'ui.showOnlyNotGeneratedValue': 'Show only changed, not yet generated ({0})',
   'ui.markAsChecked': 'Mark as checked',
+  'ui.customShowScrollbars': 'Show scrollbars',
+  'ui.customShowScrollbarsHint':
+    'Shows draggable scrollbars next to lists, for remote or touch use where there is no mouse wheel.',
   'ui.customWatchFolder': 'Watch folder',
   'ui.customWatchFolderHint':
     'Scene JSON files that are added or changed in this folder (including subfolders) are imported automatically. Files that were already there are left alone, and nothing is moved or deleted. The target preset comes from "preset" in the JSON.',

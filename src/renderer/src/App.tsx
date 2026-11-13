@@ -31,6 +31,7 @@ import { useLanguageStore } from './lib/i18n'
 import { cn } from './lib/utils'
 import { useLayoutStore } from './stores/layout-store'
 import { useThemeStore } from './stores/theme-store'
+import { hydrateShowScrollbars } from './lib/custom-scrollbars'
 
 // 새 설치 첫 실행에만 뜨므로 평소 실행에선 읽지 않는다
 const Onboarding = lazy(() =>
@@ -78,7 +79,8 @@ export default function App(): React.JSX.Element {
         useVibesStore.getState().load(),
         useCharRefsStore.getState().load(),
         useShortcutsStore.getState().hydrate(),
-        useDirectorStore.getState().hydrate()
+        useDirectorStore.getState().hydrate(),
+        hydrateShowScrollbars()
       ])
       // 스플래시가 너무 순식간에 사라지지 않게 최소 표시 시간 확보
       setTimeout(() => setReady(true), 350)

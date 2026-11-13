@@ -139,6 +139,9 @@ export const KO = {
   'ui.notGenerated': '미생성',
   'ui.showOnlyNotGeneratedValue': '변경 후 미생성 씬만 보기 ({0})',
   'ui.markAsChecked': '확인함 (미생성 표시 끄기)',
+  'ui.customShowScrollbars': '스크롤바 표시',
+  'ui.customShowScrollbarsHint':
+    '목록 옆에 잡아 끌 수 있는 스크롤바를 보여 줍니다. 휠을 쓸 수 없는 원격 접속·터치 화면용입니다.',
   'ui.customWatchFolder': '감시 폴더',
   'ui.customWatchFolderHint':
     '이 폴더(하위 폴더 포함)에 씬 JSON이 새로 생기거나 바뀌면 자동으로 불러옵니다. 켜기 전부터 있던 파일은 건드리지 않고, 파일을 옮기거나 지우지 않습니다. 넣을 프리셋은 JSON의 "preset" 이름으로 정합니다.',

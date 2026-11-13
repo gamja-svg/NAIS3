@@ -58,6 +58,7 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select'
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip'
+import { useSortActivation } from '../lib/custom-touch-mode'
 
 export function SceneMode(): React.JSX.Element {
   const scenes = useScenesStore((s) => s.scenes)
@@ -365,7 +366,10 @@ function SceneGrid(): React.JSX.Element {
 
   // 드래그 재정렬 (5px 이동해야 시작 — 클릭과 구분).
   // DragOverlay 사용: 드래그 중엔 가벼운 클론이 커서를 따라가고 원본은 숨겨 프레임 저하 방지
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }))
+  const sensors = useSensors(
+    // [custom] 터치·원격 모드에서는 길게 누른 뒤에만 자리 이동 시작
+    useSensor(PointerSensor, { activationConstraint: useSortActivation(5) })
+  )
   const [dragScene, setDragScene] = useState<Scene | null>(null)
   // [custom] 변경 후 미생성 씬만 보기. 걸러 보는 동안에는 순서 바꾸기를 막는다 (부분 목록 기준 재정렬 방지)
   const [pendingOnly, setPendingOnly] = useState(false)

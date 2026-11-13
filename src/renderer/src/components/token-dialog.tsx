@@ -53,7 +53,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Slider } from './ui/slider'
 import { Switch } from './ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs'
-import { SHOW_SCROLLBARS_KEY, applyShowScrollbars } from '../lib/custom-scrollbars'
+import { TOUCH_MODE_KEY, applyTouchMode } from '../lib/custom-touch-mode'
 
 type SectionId = 'appearance' | 'generation' | 'storage' | 'shortcuts' | 'account' | 'about'
 
@@ -98,7 +98,7 @@ function AppearanceSection(): React.JSX.Element {
   const setUiSize = useThemeStore((s) => s.setUiSize)
   const promptSize = useThemeStore((s) => s.promptSize)
   const setPromptSize = useThemeStore((s) => s.setPromptSize)
-  const [showScrollbars, setShowScrollbars] = useBoolSetting(SHOW_SCROLLBARS_KEY, false)
+  const [showScrollbars, setShowScrollbars] = useBoolSetting(TOUCH_MODE_KEY, false)
 
   return (
     <div className="divide-y divide-line">
@@ -178,7 +178,7 @@ function AppearanceSection(): React.JSX.Element {
           checked={showScrollbars}
           onCheckedChange={(on) => {
             setShowScrollbars(on)
-            applyShowScrollbars(on)
+            applyTouchMode(on)
           }}
         />
       </Row>

@@ -139,8 +139,9 @@ export const ZH_CN = {
   'ui.notGenerated': '未生成',
   'ui.showOnlyNotGeneratedValue': '仅显示修改后未生成的场景（{0}）',
   'ui.markAsChecked': '标记为已确认',
-  'ui.customShowScrollbars': '显示滚动条',
-  'ui.customShowScrollbarsHint': '在列表旁显示可拖动的滚动条，适用于无法使用滚轮的远程或触屏操作。',
+  'ui.customShowScrollbars': '触屏/远程模式',
+  'ui.customShowScrollbarsHint':
+    '适用于无法使用滚轮的远程或触屏操作。列表显示可拖动的滚动条，直接拖动即可滚动。按住 3 秒后再拖动才会调整顺序。',
   'ui.customWatchFolder': '监视文件夹',
   'ui.customWatchFolderHint':
     '此文件夹（含子文件夹）中新增或更改的场景 JSON 会自动导入。开启前已有的文件不会被处理，也不会移动或删除文件。目标预设由 JSON 中的 "preset" 决定。',

@@ -31,7 +31,7 @@ import { useLanguageStore } from './lib/i18n'
 import { cn } from './lib/utils'
 import { useLayoutStore } from './stores/layout-store'
 import { useThemeStore } from './stores/theme-store'
-import { hydrateShowScrollbars } from './lib/custom-scrollbars'
+import { bindDragScroll, hydrateTouchMode } from './lib/custom-touch-mode'
 
 // 새 설치 첫 실행에만 뜨므로 평소 실행에선 읽지 않는다
 const Onboarding = lazy(() =>
@@ -80,7 +80,7 @@ export default function App(): React.JSX.Element {
         useCharRefsStore.getState().load(),
         useShortcutsStore.getState().hydrate(),
         useDirectorStore.getState().hydrate(),
-        hydrateShowScrollbars()
+        hydrateTouchMode()
       ])
       // 스플래시가 너무 순식간에 사라지지 않게 최소 표시 시간 확보
       setTimeout(() => setReady(true), 350)
@@ -90,6 +90,7 @@ export default function App(): React.JSX.Element {
     const unbindKeys = bindShortcuts()
     const unbindUpdate = bindUpdateEvents()
     const unbindNav = bindNavMouse() // 마우스 4/5번 버튼 뒤로/앞으로
+    const unbindDragScroll = bindDragScroll() // [custom] 터치·원격 모드: 끌어서 스크롤
     // F5 새로고침 (프로덕션에서도)
     const onF5 = (e: KeyboardEvent): void => {
       if (e.key === 'F5') {
@@ -99,6 +100,7 @@ export default function App(): React.JSX.Element {
     }
     window.addEventListener('keydown', onF5)
     return () => {
+      unbindDragScroll()
       unbindGen()
       unbindScene()
       unbindKeys()

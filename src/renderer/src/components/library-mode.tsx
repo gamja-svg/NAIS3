@@ -48,6 +48,7 @@ import {
   ContextMenuTrigger
 } from './ui/context-menu'
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip'
+import { useSortActivation } from '../lib/custom-touch-mode'
 
 /**
  * 라이브러리 — 사용자가 직접 모아두는 큐레이션 컬렉션 (NAIS2 라이브러리 이식).
@@ -108,7 +109,10 @@ export function LibraryMode(): React.JSX.Element {
   const sentinelRef = useRef<HTMLDivElement>(null)
 
   // 드래그 재정렬 (5px 이동해야 시작 — 클릭과 구분). DragOverlay 클론 방식은 씬 그리드와 동일
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }))
+  const sensors = useSensors(
+    // [custom] 터치·원격 모드에서는 길게 누른 뒤에만 자리 이동 시작
+    useSensor(PointerSensor, { activationConstraint: useSortActivation(5) })
+  )
   const [dragImg, setDragImg] = useState<LibraryImage | null>(null)
   const onDragStart = (e: DragStartEvent): void => {
     setDragImg(images.find((i) => `img-${i.id}` === e.active.id) ?? null)

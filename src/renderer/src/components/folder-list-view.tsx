@@ -31,6 +31,7 @@ import {
 import { Button } from './ui/button'
 import { Input } from './ui/input'
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover'
+import { useSortActivation } from '../lib/custom-touch-mode'
 
 /**
  * 캐릭터/조각 공용 폴더 리스트 뷰.
@@ -439,7 +440,10 @@ export function FolderListView<T extends FolderListItem>({
   renderKey?: unknown
 }): React.JSX.Element {
   const grid = renderTile != null && columns != null
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }))
+  const sensors = useSensors(
+    // [custom] 터치·원격 모드에서는 길게 누른 뒤에만 자리 이동 시작
+    useSensor(PointerSensor, { activationConstraint: useSortActivation(5) })
+  )
   // 폴더 드래그 중엔 소속 카드를 임시로 접는다 — "따라오는지 애매한" UX 제거
   const [draggingFolderId, setDraggingFolderId] = useState<number | null>(null)
 

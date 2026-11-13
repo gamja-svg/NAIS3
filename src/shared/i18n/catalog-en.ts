@@ -140,9 +140,9 @@ export const EN = {
   'ui.notGenerated': 'Not generated',
   'ui.showOnlyNotGeneratedValue': 'Show only changed, not yet generated ({0})',
   'ui.markAsChecked': 'Mark as checked',
-  'ui.customShowScrollbars': 'Show scrollbars',
+  'ui.customShowScrollbars': 'Touch / remote mode',
   'ui.customShowScrollbarsHint':
-    'Shows draggable scrollbars next to lists, for remote or touch use where there is no mouse wheel.',
+    'For remote or touch use without a mouse wheel. Lists show draggable scrollbars and scroll when dragged. Reordering starts only after holding for 3 seconds.',
   'ui.customWatchFolder': 'Watch folder',
   'ui.customWatchFolderHint':
     'Scene JSON files that are added or changed in this folder (including subfolders) are imported automatically. Files that were already there are left alone, and nothing is moved or deleted. The target preset comes from "preset" in the JSON.',

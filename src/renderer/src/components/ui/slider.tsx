@@ -10,6 +10,8 @@ export function Slider({
 }: ComponentProps<typeof SliderPrimitive.Root>) {
   return (
     <SliderPrimitive.Root
+      // [custom] 터치·원격 모드의 끌어서 스크롤이 슬라이더 조작을 가로채지 않게
+      data-no-drag-scroll=""
       className={cn(
         'relative flex w-full touch-none select-none items-center data-[disabled]:cursor-not-allowed data-[disabled]:opacity-50',
         className

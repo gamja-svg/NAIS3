@@ -26,27 +26,56 @@ export async function prepareVibes(
   for (const row of rows) {
     let encoded = getVibeEncoding(row.encoded, row.encodedIe, model, row.infoExtracted)
     if (!encoded) {
-      const res = await fetch(ENDPOINTS.encodeVibe, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token.trim()}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          image: readFileSync(row.filePath).toString('base64'),
-          information_extracted: row.infoExtracted,
-          model
-        })
-      })
-      if (!res.ok) {
-        const text = await res.text().catch(() => '')
-        throw new Error(t('ui.vibeEncodingFailedValueValue', res.status, text.slice(0, 200)))
+      // [custom] 여러 계정이 동시에 생성할 때 같은 바이브를 각자 인코딩(계정마다 2 Anlas)하지 않게,
+      // 진행 중인 인코딩이 있으면 그 결과를 같이 쓴다
+      const key = `${row.id}|${model}|${row.infoExtracted}`
+      let pending = vibeEncodingsInFlight.get(key)
+      const mine = !pending
+      if (!pending) {
+        pending = encodeVibe(token, row, model).finally(() => vibeEncodingsInFlight.delete(key))
+        vibeEncodingsInFlight.set(key, pending)
       }
-      encoded = Buffer.from(await res.arrayBuffer()).toString('base64')
-      const packed = putVibeEncoding(row.encoded, row.encodedIe, model, row.infoExtracted, encoded)
-      saveVibeEncoding(row.id, packed, row.infoExtracted)
-      newlyEncoded.push(row.id)
+      encoded = await pending
+      if (mine) newlyEncoded.push(row.id)
     }
     vibes.push({ strength: row.strength, encodedVibeBase64: encoded })
   }
   return { vibes, newlyEncoded }
+}
+
+/** [custom] 바이브 id·모델·ie별로 진행 중인 인코딩 */
+const vibeEncodingsInFlight = new Map<string, Promise<string>>()
+
+async function encodeVibe(
+  token: string,
+  row: { id: number; filePath: string; infoExtracted: number },
+  model: string
+): Promise<string> {
+  const res = await fetch(ENDPOINTS.encodeVibe, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token.trim()}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      image: readFileSync(row.filePath).toString('base64'),
+      information_extracted: row.infoExtracted,
+      model
+    })
+  })
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    throw new Error(t('ui.vibeEncodingFailedValueValue', res.status, text.slice(0, 200)))
+  }
+  const encoded = Buffer.from(await res.arrayBuffer()).toString('base64')
+  // [custom] 기다리는 사이 다른 계정이 다른 모델 인코딩을 저장했을 수 있으니 지금 값에 더해 저장한다
+  const latest = vibeRowsByIds([row.id])[0]
+  const packed = putVibeEncoding(
+    latest?.encoded ?? null,
+    latest?.encodedIe ?? null,
+    model,
+    row.infoExtracted,
+    encoded
+  )
+  saveVibeEncoding(row.id, packed, row.infoExtracted)
+  return encoded
 }
 
 /**

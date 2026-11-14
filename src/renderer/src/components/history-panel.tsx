@@ -1,4 +1,4 @@
-import { History, Trash2 } from 'lucide-react'
+import { History, LocateFixed, Trash2 } from 'lucide-react'
 import { thumbnailFallback } from '../lib/constants'
 import { cn } from '../lib/utils'
 import { useT } from '../lib/i18n'
@@ -8,6 +8,8 @@ import { useLayoutStore } from '../stores/layout-store'
 import { askConfirm } from '../stores/dialog-store'
 import { toast } from '../stores/toast-store'
 import { ImageContextMenu } from './image-context-menu'
+import { ContextMenuItem, ContextMenuSeparator } from './ui/context-menu'
+import { useScenesStore } from '../stores/scenes-store'
 
 export function HistoryPanel(): React.JSX.Element {
   const t = useT()
@@ -17,6 +19,7 @@ export function HistoryPanel(): React.JSX.Element {
   const view = useGenerationStore((s) => s.view)
   const refreshHistory = useGenerationStore((s) => s.refreshHistory)
   const setCenterMode = useLayoutStore((s) => s.setCenterMode)
+  const goToScene = useScenesStore((s) => s.goToScene)
 
   const deleteOne = async (id: number, filePath: string): Promise<void> => {
     await window.nais.invoke('images:delete', { id })
@@ -68,6 +71,20 @@ export function HistoryPanel(): React.JSX.Element {
                 key={item.id}
                 filePath={item.filePath}
                 onDelete={() => void deleteOne(item.id, item.filePath)}
+                extra={
+                  // [custom] 이 이미지를 만든 씬이 있는 곳으로 이동
+                  item.sceneId != null && item.presetId != null ? (
+                    <>
+                      <ContextMenuSeparator />
+                      <ContextMenuItem
+                        onSelect={() => void goToScene(item.presetId!, item.sceneId!)}
+                      >
+                        <LocateFixed size={13} className="text-hue-emerald" />{' '}
+                        {t('ui.customGoToScene')}
+                      </ContextMenuItem>
+                    </>
+                  ) : undefined
+                }
               >
                 <button
                   className={cn(

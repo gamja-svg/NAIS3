@@ -186,6 +186,22 @@ export interface ListFolder {
 }
 export type CharacterFolder = ListFolder
 
+/** [custom] 상위 폴더 — 폴더 여러 개를 묶는다 (지금은 캐릭터 프롬프트만) */
+export type FolderGroupKind = 'chars'
+export interface FolderGroup {
+  id: number
+  name: string
+  collapsed: boolean
+  /** 구분용 색 (hex). null = 기본 */
+  color: string | null
+}
+export type FolderGroupPatch = Partial<Pick<FolderGroup, 'name' | 'collapsed' | 'color'>>
+/** 폴더가 어느 상위 폴더에 들어 있는지 (없으면 상위 폴더 밖) */
+export interface FolderGroupLink {
+  folderId: number
+  groupId: number
+}
+
 /** 무채색 테마에 어울리는 채도 낮은 폴더 색 프리셋 */
 export const FOLDER_COLORS = [
   '#c47a72', // red
@@ -224,6 +240,8 @@ export interface HistoryItem {
   /** [custom] 씬 모드로 만든 이미지면 그 씬·프리셋 이름 (씬이 지워졌거나 씬 이미지가 아니면 없음) */
   sceneName?: string | null
   presetName?: string | null
+  sceneId?: number | null
+  presetId?: number | null
 }
 
 /** 디렉터 툴 (augment-image req_type) */
@@ -514,6 +532,21 @@ export interface IpcInvokeMap {
   'chars:clearThumbnail': { req: { id: number }; res: void }
   'chars:reorder': { req: { order: CharacterOrderEntry[] }; res: void }
   'chars:folderCreate': { req: { name: string }; res: { id: number } }
+  /** [custom] 상위 폴더 */
+  'custom:folderGroups:list': {
+    req: { kind: FolderGroupKind }
+    res: { groups: FolderGroup[]; links: FolderGroupLink[] }
+  }
+  'custom:folderGroups:create': {
+    req: { kind: FolderGroupKind; name: string }
+    res: { id: number }
+  }
+  'custom:folderGroups:update': { req: { id: number; patch: FolderGroupPatch }; res: void }
+  'custom:folderGroups:delete': { req: { id: number }; res: void }
+  'custom:folderGroups:arrange': {
+    req: { kind: FolderGroupKind; groupIds: number[]; links: FolderGroupLink[] }
+    res: void
+  }
   'chars:folderRename': { req: { id: number; name: string }; res: void }
   'chars:folderCollapse': { req: { id: number; collapsed: boolean }; res: void }
   'chars:folderColor': { req: { id: number; color: string | null }; res: void }
@@ -553,7 +586,8 @@ export interface IpcInvokeMap {
   /** 파일 탐색기에서 해당 파일 위치 열기 (파일 선택 상태로) */
   'images:showInFolder': { req: { filePath: string }; res: void }
   /** 다른 이름으로 저장 — 파일 저장 다이얼로그로 복사 */
-  'images:saveAs': { req: { filePath: string }; res: { saved: boolean } }
+  /** [custom] defaultName — 저장 창의 파일 이름 기본값 (씬 대표 이미지 저장: 씬 이름) */
+  'images:saveAs': { req: { filePath: string; defaultName?: string }; res: { saved: boolean } }
   /** 편집기(모자이크 등)의 결과 base64 PNG를 곧바로 원하는 위치에 저장 — 적용/저장 단계 없이 바로 내려받기 */
   'images:saveBase64As': { req: { base64: string; defaultName?: string }; res: { saved: boolean } }
   /** 이미지를 클립보드로 복사 */

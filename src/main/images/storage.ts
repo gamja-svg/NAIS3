@@ -331,7 +331,7 @@ export function listImages(limit: number, offset: number): { items: HistoryItem[
     .prepare(
       // [custom] 씬 이미지는 씬·프리셋 이름을 같이 읽는다 (히스토리에 출처 표시)
       `SELECT i.id, i.file_path, length(i.thumbnail) AS thumb_size, i.kind, i.seed, i.created_at,
-              s.name AS scene_name, p.name AS preset_name
+              s.name AS scene_name, p.name AS preset_name, s.id AS scene_id, p.id AS preset_id
        FROM images i
        LEFT JOIN gen_scenes s ON s.id = i.scene_id
        LEFT JOIN scene_presets p ON p.id = s.preset_id
@@ -346,6 +346,8 @@ export function listImages(limit: number, offset: number): { items: HistoryItem[
     created_at: string
     scene_name: string | null
     preset_name: string | null
+    scene_id: number | null
+    preset_id: number | null
   }[]
 
   return {
@@ -358,7 +360,9 @@ export function listImages(limit: number, offset: number): { items: HistoryItem[
       seed: r.seed,
       createdAt: r.created_at,
       sceneName: r.scene_name,
-      presetName: r.preset_name
+      presetName: r.preset_name,
+      sceneId: r.scene_id,
+      presetId: r.preset_id
     }))
   }
 }

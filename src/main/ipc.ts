@@ -115,6 +115,13 @@ import {
   startWatchFolder
 } from './custom/watch-folder'
 import {
+  arrangeFolderGroups,
+  createFolderGroup,
+  deleteFolderGroup,
+  listFolderGroups,
+  updateFolderGroup
+} from './custom/folder-groups'
+import {
   listPromptPresets,
   createPromptPreset,
   updatePromptPreset,
@@ -507,6 +514,14 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
 
   handle('scenes:exportJson', async ({ presetId }) => ({ saved: await exportScenesJson(presetId) }))
   handle('scenes:importJson', ({ presetId }) => importScenesJson(presetId))
+  // [custom] 상위 폴더
+  handle('custom:folderGroups:list', ({ kind }) => listFolderGroups(kind))
+  handle('custom:folderGroups:create', ({ kind, name }) => ({ id: createFolderGroup(kind, name) }))
+  handle('custom:folderGroups:update', ({ id, patch }) => updateFolderGroup(id, patch))
+  handle('custom:folderGroups:delete', ({ id }) => deleteFolderGroup(id))
+  handle('custom:folderGroups:arrange', ({ kind, groupIds, links }) =>
+    arrangeFolderGroups(kind, groupIds, links)
+  )
   // [custom] 감시 폴더
   handle('custom:watchGet', () => getWatchFolderConfig())
   handle('custom:watchSetEnabled', ({ enabled }) => setWatchFolderEnabled(enabled))
@@ -608,15 +623,26 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
     if (isUnderImagesRoot(filePath)) shell.showItemInFolder(filePath)
   })
 
-  handle('images:saveAs', async ({ filePath }) => {
+  handle('images:saveAs', async ({ filePath, defaultName }) => {
     const memory = isMemoryPath(filePath)
     if (!memory && !isUnderImagesRoot(filePath)) return { saved: false }
     const memBuf = memory ? getMemoryImage(filePath) : null
     if (memory && !memBuf) return { saved: false } // 원본 만료 (자동저장 꺼짐 생성분)
     const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
+    // [custom] 이름을 정해 주면 그 이름 + 원본 확장자 (파일 이름에 못 쓰는 글자는 _ 로)
+    const named = defaultName
+      ? Array.from(defaultName, (ch) => (ch < ' ' || '\\/:*?"<>|'.includes(ch) ? '_' : ch))
+          .join('')
+          .trim()
+      : ''
+    const ext = memory ? '.png' : (/\.[^.\\/]+$/.exec(filePath)?.[0] ?? '.png')
     const result = await dialog.showSaveDialog(win, {
       title: t('ui.saveAs'),
-      defaultPath: memory ? `NAIS3_${Date.now()}.png` : basename(filePath),
+      defaultPath: named
+        ? `${named}${ext}`
+        : memory
+          ? `NAIS3_${Date.now()}.png`
+          : basename(filePath),
       filters: [{ name: 'PNG', extensions: ['png'] }]
     })
     if (result.canceled || !result.filePath) return { saved: false }

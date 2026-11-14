@@ -20,7 +20,14 @@ import { memo, useState, type CSSProperties } from 'react'
 import { FOLDER_COLORS, type ListFolder } from '@shared/types'
 import { useT } from '../lib/i18n'
 import { cn } from '../lib/utils'
-import { DIVIDER_KEY, rowKey, type DisplayRow, type FolderListItem } from '../lib/folder-list'
+import { DIVIDER_KEY, type FolderListItem } from '../lib/folder-list'
+import {
+  groupedRowKey,
+  NO_GROUP_ACTIONS,
+  type GroupActions,
+  type GroupedRow
+} from '../lib/custom-folder-groups'
+import { FolderGroupRow } from './custom-folder-group-row'
 import {
   ContextMenu,
   ContextMenuContent,
@@ -100,12 +107,15 @@ function FolderRowInner({
   folder,
   actions,
   count,
-  searching
+  searching,
+  menuExtra
 }: {
   folder: ListFolder
   actions: FolderActions
   count: number
   searching: boolean
+  /** [custom] 우클릭 메뉴에 덧붙일 항목 (상위 폴더로 이동 등) — 스스로 스토어를 구독하는 요소로 넘길 것 */
+  menuExtra?: React.ReactNode
 }): React.JSX.Element {
   const t = useT()
   const [editing, setEditing] = useState(false)
@@ -237,6 +247,7 @@ function FolderRowInner({
         >
           <Pencil size={13} /> {t('ui.rename')}
         </ContextMenuItem>
+        {menuExtra}
         <ContextMenuSeparator />
         <ContextMenuItem danger onSelect={() => actions.remove(folder.id)}>
           <Trash2 size={13} /> {t('ui.deleteFolderItemsBecomeUncategorized')}
@@ -274,7 +285,8 @@ function ItemRow({
 }: {
   id: string
   disabled: boolean
-  indent: boolean
+  /** [custom] 들여쓰기 단계 — 0 미분류, 1 폴더 안, 2 상위 폴더 안의 폴더 안 */
+  indent: number
   children: React.ReactNode
 }): React.JSX.Element {
   const sortable = useSortable({ id, disabled })
@@ -288,7 +300,8 @@ function ItemRow({
       style={dndStyle(sortable, false)}
       className={cn(
         'overflow-hidden',
-        indent && 'ml-5',
+        indent === 1 && 'ml-5',
+        indent >= 2 && 'ml-9',
         sortable.isDragging && 'relative z-20 opacity-75'
       )}
       {...(disabled ? {} : sortable.attributes)}
@@ -332,7 +345,7 @@ function ItemCardRowInner<T extends FolderListItem>({
   rowId: string
   item: T
   disabled: boolean
-  indent: boolean
+  indent: number
   expanded: boolean
   renderKey?: unknown
   renderHeader?: (item: T) => React.ReactNode
@@ -419,9 +432,12 @@ export function FolderListView<T extends FolderListItem>({
   renderTile,
   columns,
   emptyText,
-  renderKey
+  renderKey,
+  groupActions = NO_GROUP_ACTIONS,
+  folderMenuExtra
 }: {
-  rows: DisplayRow<T>[]
+  /** [custom] 상위 폴더 행을 포함할 수 있다 (캐릭터 프롬프트). 없으면 원본과 같다 */
+  rows: GroupedRow<T>[]
   searching: boolean
   expandedId: number | null
   folderActions: FolderActions
@@ -438,6 +454,10 @@ export function FolderListView<T extends FolderListItem>({
   emptyText: string
   /** render 콜백이 item·expanded 외에 의존하는 외부 상태 — 바뀌면 memo된 카드 전체를 리렌더 */
   renderKey?: unknown
+  /** [custom] 상위 폴더 행 동작 */
+  groupActions?: GroupActions
+  /** [custom] 폴더 우클릭 메뉴에 덧붙일 항목 */
+  folderMenuExtra?: (folder: ListFolder) => React.ReactNode
 }): React.JSX.Element {
   const grid = renderTile != null && columns != null
   const sensors = useSensors(
@@ -446,9 +466,13 @@ export function FolderListView<T extends FolderListItem>({
   )
   // 폴더 드래그 중엔 소속 카드를 임시로 접는다 — "따라오는지 애매한" UX 제거
   const [draggingFolderId, setDraggingFolderId] = useState<number | null>(null)
+  // [custom] 상위 폴더를 끄는 동안엔 그 안의 폴더·카드를 임시로 접는다 (폴더 드래그와 같은 이유)
+  const [draggingGroupId, setDraggingGroupId] = useState<number | null>(null)
 
   const visible = rows.filter((r) => {
-    if (r.type === 'folder' || r.type === 'divider') return true
+    if (r.type === 'group' || r.type === 'divider') return true
+    if (draggingGroupId !== null && r.groupId === draggingGroupId) return false
+    if (r.type === 'folder') return !r.hidden // 접힌 상위 폴더 안의 폴더
     if (r.hidden) return false
     return draggingFolderId === null || r.item.folderId !== draggingFolderId
   })
@@ -462,10 +486,12 @@ export function FolderListView<T extends FolderListItem>({
   function handleDragStart(e: DragStartEvent): void {
     const key = String(e.active.id)
     setDraggingFolderId(key.startsWith('f-') ? Number(key.slice(2)) : null)
+    setDraggingGroupId(key.startsWith('g-') ? Number(key.slice(2)) : null)
   }
 
   function handleDragEnd(e: DragEndEvent): void {
     setDraggingFolderId(null)
+    setDraggingGroupId(null)
     const { active, over } = e
     if (!over || active.id === over.id) return
     onMove(String(active.id), String(over.id))
@@ -482,11 +508,14 @@ export function FolderListView<T extends FolderListItem>({
       // 그리드는 x·y 자유 이동, 리스트는 세로축 고정
       modifiers={grid ? [] : [restrictToVerticalAxis]}
       onDragStart={handleDragStart}
-      onDragCancel={() => setDraggingFolderId(null)}
+      onDragCancel={() => {
+        setDraggingFolderId(null)
+        setDraggingGroupId(null)
+      }}
       onDragEnd={handleDragEnd}
     >
       <SortableContext
-        items={visible.map(rowKey)}
+        items={visible.map(groupedRowKey)}
         strategy={grid ? rectSortingStrategy : verticalListSortingStrategy}
       >
         <div
@@ -500,20 +529,35 @@ export function FolderListView<T extends FolderListItem>({
                 <div key={DIVIDER_KEY} style={grid ? { gridColumn: '1 / -1' } : undefined}>
                   <DividerRow />
                 </div>
+              ) : row.type === 'group' ? (
+                // [custom] 상위 폴더 행
+                <div key={groupedRowKey(row)} style={grid ? { gridColumn: '1 / -1' } : undefined}>
+                  <FolderGroupRow
+                    group={row.group}
+                    folderCount={row.folderCount}
+                    actions={groupActions}
+                    searching={searching}
+                  />
+                </div>
               ) : row.type === 'folder' ? (
-                // 그리드에서 폴더 행은 전체 폭 차지
-                <div key={rowKey(row)} style={grid ? { gridColumn: '1 / -1' } : undefined}>
+                // 그리드에서 폴더 행은 전체 폭 차지. [custom] 상위 폴더 안의 폴더는 들여쓴다
+                <div
+                  key={groupedRowKey(row)}
+                  className={row.groupId != null ? 'ml-4' : undefined}
+                  style={grid ? { gridColumn: '1 / -1' } : undefined}
+                >
                   <FolderRow
                     folder={row.folder}
                     actions={folderActions}
                     count={counts.get(row.folder.id) ?? 0}
                     searching={searching}
+                    menuExtra={folderMenuExtra?.(row.folder)}
                   />
                 </div>
               ) : grid ? (
                 <GridTile
-                  key={rowKey(row)}
-                  rowId={rowKey(row)}
+                  key={groupedRowKey(row)}
+                  rowId={groupedRowKey(row)}
                   item={row.item}
                   disabled={searching}
                   renderKey={renderKey}
@@ -521,11 +565,11 @@ export function FolderListView<T extends FolderListItem>({
                 />
               ) : (
                 <ItemCardRow
-                  key={rowKey(row)}
-                  rowId={rowKey(row)}
+                  key={groupedRowKey(row)}
+                  rowId={groupedRowKey(row)}
                   item={row.item}
                   disabled={searching || expandedId === row.item.id}
-                  indent={!searching && row.item.folderId != null}
+                  indent={searching ? 0 : (row.depth ?? (row.item.folderId != null ? 1 : 0))}
                   expanded={expandedId === row.item.id}
                   renderKey={renderKey}
                   renderHeader={renderHeader}

@@ -4,6 +4,7 @@ import {
   CalendarX,
   ChevronDown,
   Copy,
+  Download,
   FileDown,
   FileUp,
   FolderArchive,
@@ -16,6 +17,7 @@ import {
   Plus,
   RectangleHorizontal,
   RectangleVertical,
+  ScanEye,
   SlidersHorizontal,
   Square,
   Trash2,
@@ -46,6 +48,7 @@ import { cn } from '../lib/utils'
 import { ReserveCount } from './reserve-count'
 import { SceneCastDialog } from './scene-cast-dialog'
 import { SceneDetail } from './scene-detail'
+import { SceneReview } from './custom-scene-review'
 import { SortableList, SortableRow } from './sortable-list'
 import { Button } from './ui/button'
 import {
@@ -373,9 +376,31 @@ function SceneGrid(): React.JSX.Element {
   )
   const [dragScene, setDragScene] = useState<Scene | null>(null)
   // [custom] 변경 후 미생성 씬만 보기. 걸러 보는 동안에는 순서 바꾸기를 막는다 (부분 목록 기준 재정렬 방지)
-  const [pendingOnly, setPendingOnly] = useState(false)
+  const pendingOnly = useScenesStore((s) => s.pendingOnly)
+  const setPendingOnly = useScenesStore((s) => s.setPendingOnly)
   const pendingCount = scenes.filter((s) => s.pending).length
   const shownScenes = pendingOnly ? scenes.filter((s) => s.pending) : scenes
+
+  // [custom] 히스토리의 '씬 위치로 이동' — 그 씬 카드가 보이게 스크롤하고 잠깐 강조한다
+  const focusSceneId = useScenesStore((s) => s.focusSceneId)
+  const clearFocusScene = useScenesStore((s) => s.clearFocusScene)
+  const reviewSceneId = useScenesStore((s) => s.reviewSceneId)
+  // 목록에 아직 없으면(프리셋 전환 직후) 로드된 뒤 다시 실행된다. 미생성만 보기에 가려진 씬이면
+  // goToScene이 필터를 먼저 끈다
+  const focusTargetId = shownScenes.find((s) => s.id === focusSceneId)?.id
+  useEffect(() => {
+    if (focusTargetId == null) return
+    const frame = requestAnimationFrame(() =>
+      scrollRef.current
+        ?.querySelector(`[data-scene-id="${focusTargetId}"]`)
+        ?.scrollIntoView({ block: 'center' })
+    )
+    const timer = setTimeout(clearFocusScene, 2500)
+    return () => {
+      cancelAnimationFrame(frame)
+      clearTimeout(timer)
+    }
+  }, [focusTargetId, clearFocusScene])
   const onDragStart = (e: DragStartEvent): void => {
     setDragScene(scenes.find((s) => `scene-${s.id}` === e.active.id) ?? null)
   }
@@ -609,6 +634,8 @@ function SceneGrid(): React.JSX.Element {
           </p>
         )}
       </div>
+      {/* [custom] 검수 모드 — 지금 보이는 순서(미생성만 보기면 그 목록)대로 대표 이미지를 넘겨 본다 */}
+      {reviewSceneId != null && <SceneReview scenes={shownScenes} />}
     </div>
   )
 }
@@ -851,6 +878,9 @@ const SceneCard = memo(function SceneCard({
   const activeCastId = useScenesStore((s) => s.activeCastId)
   const sortable = useSortable({ id: `scene-${scene.id}` })
   const t = useT()
+  // [custom] 히스토리 '씬 위치로 이동'으로 찾아온 카드 강조 / 검수 모드
+  const focused = useScenesStore((s) => s.focusSceneId === scene.id)
+  const setReviewScene = useScenesStore((s) => s.setReviewScene)
 
   // +/- 는 현재 선택된 출연의 예약을 조작하므로 그 출연의 수만 표시 (배지가 전체 내역 담당)
   const activeCast = casts.find((c) => c.id === activeCastId) ?? null
@@ -897,9 +927,11 @@ const SceneCard = memo(function SceneCard({
           ref={sortable.setNodeRef}
           {...sortable.attributes}
           {...sortable.listeners}
+          data-scene-id={scene.id}
           className={cn(
             'group relative touch-none overflow-hidden rounded-lg border bg-surface-2 transition',
             editMode && checked ? 'border-accent ring-2 ring-accent/40' : 'border-line',
+            focused && 'border-accent ring-4 ring-accent',
             sortable.isDragging && 'shadow-xl'
           )}
           style={{ aspectRatio: CARD_ASPECT[cardOrientation], ...dndStyle(sortable) }}
@@ -1103,6 +1135,25 @@ const SceneCard = memo(function SceneCard({
           <ContextMenuItem onSelect={() => void clearPending()}>
             <CircleDashed size={13} /> {t('ui.markAsChecked')}
           </ContextMenuItem>
+        )}
+        {/* [custom] 대표 이미지(카드에 보이는 그림) 저장 / 검수 모드 */}
+        {scene.thumbnailPath && (
+          <>
+            <ContextMenuSeparator />
+            <ContextMenuItem
+              onSelect={() =>
+                void window.nais.invoke('images:saveAs', {
+                  filePath: scene.thumbnailPath,
+                  defaultName: scene.name
+                })
+              }
+            >
+              <Download size={13} /> {t('ui.customSaveTopImage')}
+            </ContextMenuItem>
+            <ContextMenuItem onSelect={() => setReviewScene(scene.id)}>
+              <ScanEye size={13} className="text-hue-sky" /> {t('ui.customReviewFromHere')}
+            </ContextMenuItem>
+          </>
         )}
         <ContextMenuSeparator />
         <ContextMenuItem danger onSelect={() => void removeScene()}>

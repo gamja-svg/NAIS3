@@ -37,9 +37,9 @@ describe('custom: history shows where a scene image came from', () => {
     addImage('scene.png', scene)
     const { items, total } = listImages(10, 0)
     expect(total).toBe(2)
-    expect(items.map((i) => [i.kind, i.presetName, i.sceneName])).toEqual([
-      ['scene', '윤초아 D3 v16', '42'],
-      ['t2i', null, null]
+    expect(items.map((i) => [i.kind, i.presetName, i.sceneName, i.presetId, i.sceneId])).toEqual([
+      ['scene', '윤초아 D3 v16', '42', preset, scene],
+      ['t2i', null, null, null, null]
     ])
   })
 

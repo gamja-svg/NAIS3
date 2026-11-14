@@ -15,6 +15,7 @@ import type {
 } from '@shared/types'
 import { enabledCharacters, useCharactersStore } from './characters-store'
 import { randomSeed, useGenerationStore } from './generation-store'
+import { useLayoutStore } from './layout-store'
 
 export { appendPrompt } from '@shared/scene-request'
 
@@ -53,6 +54,16 @@ interface ScenesState {
 
   loadPresets: () => Promise<void>
   setActivePreset: (id: number) => Promise<void>
+  /** [custom] 씬 목록에서 찾아가 강조할 씬 (히스토리 '씬 위치로 이동') — 목록이 스크롤한 뒤 비운다 */
+  focusSceneId: number | null
+  goToScene: (presetId: number, sceneId: number) => Promise<void>
+  clearFocusScene: () => void
+  /** [custom] 변경 후 미생성 씬만 보기 (씬 위치로 이동이 가려진 씬을 보여 주려고 끌 수 있게 스토어에 둔다) */
+  pendingOnly: boolean
+  setPendingOnly: (on: boolean) => void
+  /** [custom] 검수 모드에서 보고 있는 씬 (null = 꺼짐) — 대표 이미지를 한 장씩 넘겨 본다 */
+  reviewSceneId: number | null
+  setReviewScene: (id: number | null) => void
   createPreset: (name: string) => Promise<void>
   renamePreset: (id: number, name: string) => Promise<void>
   deletePreset: (id: number) => Promise<void>
@@ -193,9 +204,29 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
     }
     await get().load()
   },
+  focusSceneId: null,
+  goToScene: async (presetId, sceneId) => {
+    useLayoutStore.getState().setCenterMode('scene')
+    if (get().activePresetId !== presetId) await get().setActivePreset(presetId)
+    else if (get().selectedId != null) get().select(null) // 씬 상세를 닫고 목록으로
+    // 히스토리를 연 뒤에 씬이 지워졌을 수 있다
+    const target = get().scenes.find((s) => s.id === sceneId)
+    if (!target) {
+      toast(t('ui.customSceneNotFound'), 'error')
+      return
+    }
+    // 미생성만 보는 중이라 안 보이는 씬이면 필터를 끈다
+    if (get().pendingOnly && !target.pending) set({ pendingOnly: false })
+    set({ focusSceneId: sceneId })
+  },
+  pendingOnly: false,
+  setPendingOnly: (on) => set({ pendingOnly: on }),
+  clearFocusScene: () => set({ focusSceneId: null }),
+  reviewSceneId: null,
+  setReviewScene: (id) => set({ reviewSceneId: id }),
   setActivePreset: async (id) => {
     selectionAnchor = null
-    set({ activePresetId: id, selectedId: null, selection: new Set() })
+    set({ activePresetId: id, selectedId: null, selection: new Set(), reviewSceneId: null })
     await get().load()
   },
   createPreset: async (name) => {

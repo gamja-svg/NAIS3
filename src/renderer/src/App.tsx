@@ -32,6 +32,7 @@ import { cn } from './lib/utils'
 import { useLayoutStore } from './stores/layout-store'
 import { useThemeStore } from './stores/theme-store'
 import { bindDragScroll, hydrateTouchMode } from './lib/custom-touch-mode'
+import { useFolderGroupsStore } from './stores/custom-folder-groups-store'
 
 // 새 설치 첫 실행에만 뜨므로 평소 실행에선 읽지 않는다
 const Onboarding = lazy(() =>
@@ -75,6 +76,7 @@ export default function App(): React.JSX.Element {
         useLayoutStore.getState().hydrate(),
         useGenerationStore.getState().hydrate(),
         useCharactersStore.getState().load(),
+        useFolderGroupsStore.getState().load(), // [custom] 상위 폴더
         useFragmentsStore.getState().load(),
         useVibesStore.getState().load(),
         useCharRefsStore.getState().load(),

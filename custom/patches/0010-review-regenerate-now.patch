@@ -1,0 +1,391 @@
+diff --git a/src/renderer/src/components/custom-scene-review.tsx b/src/renderer/src/components/custom-scene-review.tsx
+index 65f83d694d9e63bd5effa2ec4690d3bbcf90aabc..932ae268a877446b5486e07aade1e2af27749f17 100644
+--- a/src/renderer/src/components/custom-scene-review.tsx
++++ b/src/renderer/src/components/custom-scene-review.tsx
+@@ -1,10 +1,12 @@
+-import { ChevronLeft, ChevronRight, Download, Plus, X } from 'lucide-react'
++import { ChevronLeft, ChevronRight, Download, Plus, RefreshCw, X } from 'lucide-react'
+ import { useEffect, useRef } from 'react'
+ import { createPortal } from 'react-dom'
+ import type { Scene } from '@shared/types'
+ import { imageUrl } from '../lib/constants'
+ import { useT } from '../lib/i18n'
+ import { cn } from '../lib/utils'
++import { useSceneFrame, useSceneGenerating } from '../stores/custom-parallel-store'
++import { useGenerationStore } from '../stores/generation-store'
+ import { useScenesStore } from '../stores/scenes-store'
+ import { toast } from '../stores/toast-store'
+ import { ImageContextMenu } from './image-context-menu'
+@@ -14,14 +16,17 @@ const SWIPE_PX = 60
+ 
+ /**
+  * [custom] 검수 모드 — 프리셋의 씬 대표 이미지(카드에 보이는 그림)를 크게 한 장씩 넘겨 본다.
+- * ←/→·휠·스와이프·화면 버튼으로 넘기고, R로 그 씬을 다시 뽑기 예약(+1), Esc로 닫는다.
+- * 이미지가 없는 씬은 건너뛴다. 닫으면 마지막으로 본 씬 카드로 목록을 데려간다.
++ * ←/→·휠·스와이프·화면 버튼으로 넘기고, G로 그 씬을 바로 다시 뽑기(1장), R로 다시 뽑기 예약(+1),
++ * Esc로 닫는다. 다시 뽑는 동안은 진행 화면을 보여 주고, 다 되면 새 그림이 대표 이미지가 된다
++ * (즐겨찾기가 있는 씬은 즐겨찾기가 대표라 그대로). 이미지가 없는 씬은 건너뛴다.
++ * 닫으면 마지막으로 본 씬 카드로 목록을 데려간다.
+  */
+ export function SceneReview({ scenes }: { scenes: Scene[] }): React.JSX.Element | null {
+   const t = useT()
+   const reviewSceneId = useScenesStore((s) => s.reviewSceneId)
+   const setReviewScene = useScenesStore((s) => s.setReviewScene)
+   const adjustReserve = useScenesStore((s) => s.adjustReserve)
++  const regenerateScene = useScenesStore((s) => s.regenerateScene)
+   const presetName = useScenesStore(
+     (s) => s.presets.find((p) => p.id === s.activePresetId)?.name ?? ''
+   )
+@@ -30,6 +35,16 @@ export function SceneReview({ scenes }: { scenes: Scene[] }): React.JSX.Element
+   const index = list.findIndex((s) => s.id === reviewSceneId)
+   const scene = index >= 0 ? list[index] : undefined
+ 
++  // 이 씬을 지금 뽑는 중인지 · 대기 중인 장수 · 진행 화면 (동시 생성이면 이 씬을 뽑는 계정 것)
++  const sceneId = scene?.id ?? -1
++  const generating = useSceneGenerating(sceneId)
++  const waiting = useGenerationStore(
++    (s) =>
++      s.queue?.items.filter((i) => i.state === 'pending' && i.request.sceneId === sceneId).length ??
++      0
++  )
++  const frame = useSceneFrame(sceneId, generating)
++
+   const go = (i: number): void => {
+     const next = list[Math.min(list.length - 1, Math.max(0, i))]
+     if (next && next.id !== reviewSceneId) setReviewScene(next.id)
+@@ -42,6 +57,19 @@ export function SceneReview({ scenes }: { scenes: Scene[] }): React.JSX.Element
+     void adjustReserve(scene.id, 1)
+     toast(t('ui.customReviewQueuedValue', scene.name), 'success')
+   }
++  const regenerate = (): void => {
++    if (!scene) return
++    regenerateScene(scene.id).catch((error: unknown) =>
++      toast(error instanceof Error ? error.message : String(error), 'error')
++    )
++    toast(
++      t(
++        scene.hasFavorite ? 'ui.customReviewRegenFavoriteValue' : 'ui.customReviewRegenValue',
++        scene.name
++      ),
++      'success'
++    )
++  }
+   const save = (): void => {
+     if (!scene) return
+     void window.nais.invoke('images:saveAs', {
+@@ -63,6 +91,7 @@ export function SceneReview({ scenes }: { scenes: Scene[] }): React.JSX.Element
+       else if (e.key === 'ArrowLeft') go(index - 1)
+       else if (e.key === 'ArrowRight') go(index + 1)
+       else if (e.code === 'KeyR' && !e.repeat) queue()
++      else if (e.code === 'KeyG' && !e.repeat) regenerate()
+       else return
+       e.preventDefault()
+       e.stopPropagation()
+@@ -147,8 +176,26 @@ export function SceneReview({ scenes }: { scenes: Scene[] }): React.JSX.Element
+             <span className="shrink-0 font-mono text-[12px] opacity-70">
+               {index + 1} / {list.length}
+             </span>
++            {generating && (
++              <span className="flex shrink-0 items-center gap-1 text-[12px] text-success">
++                <span className="size-1.5 animate-pulse rounded-full bg-success" />
++                {t('ui.customLaneGenerating')}
++              </span>
++            )}
++            {waiting > 0 && (
++              <span className="shrink-0 text-[12px] opacity-70">
++                {t('ui.customReviewWaitingValue', waiting)}
++              </span>
++            )}
+           </div>
+         </div>
++        <button
++          className="flex h-10 items-center gap-1.5 rounded-full bg-accent px-3.5 text-[13px] font-medium text-on-accent hover:opacity-90"
++          title={t('ui.customReviewRegenHint')}
++          onClick={regenerate}
++        >
++          <RefreshCw size={15} /> {t('ui.customReviewRegen')}
++        </button>
+         <button
+           className="flex h-10 items-center gap-1.5 rounded-full bg-white/10 px-3.5 text-[13px] hover:bg-white/20"
+           onClick={queue}
+@@ -187,21 +234,32 @@ export function SceneReview({ scenes }: { scenes: Scene[] }): React.JSX.Element
+         >
+           <ChevronLeft size={26} />
+         </button>
+-        {/* 우클릭 메뉴 (복사·메타데이터 등) — 라이트박스와 같다 */}
+-        <ImageContextMenu filePath={scene.thumbnailPath}>
++        {generating && frame ? (
++          // 다시 뽑는 중 — 진행 화면 (다 되면 새 그림이 대표 이미지로 들어온다)
+           <img
+-            key={scene.id}
+-            src={imageUrl(scene.thumbnailPath)}
+-            className="max-h-full max-w-full rounded-lg object-contain shadow-2xl"
+-            onError={(e) => {
+-              // 원본 파일이 옮겨졌으면 저장된 썸네일이라도 보여 준다
+-              if (scene.thumbnailUrl && e.currentTarget.src !== scene.thumbnailUrl)
+-                e.currentTarget.src = scene.thumbnailUrl
+-            }}
++            key={`live-${scene.id}`}
++            src={`data:image/png;base64,${frame}`}
++            className="h-full w-full rounded-lg object-contain"
+             draggable={false}
+             alt=""
+           />
+-        </ImageContextMenu>
++        ) : (
++          /* 우클릭 메뉴 (복사·메타데이터 등) — 라이트박스와 같다 */
++          <ImageContextMenu filePath={scene.thumbnailPath}>
++            <img
++              key={scene.id}
++              src={imageUrl(scene.thumbnailPath)}
++              className="max-h-full max-w-full rounded-lg object-contain shadow-2xl"
++              onError={(e) => {
++                // 원본 파일이 옮겨졌으면 저장된 썸네일이라도 보여 준다
++                if (scene.thumbnailUrl && e.currentTarget.src !== scene.thumbnailUrl)
++                  e.currentTarget.src = scene.thumbnailUrl
++              }}
++              draggable={false}
++              alt=""
++            />
++          </ImageContextMenu>
++        )}
+         <button
+           className={cn(navButton, 'right-4')}
+           disabled={!hasNext}
+diff --git a/src/renderer/src/stores/scenes-store.ts b/src/renderer/src/stores/scenes-store.ts
+index 1227af397315b49d440e2784c7b9459274be4eee..0ffdb720af7a2df078d22033fe37e7e764f0e8f5 100644
+--- a/src/renderer/src/stores/scenes-store.ts
++++ b/src/renderer/src/stores/scenes-store.ts
+@@ -135,6 +135,8 @@ interface ScenesState {
+   /** 프리셋 캐릭터 바인드 (null = 해제) */
+   /** 이 씬 1장 바로 생성 (예약 없이 — NAIS2식 즉석 생성) */
+   generateOne: (sceneId: number) => Promise<void>
++  /** [custom] 검수 모드의 바로 다시 뽑기 — 이 씬 1장, 시드 고정이어도 새 시드 */
++  regenerateScene: (sceneId: number) => Promise<void>
+ }
+ 
+ /**
+@@ -590,6 +592,19 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
+     })
+   },
+ 
++  regenerateScene: async (sceneId) => {
++    const scene = get().scenes.find((s) => s.id === sceneId)
++    if (!scene) return
++    // 바로 생성과 같이 지금 선택된 출연으로. 다시 뽑기라서 시드 고정이어도 새 시드 —
++    // 고정 시드 그대로면 같은 그림이 또 나온다
++    const castId = get().activeCastId
++    const cast = castId === '' ? null : (get().casts.find((c) => c.id === castId) ?? null)
++    await window.nais.invoke('queue:enqueue', {
++      request: { ...applySceneRequest(buildCastRequest(cast), scene), seed: randomSeed() },
++      count: 1
++    })
++  },
++
+   // ── 출연(Cast) ──────────────────────────────────────────
+   casts: [],
+   activeCastId: localStorage.getItem('scene_active_cast') ?? '',
+diff --git a/src/shared/i18n/catalog-en.ts b/src/shared/i18n/catalog-en.ts
+index 6f77317234b0f39c112ace6208a7ff0e416b1804..e8d36cd8d81758b560a0bf7a3e71894b7093eb78 100644
+--- a/src/shared/i18n/catalog-en.ts
++++ b/src/shared/i18n/catalog-en.ts
+@@ -153,7 +153,14 @@ export const EN = {
+   'ui.customReviewFromHere': 'Review mode (from here)',
+   'ui.customReviewQueue': 'Queue again',
+   'ui.customReviewQueuedValue': 'Queued {0} again (+1)',
+-  'ui.customReviewHint': '←/→, wheel or swipe to browse · R queue again · Esc close',
++  'ui.customReviewRegen': 'Regenerate now',
++  'ui.customReviewRegenHint':
++    'Generate one more image of this scene right away (G). Uses a new seed even when the seed is locked.',
++  'ui.customReviewRegenValue': 'Regenerating {0}',
++  'ui.customReviewRegenFavoriteValue': 'Regenerating {0} · its favorite stays as the cover here',
++  'ui.customReviewWaitingValue': '{0} waiting',
++  'ui.customReviewHint':
++    '←/→, wheel or swipe to browse · G regenerate now · R queue again · Esc close',
+   'ui.customPrevious': 'Previous',
+   'ui.customNext': 'Next',
+   'ui.customLaneTabs': 'Progress by account',
+diff --git a/src/shared/i18n/catalog-ko.ts b/src/shared/i18n/catalog-ko.ts
+index f9b589ac33dbd927ae5fa314be0623cf651ed725..5118c442d1148cbe1b4332ef9f88ccfd7c1a02f7 100644
+--- a/src/shared/i18n/catalog-ko.ts
++++ b/src/shared/i18n/catalog-ko.ts
+@@ -152,7 +152,15 @@ export const KO = {
+   'ui.customReviewFromHere': '검수 모드 (여기부터)',
+   'ui.customReviewQueue': '다시 뽑기 예약',
+   'ui.customReviewQueuedValue': '{0} 다시 뽑기 예약 +1',
+-  'ui.customReviewHint': '←/→·휠·좌우로 끌어서 넘기기 · R 다시 뽑기 예약 · Esc 닫기',
++  'ui.customReviewRegen': '바로 다시 뽑기',
++  'ui.customReviewRegenHint':
++    '이 씬을 지금 바로 1장 더 뽑습니다 (G). 시드 고정이어도 새 시드로 뽑습니다.',
++  'ui.customReviewRegenValue': '{0} 다시 뽑는 중',
++  'ui.customReviewRegenFavoriteValue':
++    '{0} 다시 뽑는 중 · 즐겨찾기가 대표 이미지라 여기 그림은 그대로입니다',
++  'ui.customReviewWaitingValue': '대기 {0}장',
++  'ui.customReviewHint':
++    '←/→·휠·좌우로 끌어서 넘기기 · G 바로 다시 뽑기 · R 다시 뽑기 예약 · Esc 닫기',
+   'ui.customPrevious': '이전',
+   'ui.customNext': '다음',
+   'ui.customLaneTabs': '계정별 진행',
+diff --git a/src/shared/i18n/catalog-zh-CN.ts b/src/shared/i18n/catalog-zh-CN.ts
+index 146f93b376f8c15328df71203589cc074f9186b0..7e4ba5c5d44bb8cec904e0b867b5f7e37f6bcb3b 100644
+--- a/src/shared/i18n/catalog-zh-CN.ts
++++ b/src/shared/i18n/catalog-zh-CN.ts
+@@ -152,7 +152,12 @@ export const ZH_CN = {
+   'ui.customReviewFromHere': '审阅模式（从这里开始）',
+   'ui.customReviewQueue': '重新生成预约',
+   'ui.customReviewQueuedValue': '已为 {0} 预约重新生成 +1',
+-  'ui.customReviewHint': '←/→、滚轮或左右拖动翻看 · R 预约重新生成 · Esc 关闭',
++  'ui.customReviewRegen': '立即重新生成',
++  'ui.customReviewRegenHint': '立即为此场景再生成 1 张（G）。即使锁定了种子也会使用新种子。',
++  'ui.customReviewRegenValue': '正在重新生成 {0}',
++  'ui.customReviewRegenFavoriteValue': '正在重新生成 {0} · 收藏图仍作为此处的封面',
++  'ui.customReviewWaitingValue': '等待 {0} 张',
++  'ui.customReviewHint': '←/→、滚轮或左右拖动翻看 · G 立即重新生成 · R 预约重新生成 · Esc 关闭',
+   'ui.customPrevious': '上一张',
+   'ui.customNext': '下一张',
+   'ui.customLaneTabs': '各账户进度',
+diff --git a/tests/custom-scene-review.test.ts b/tests/custom-scene-review.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..0f02633acc41dc7efb77cca6a2b4e03e0d8d696e
+--- /dev/null
++++ b/tests/custom-scene-review.test.ts
+@@ -0,0 +1,139 @@
++// @vitest-environment happy-dom
++import { act, createElement as h } from 'react'
++import { createRoot, type Root } from 'react-dom/client'
++import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
++import type { NaisApi } from '../src/preload/index'
++import type { GenerationRequest, QueueItem, Scene } from '../src/shared/types'
++import { SceneReview } from '../src/renderer/src/components/custom-scene-review'
++import { useLanguageStore } from '../src/renderer/src/lib/i18n'
++import { DEFAULT_REQUEST, useGenerationStore } from '../src/renderer/src/stores/generation-store'
++import { useScenesStore } from '../src/renderer/src/stores/scenes-store'
++import { useToastStore } from '../src/renderer/src/stores/toast-store'
++
++// [custom] 검수 모드: 바로 다시 뽑기(G·버튼), 다시 뽑는 동안 진행 화면
++
++const scene = (id: number, extra: Partial<Scene> = {}): Scene => ({
++  id,
++  presetId: 1,
++  name: `씬 ${id}`,
++  prompt: `scene ${id}`,
++  negativePrompt: '',
++  width: 832,
++  height: 1216,
++  reserveCount: 0,
++  reserves: {},
++  thumbnailUrl: '',
++  thumbnailPath: `/img/${id}.png`,
++  imageCount: 1,
++  hasFavorite: false,
++  pending: false,
++  ...extra
++})
++
++const queueItem = (id: string, state: QueueItem['state'], sceneId: number): QueueItem => ({
++  id,
++  state,
++  request: { ...DEFAULT_REQUEST, sceneId }
++})
++
++describe('custom: scene review regenerate now', () => {
++  let root: Root
++  let container: HTMLDivElement
++  let enqueued: { request: GenerationRequest; count: number }[]
++  const scenes = [scene(1), scene(2, { hasFavorite: true })]
++
++  beforeEach(() => {
++    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
++    enqueued = []
++    window.nais = {
++      invoke: vi.fn(async (channel: string, payload: unknown) => {
++        if (channel === 'queue:enqueue') {
++          enqueued.push(payload as { request: GenerationRequest; count: number })
++          return { ids: ['q1'] }
++        }
++        return {}
++      }),
++      on: () => () => {}
++    } as unknown as NaisApi
++    useLanguageStore.setState({ lang: 'ko' })
++    useToastStore.setState({ toasts: [] })
++    useGenerationStore.setState({
++      request: { ...DEFAULT_REQUEST, prompt: 'base', seed: 1234 },
++      seedLocked: true,
++      queue: null,
++      previewPng: null
++    })
++    useScenesStore.setState({
++      scenes,
++      presets: [],
++      activePresetId: 1,
++      reviewSceneId: 1,
++      casts: [],
++      activeCastId: ''
++    })
++    container = document.createElement('div')
++    document.body.append(container)
++    root = createRoot(container)
++  })
++
++  afterEach(async () => {
++    await act(async () => root.unmount())
++    container.remove()
++    vi.unstubAllGlobals()
++  })
++
++  const press = async (
++    code: string,
++    key = code.replace(/^Key/, '').toLowerCase()
++  ): Promise<void> => {
++    await act(async () => {
++      window.dispatchEvent(new KeyboardEvent('keydown', { code, key }))
++    })
++  }
++
++  it('generates one more image of the scene on G, with a new seed even when locked', async () => {
++    await act(async () => root.render(h(SceneReview, { scenes })))
++    await press('KeyG')
++    expect(enqueued).toHaveLength(1)
++    expect(enqueued[0].count).toBe(1)
++    expect(enqueued[0].request.sceneId).toBe(1)
++    expect(enqueued[0].request.prompt).toContain('scene 1')
++    expect(enqueued[0].request.width).toBe(832)
++    expect(enqueued[0].request.seed).not.toBe(1234) // 고정 시드 그대로면 같은 그림이 나온다
++    expect(useToastStore.getState().toasts.map((t) => t.message)).toEqual(['씬 1 다시 뽑는 중'])
++  })
++
++  it('does the same from the header button and says the favorite stays as the cover', async () => {
++    useScenesStore.setState({ reviewSceneId: 2 })
++    await act(async () => root.render(h(SceneReview, { scenes })))
++    const button = [...document.body.querySelectorAll('button')].find(
++      (b) => b.textContent?.trim() === '바로 다시 뽑기'
++    )
++    expect(button).toBeDefined()
++    await act(async () => button?.click())
++    expect(enqueued.map((e) => e.request.sceneId)).toEqual([2])
++    expect(useToastStore.getState().toasts[0].message).toContain('즐겨찾기가 대표 이미지라')
++  })
++
++  it('shows the live frame while this scene is being generated and the waiting count', async () => {
++    useGenerationStore.setState({
++      previewPng: 'LIVE',
++      queue: {
++        items: [queueItem('a', 'generating', 1), queueItem('b', 'pending', 1)],
++        running: true,
++        delayMs: 0
++      }
++    })
++    await act(async () => root.render(h(SceneReview, { scenes })))
++    const srcs = [...document.body.querySelectorAll('img')].map((img) => img.getAttribute('src'))
++    expect(srcs).toContain('data:image/png;base64,LIVE')
++    expect(document.body.textContent).toContain('생성 중')
++    expect(document.body.textContent).toContain('대기 1장')
++
++    // 다른 씬으로 넘기면 그 씬의 대표 이미지 (진행 화면은 그 씬 것이 아니다)
++    await press('ArrowRight', 'ArrowRight')
++    const after = [...document.body.querySelectorAll('img')].map((img) => img.getAttribute('src'))
++    expect(after).not.toContain('data:image/png;base64,LIVE')
++    expect(document.body.textContent).not.toContain('대기 1장')
++  })
++})

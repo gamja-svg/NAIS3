@@ -1,0 +1,2096 @@
+diff --git a/src/main/custom/parallel.ts b/src/main/custom/parallel.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..7970bb258c7daa39cc1ba2be77096d133a3a0477
+--- /dev/null
++++ b/src/main/custom/parallel.ts
+@@ -0,0 +1,96 @@
++import type { GenerationRequest, ParallelConfig } from '../../shared/types'
++import { getActiveNaiAccount, getNaiAccounts, getSetting, setSetting } from '../db/settings'
++import {
++  isOpusUsageExhausted,
++  requestUsesV5Usage,
++  type NaiAccountSelection
++} from '../nai/account-router'
++import { logBalance } from '../nai/anlas-log'
++import { fetchAnlasBalance } from '../nai/client'
++import { LanePauseError } from '../queue/generation-queue'
++import { broadcast } from '../ipc'
++
++/**
++ * [custom] 여러 계정으로 동시 생성 — 계정(레인)마다 한 장씩.
++ * 켜는 스위치와 '보낼 곳'은 설정에 두고, 큐는 여기 함수로 계정 목록과 보낼 곳을 읽는다.
++ * 원칙: 동시 생성은 Opus 계정만, 게이지가 바닥난 계정은 Anlas를 쓰지 않고 쉰다.
++ */
++const ENABLED_KEY = 'custom_parallel_accounts'
++const TARGET_KEY = 'custom_parallel_target'
++
++/** 쉬는 시간 — 게이지는 몇 분 안에 다시 차오르고, Opus 아닌 계정은 구독이 바뀔 때까지 */
++const PAUSE_MS = { exhausted: 60_000, notOpus: 5 * 60_000, unknown: 30_000 } as const
++
++export function getParallelConfig(): ParallelConfig {
++  return { enabled: getSetting(ENABLED_KEY) === '1', target: getSetting(TARGET_KEY) || null }
++}
++
++export function setParallelConfig(patch: Partial<ParallelConfig>): ParallelConfig {
++  if (patch.enabled !== undefined) setSetting(ENABLED_KEY, patch.enabled ? '1' : '0')
++  if (patch.target !== undefined) setSetting(TARGET_KEY, patch.target ?? '')
++  return getParallelConfig()
++}
++
++/** 큐가 쓸 계정 목록 — 꺼져 있으면 null (큐는 2개 미만이면 원래대로 한 장씩) */
++export function parallelLanes(): string[] | null {
++  if (getSetting(ENABLED_KEY) !== '1') return null
++  return getNaiAccounts().map((account) => account.id)
++}
++
++export function parallelTarget(): string | null {
++  return getSetting(TARGET_KEY) || null
++}
++
++type Balance = Awaited<ReturnType<typeof fetchAnlasBalance>>
++
++/** 계정별 잔액을 화면에 알린다. 활성 계정이면 상단 잔액 표시도 갱신 */
++function announce(accountId: string, balance: Balance): void {
++  broadcast('custom:laneBalance', {
++    accountId,
++    anlas: balance.anlas,
++    tier: balance.tier,
++    ...(balance.usage ? { usage: balance.usage } : {})
++  })
++  if (balance.anlas !== null && getActiveNaiAccount()?.id === accountId) {
++    broadcast('anlas:balance', {
++      anlas: balance.anlas,
++      tier: balance.tier,
++      ...(balance.usage ? { usage: balance.usage } : {})
++    })
++  }
++}
++
++/**
++ * 이 계정이 지금 이 요청을 뽑아도 되는지 확인하고 그 계정을 준다 (원본 계정 선택과 같은 모양).
++ * 안 되면 LanePauseError — 큐가 그 계정을 쉬게 하고 항목은 다른 계정에 넘긴다.
++ * 잔액은 장마다 새로 묻는다 (원본도 계정이 둘 이상이면 V5 생성 전마다 묻는다) — 묵은 값으로
++ * 게이지가 바닥난 줄 모르고 뽑아 Anlas가 나가는 일을 막는다.
++ */
++export async function laneSelection(
++  accountId: string,
++  request: GenerationRequest
++): Promise<NaiAccountSelection> {
++  const account = getNaiAccounts().find((a) => a.id === accountId)
++  if (!account) throw new LanePauseError('unknown', PAUSE_MS.unknown)
++  const balance = await fetchAnlasBalance(account.token)
++  // 조회 실패는 화면의 마지막 값을 지우지 않는다
++  if (balance.tier == null) throw new LanePauseError('unknown', PAUSE_MS.unknown)
++  announce(accountId, balance)
++  if (balance.tier !== 'opus') throw new LanePauseError('notOpus', PAUSE_MS.notOpus)
++  if (requestUsesV5Usage(request)) {
++    // 게이지를 모르면 뽑지 않는다 (원본 자동 전환도 게이지를 모르는 계정은 고르지 않는다)
++    if (!balance.usage) throw new LanePauseError('unknown', PAUSE_MS.unknown)
++    if (isOpusUsageExhausted(balance)) throw new LanePauseError('exhausted', PAUSE_MS.exhausted)
++  }
++  return { account, balance, rotated: false }
++}
++
++/** 생성이 끝난 뒤 잔액 갱신 (실패해도 생성 흐름엔 영향 없음) */
++export function refreshLaneBalance(accountId: string, token: string): void {
++  void fetchAnlasBalance(token).then((balance) => {
++    if (balance.tier == null) return
++    announce(accountId, balance)
++    // 사용량 기록은 활성 계정 것만 (여러 계정 잔액이 섞이면 '오늘 쓴 Anlas' 계산이 어긋난다)
++    if (balance.anlas !== null && getActiveNaiAccount()?.id === accountId) logBalance(balance.anlas)
++  })
++}
+diff --git a/src/main/index.ts b/src/main/index.ts
+index 43f6c3846ba8f934ca59c81ae8639beea311aa89..f628e17fbad6f885ad19577168af68b6f3adbdb2 100644
+--- a/src/main/index.ts
++++ b/src/main/index.ts
+@@ -31,6 +31,7 @@ import { requestUsesV5Usage, resolveNaiAccountForGeneration } from './nai/accoun
+ import { localPromptMetadata } from './nai/payload'
+ import { prepareCharRefs, prepareVibes } from './refs/prepare'
+ import { GenerationQueue } from './queue/generation-queue'
++import { laneSelection, parallelLanes, parallelTarget, refreshLaneBalance } from './custom/parallel'
+ import { getPresetName, getScene } from './scenes/repo'
+ 
+ // 앱 이름 (dev 메뉴바·dock에서 'Electron' 대신 표시). 패키징 앱은 productName 사용
+@@ -184,8 +185,10 @@ const startup = app.whenReady().then(async () => {
+   }
+ 
+   // 생성 파이프라인: 큐 → 조각/와일드카드 치환 → 바이브/캐릭레퍼 준비 → 스트리밍 생성 → 저장
+-  const queue = new GenerationQueue(async (rawRequest, id, signal) => {
+-    const selection = await resolveNaiAccountForGeneration(requestUsesV5Usage(rawRequest))
++  const queue = new GenerationQueue(async (rawRequest, id, signal, laneAccountId) => {
++    const selection = laneAccountId
++      ? await laneSelection(laneAccountId, rawRequest) // [custom] 동시 생성: 정해진 계정 (못 뽑으면 쉼)
++      : await resolveNaiAccountForGeneration(requestUsesV5Usage(rawRequest))
+     if (!selection) throw new Error(t('ui.naiTokenIsNotConfigured'))
+     const token = selection.account.token
+     if (selection.rotated) {
+@@ -319,12 +322,15 @@ const startup = app.whenReady().then(async () => {
+       broadcast('scenes:changed', { sceneId: request.sceneId, filePath: saved.filePath })
+ 
+     // 생성 후 잔액 갱신 (실사용량 추적의 진실 공급원) — 실패해도 생성 흐름엔 영향 없음
+-    void fetchAnlasBalance(token).then(({ anlas, tier, usage }) => {
+-      if (anlas !== null) {
+-        logBalance(anlas)
+-        broadcast('anlas:balance', { anlas, tier, ...(usage ? { usage } : {}) })
+-      }
+-    })
++    // [custom] 동시 생성이면 계정별로 알린다 (상단 잔액·사용량 기록은 활성 계정일 때만)
++    if (laneAccountId) refreshLaneBalance(laneAccountId, token)
++    else
++      void fetchAnlasBalance(token).then(({ anlas, tier, usage }) => {
++        if (anlas !== null) {
++          logBalance(anlas)
++          broadcast('anlas:balance', { anlas, tier, ...(usage ? { usage } : {}) })
++        }
++      })
+ 
+     return saved.filePath
+   })
+@@ -333,6 +339,7 @@ const startup = app.whenReady().then(async () => {
+   const savedDelay = Number(getSetting('gen_delay_ms'))
+   const savedDelayMinus = Number(getSetting('gen_delay_minus_ms'))
+   const savedDelayPlus = Number(getSetting('gen_delay_plus_ms'))
++  queue.setParallel(parallelLanes, parallelTarget) // [custom] 여러 계정으로 동시 생성
+   queue.setDelayMs(Number.isFinite(savedDelay) && savedDelay >= 0 ? savedDelay : 600, {
+     enabled: getSetting('gen_delay_random_enabled') === '1',
+     minusMs: Number.isFinite(savedDelayMinus) ? savedDelayMinus : 0,
+diff --git a/src/main/ipc.ts b/src/main/ipc.ts
+index 4e249295f391b2e20cf36da38f848af216b2c0a0..75589d47149d4df6fbe8367fd2d0be33cfa2d143 100644
+--- a/src/main/ipc.ts
++++ b/src/main/ipc.ts
+@@ -121,6 +121,7 @@ import {
+   listFolderGroups,
+   updateFolderGroup
+ } from './custom/folder-groups'
++import { getParallelConfig, setParallelConfig } from './custom/parallel'
+ import {
+   listPromptPresets,
+   createPromptPreset,
+@@ -248,6 +249,7 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
+       reason: 'added',
+       label: account.label
+     })
++    ctx.queue.kick() // [custom] 동시 생성 중이면 새 계정도 바로 거든다
+     return { ...result, accountId: account.id, label: account.label }
+   })
+   handle('nai:setActiveAccount', async ({ id }) => {
+@@ -271,6 +273,7 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
+   handle('nai:deleteAccount', ({ id }) => {
+     const activeId = deleteNaiAccount(id)
+     broadcast('nai:accountChanged', { accountId: activeId, reason: 'deleted' })
++    ctx.queue.kick() // [custom] 동시 생성 계정 목록이 바뀜
+     return { activeId }
+   })
+   handle('nai:balance', async () => {
+@@ -514,6 +517,13 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
+ 
+   handle('scenes:exportJson', async ({ presetId }) => ({ saved: await exportScenesJson(presetId) }))
+   handle('scenes:importJson', ({ presetId }) => importScenesJson(presetId))
++  // [custom] 여러 계정으로 동시 생성 — 바꾸면 큐를 다시 돌린다 (계정별 루프 ↔ 한 장씩)
++  handle('custom:parallelGet', () => getParallelConfig())
++  handle('custom:parallelSet', (patch) => {
++    const config = setParallelConfig(patch)
++    ctx.queue.kick()
++    return config
++  })
+   // [custom] 상위 폴더
+   handle('custom:folderGroups:list', ({ kind }) => listFolderGroups(kind))
+   handle('custom:folderGroups:create', ({ kind, name }) => ({ id: createFolderGroup(kind, name) }))
+diff --git a/src/main/queue/generation-queue.ts b/src/main/queue/generation-queue.ts
+index 253eda0ca5d06babdbff5c2a0eef0f4236e84cc1..388b5d7de8e67a1a2a544443f27898b47ec29eb8 100644
+--- a/src/main/queue/generation-queue.ts
++++ b/src/main/queue/generation-queue.ts
+@@ -11,6 +11,7 @@ import type {
+   CharacterPromptInput,
+   GenerationDelayRandomization,
+   GenerationRequest,
++  LanePauseReason,
+   QueueItem,
+   QueueStatus,
+   SceneReservation
+@@ -30,6 +31,22 @@ const MAX_RETRIES = 3
+ /** 백오프 기준·상한 (ms) — 실제 대기는 지수 백오프 + 지터, Retry-After가 더 크면 그걸 따름 */
+ const RETRY_BASE_MS = 2000
+ const RETRY_MAX_MS = 20000
++/** [custom] 쉬는 계정이 다시 확인하기 전까지 대기를 끊어 보는 간격 (설정이 바뀌면 빨리 반응) */
++const LANE_POLL_MS = 5000
++
++/**
++ * [custom] 동시 생성에서 계정 하나가 지금 뽑으면 안 될 때 생성 함수가 던진다
++ * (게이지 소진·Opus 아님·조회 실패). 큐는 그 계정을 retryAfterMs 동안 쉬게 하고 항목을 대기로 돌린다.
++ */
++export class LanePauseError extends Error {
++  constructor(
++    readonly reason: LanePauseReason,
++    readonly retryAfterMs: number
++  ) {
++    super(`lane paused: ${reason}`)
++    this.name = 'LanePauseError'
++  }
++}
+ 
+ export class GenerationQueue extends EventEmitter {
+   private items = new Map<string, QueueItem>()
+@@ -42,12 +59,21 @@ export class GenerationQueue extends EventEmitter {
+     minusMs: 0,
+     plusMs: 0
+   }
++  // [custom] 동시 생성 — 계정(레인)마다 한 장씩. 꺼져 있으면 아래 run()의 한 장씩 루프 그대로
++  private lanesProvider: (() => string[] | null) | null = null
++  private targetProvider: (() => string | null) | null = null
++  private laneRunning = new Set<string>()
++  private laneGenerating = new Map<string, string>()
++  private lanePause = new Map<string, { until: number; reason: LanePauseReason }>()
++  private laneDone = new Map<string, number>()
+ 
+   constructor(
+     private readonly generate: (
+       request: GenerationRequest,
+       id: string,
+-      signal: AbortSignal
++      signal: AbortSignal,
++      /** [custom] 동시 생성이면 이 항목을 뽑을 계정 */
++      laneAccountId?: string
+     ) => Promise<string>,
+     private readonly random: () => number = Math.random
+   ) {
+@@ -60,13 +86,14 @@ export class GenerationQueue extends EventEmitter {
+     randomCharacterPrompts: readonly CharacterPromptInput[] = []
+   ): string[] {
+     const ids: string[] = []
++    const target = this.currentTarget()
+     for (let i = 0; i < count; i++) {
+       const id = randomUUID()
+       // 배치는 장마다 시드+i — 같은 시드 N장(동일 그림 N장) 방지, 시드 고정 시에도 각 장 재현 가능
+       const seededRequest =
+         i === 0 ? request : { ...request, seed: (request.seed + i) % 4294967296 }
+       const req = applyRandomCharacterPrompt(seededRequest, randomCharacterPrompts)
+-      this.items.set(id, { id, state: 'pending', request: req })
++      this.items.set(id, { id, state: 'pending', request: req, ...target })
+       ids.push(id)
+     }
+     this.emitChanged()
+@@ -83,11 +110,13 @@ export class GenerationQueue extends EventEmitter {
+     if (reservations && reservations.length !== requests.length) {
+       throw new Error('Reservation count must match request count')
+     }
++    const target = this.currentTarget()
+     const entries = requests.map((request, index): QueueItem => ({
+       id: randomUUID(),
+       state: 'pending',
+       request,
+-      ...(reservations ? { reservation: reservations[index] } : {})
++      ...(reservations ? { reservation: reservations[index] } : {}),
++      ...target
+     }))
+     try {
+       for (const item of entries) this.items.set(item.id, item)
+@@ -133,19 +162,70 @@ export class GenerationQueue extends EventEmitter {
+   }
+ 
+   status(): QueueStatus {
++    const lanes = this.activeLanes()
++    const now = Date.now()
+     return {
+       items: [...this.items.values()].map(queueItemSnapshot),
+-      running: this.running,
+-      delayMs: this.delayMs
++      running: this.running || this.laneRunning.size > 0,
++      delayMs: this.delayMs,
++      ...(lanes
++        ? {
++            lanes: lanes.map((accountId) => {
++              const pause = this.lanePause.get(accountId)
++              const paused = pause && pause.until > now ? pause : null
++              return {
++                accountId,
++                generatingId: this.laneGenerating.get(accountId) ?? null,
++                pausedUntil: paused?.until ?? null,
++                pauseReason: paused?.reason ?? null,
++                done: this.laneDone.get(accountId) ?? 0
++              }
++            })
++          }
++        : {})
+     }
+   }
+ 
++  /**
++   * [custom] 동시 생성 설정. lanes: 동시에 뽑을 계정 id 목록 (2개 미만·null이면 원래대로 한 장씩),
++   * target: 새로 넣는 항목을 보낼 계정 (null = 비어 있는 계정 아무나)
++   */
++  setParallel(lanes: () => string[] | null, target: () => string | null): void {
++    this.lanesProvider = lanes
++    this.targetProvider = target
++  }
++
++  /** [custom] 동시 생성 설정·계정이 바뀌었을 때 — 상태를 다시 알리고 남은 항목을 다시 돌린다 */
++  kick(): void {
++    this.emitChanged()
++    void this.run()
++  }
++
++  private activeLanes(): string[] | null {
++    const lanes = this.lanesProvider?.() ?? null
++    return lanes && lanes.length >= 2 ? lanes : null
++  }
++
++  /** 새 항목에 붙일 보낼 곳 — 동시 생성 중이고 그 계정이 있을 때만 */
++  private currentTarget(): { accountId: string } | Record<string, never> {
++    const lanes = this.activeLanes()
++    const target = lanes ? (this.targetProvider?.() ?? null) : null
++    return target && lanes?.includes(target) ? { accountId: target } : {}
++  }
++
+   private async run(): Promise<void> {
+-    if (this.running) return
++    // [custom] 동시 생성이면 계정마다 루프를 띄운다. 한 장씩 루프가 아직 도는 중이면 그 루프가 끝날 때 넘겨준다
++    const lanes = this.activeLanes()
++    if (lanes) {
++      if (this.running) return
++      for (const lane of lanes) if (!this.laneRunning.has(lane)) void this.runLane(lane)
++      return
++    }
++    if (this.running || this.laneRunning.size > 0) return
+     this.running = true
+     try {
+       let next: QueueItem | undefined
+-      while ((next = this.nextPending())) {
++      while (!this.activeLanes() && (next = this.nextPending())) {
+         next.state = 'generating'
+         const controller = new AbortController()
+         this.controllers.set(next.id, controller)
+@@ -175,6 +255,78 @@ export class GenerationQueue extends EventEmitter {
+     } finally {
+       this.running = false
+       this.emitChanged()
++      // [custom] 도는 사이에 동시 생성이 켜졌으면 남은 항목을 계정별 루프로 넘긴다
++      if (this.activeLanes() && this.nextPending()) void this.run()
++    }
++  }
++
++  /**
++   * [custom] 계정 하나의 루프 — 그 계정 앞으로 온 항목이나 보낼 곳이 없는 항목을 한 장씩 뽑는다.
++   * 생성 함수가 LanePauseError를 던지면 항목을 대기로 돌리고(다른 계정이 가져가게) 이 계정은 쉰다.
++   */
++  private async runLane(lane: string): Promise<void> {
++    this.laneRunning.add(lane)
++    this.emitChanged()
++    try {
++      for (;;) {
++        const lanes = this.activeLanes()
++        if (!lanes || !lanes.includes(lane)) break // 동시 생성이 꺼졌거나 계정이 빠짐
++        const pause = this.lanePause.get(lane)
++        if (pause) {
++          const wait = pause.until - Date.now()
++          if (wait > 0) {
++            // 맡을 항목이 없으면 기다리지 않고 끝낸다 (다음에 항목이 들어오면 다시 깨어난다)
++            if (!this.nextPendingFor(lane, lanes)) break
++            await sleep(Math.min(wait, LANE_POLL_MS))
++            continue
++          }
++          this.lanePause.delete(lane)
++          this.emitChanged()
++        }
++        const next = this.nextPendingFor(lane, lanes)
++        if (!next) break
++        next.state = 'generating'
++        next.laneAccountId = lane
++        const controller = new AbortController()
++        this.controllers.set(next.id, controller)
++        this.laneGenerating.set(lane, next.id)
++        this.emitChanged()
++        let paused: LanePauseError | null = null
++        try {
++          next.filePath = await this.generateWithRetry(next, controller, lane)
++          next.state = 'done'
++          this.laneDone.set(lane, (this.laneDone.get(lane) ?? 0) + 1)
++        } catch (e) {
++          if (e instanceof LanePauseError && !controller.signal.aborted) {
++            paused = e
++            next.state = 'pending'
++            delete next.laneAccountId
++            this.lanePause.set(lane, { until: Date.now() + e.retryAfterMs, reason: e.reason })
++          } else if (controller.signal.aborted || isAbortError(e)) {
++            next.state = 'cancelled'
++            this.emit('cancelled', [next])
++          } else {
++            next.state = 'failed'
++            next.error = e instanceof Error ? e.message : String(e)
++          }
++        } finally {
++          this.controllers.delete(next.id)
++          this.laneGenerating.delete(lane)
++          next.retrying = false
++          if (!paused) this.markFinished(next)
++        }
++        this.emitChanged()
++        if (paused) {
++          void this.run() // 쉬지 않는 다른 계정이 돌려받은 항목을 바로 가져가게
++          continue
++        }
++        if (this.nextPendingFor(lane, this.activeLanes() ?? [])) await sleep(this.nextDelayMs())
++      }
++    } finally {
++      this.laneRunning.delete(lane)
++      this.emitChanged()
++      // 동시 생성이 꺼졌으면 남은 항목은 한 장씩 루프가 이어받는다
++      if (!this.activeLanes() && this.laneRunning.size === 0 && this.nextPending()) void this.run()
+     }
+   }
+ 
+@@ -183,11 +335,15 @@ export class GenerationQueue extends EventEmitter {
+    * 재시도 대기 중엔 retrying 플래그로 UI에 알린다 (state는 'generating' 유지).
+    * 같은 controller를 재시도 내내 공유하므로 대기 중 취소도 정상 반영된다.
+    */
+-  private async generateWithRetry(item: QueueItem, controller: AbortController): Promise<string> {
++  private async generateWithRetry(
++    item: QueueItem,
++    controller: AbortController,
++    lane?: string
++  ): Promise<string> {
+     const { signal } = controller
+     for (let attempt = 0; ; attempt++) {
+       try {
+-        return await this.generate(item.request, item.id, signal)
++        return await this.generate(item.request, item.id, signal, lane)
+       } catch (e) {
+         if (signal.aborted || isAbortError(e)) throw e
+         if (attempt >= MAX_RETRIES || !isRetryableError(e)) throw e
+@@ -213,6 +369,16 @@ export class GenerationQueue extends EventEmitter {
+     return undefined
+   }
+ 
++  /** [custom] 이 계정이 맡을 다음 항목 — 이 계정 앞으로 온 것이나 보낼 곳이 없는(없어진) 것, 들어온 순서대로 */
++  private nextPendingFor(lane: string, lanes: string[]): QueueItem | undefined {
++    for (const item of this.items.values()) {
++      if (item.state !== 'pending') continue
++      const target = item.accountId && lanes.includes(item.accountId) ? item.accountId : null
++      if (target === null || target === lane) return item
++    }
++    return undefined
++  }
++
+   private nextDelayMs(): number {
+     return randomizedGenerationDelayMs(this.delayMs, this.delayRandomization, this.random)
+   }
+diff --git a/src/renderer/src/App.tsx b/src/renderer/src/App.tsx
+index a3aba879dfb347f03a3222b1458ba62dbbee5a3c..b3d2cae50f0f67a3ea93be1c9609477f114a57c0 100644
+--- a/src/renderer/src/App.tsx
++++ b/src/renderer/src/App.tsx
+@@ -33,6 +33,7 @@ import { useLayoutStore } from './stores/layout-store'
+ import { useThemeStore } from './stores/theme-store'
+ import { bindDragScroll, hydrateTouchMode } from './lib/custom-touch-mode'
+ import { useFolderGroupsStore } from './stores/custom-folder-groups-store'
++import { bindParallelEvents, useParallelStore } from './stores/custom-parallel-store'
+ 
+ // 새 설치 첫 실행에만 뜨므로 평소 실행에선 읽지 않는다
+ const Onboarding = lazy(() =>
+@@ -77,6 +78,7 @@ export default function App(): React.JSX.Element {
+         useGenerationStore.getState().hydrate(),
+         useCharactersStore.getState().load(),
+         useFolderGroupsStore.getState().load(), // [custom] 상위 폴더
++        useParallelStore.getState().load(), // [custom] 여러 계정으로 동시 생성
+         useFragmentsStore.getState().load(),
+         useVibesStore.getState().load(),
+         useCharRefsStore.getState().load(),
+@@ -93,6 +95,7 @@ export default function App(): React.JSX.Element {
+     const unbindUpdate = bindUpdateEvents()
+     const unbindNav = bindNavMouse() // 마우스 4/5번 버튼 뒤로/앞으로
+     const unbindDragScroll = bindDragScroll() // [custom] 터치·원격 모드: 끌어서 스크롤
++    const unbindParallel = bindParallelEvents() // [custom] 계정별 진행·게이지
+     // F5 새로고침 (프로덕션에서도)
+     const onF5 = (e: KeyboardEvent): void => {
+       if (e.key === 'F5') {
+@@ -103,6 +106,7 @@ export default function App(): React.JSX.Element {
+     window.addEventListener('keydown', onF5)
+     return () => {
+       unbindDragScroll()
++      unbindParallel()
+       unbindGen()
+       unbindScene()
+       unbindKeys()
+diff --git a/src/renderer/src/browser/install-browser-api.ts b/src/renderer/src/browser/install-browser-api.ts
+index e7db8f526a971b450b32ad1a5c781615a2e8e26a..fa2f0be88ccc622c6eb8f9f178f55d58d411344e 100644
+--- a/src/renderer/src/browser/install-browser-api.ts
++++ b/src/renderer/src/browser/install-browser-api.ts
+@@ -874,6 +874,9 @@ async function dispatch(channel: string, rawRequest: unknown): Promise<unknown>
+ 
+   // [custom] 감시 폴더는 데스크톱 전용
+   if (channel.startsWith('custom:watch')) return { enabled: false, dir: '' }
++  // [custom] 동시 생성은 데스크톱 전용
++  if (channel === 'custom:parallelGet' || channel === 'custom:parallelSet')
++    return { enabled: false, target: null }
+   // [custom] 상위 폴더도 데스크톱 전용 (브라우저 체험판에서는 저장하지 않는다)
+   if (channel === 'custom:folderGroups:list') return { groups: [], links: [] }
+   if (channel === 'custom:folderGroups:create') return { id: -Date.now() }
+diff --git a/src/renderer/src/components/custom-lane-tabs.tsx b/src/renderer/src/components/custom-lane-tabs.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..880fe87034066dae6687429f68db850936ed6771
+--- /dev/null
++++ b/src/renderer/src/components/custom-lane-tabs.tsx
+@@ -0,0 +1,103 @@
++import { displayOpusUsagePercent } from '@shared/anlas'
++import type { MessageId } from '@shared/i18n'
++import type { QueueLane } from '@shared/types'
++import { useT } from '../lib/i18n'
++import { cn } from '../lib/utils'
++import { useParallelStore, useQueueLanes, useViewedLane } from '../stores/custom-parallel-store'
++
++const PAUSE_LABEL: Record<NonNullable<QueueLane['pauseReason']>, MessageId> = {
++  exhausted: 'ui.customLanePausedExhausted',
++  notOpus: 'ui.customLanePausedNotOpus',
++  unknown: 'ui.customLanePausedUnknown'
++}
++
++/**
++ * [custom] 동시 생성 중 미리보기 위 계정 탭 — 계정마다 상태·게이지·이번에 뽑은 수.
++ * 누르면 가운데 미리보기가 그 계정의 진행을 보여 준다.
++ */
++export function LaneTabs(): React.JSX.Element | null {
++  const t = useT()
++  const lanes = useQueueLanes()
++  const viewed = useViewedLane()
++  const accounts = useParallelStore((s) => s.accounts)
++  const balances = useParallelStore((s) => s.balances)
++  const setViewLane = useParallelStore((s) => s.setViewLane)
++  if (!lanes || lanes.length < 2) return null
++
++  return (
++    <div
++      role="tablist"
++      aria-label={t('ui.customLaneTabs')}
++      // 왼쪽 위 — 세로 그림은 보통 가운데에 놓이고 얼굴이 위쪽 가운데라 가리지 않게.
++      // 빈 자리는 클릭·창 끌기를 그대로 통과시키고 탭만 누를 수 있게 한다
++      className="pointer-events-none absolute left-2 right-2 top-2 z-30 flex flex-wrap gap-1.5"
++    >
++      {lanes.map((lane, index) => {
++        const label =
++          accounts.find((a) => a.id === lane.accountId)?.label ?? `#${String(index + 1)}`
++        const selected = viewed?.accountId === lane.accountId
++        const balance = balances[lane.accountId]
++        const gauge =
++          balance?.tier === 'opus' && balance.usage ? displayOpusUsagePercent(balance.usage) : null
++        const status = lane.generatingId
++          ? t('ui.customLaneGenerating')
++          : lane.pauseReason
++            ? t(PAUSE_LABEL[lane.pauseReason])
++            : t('ui.customLaneIdle')
++        const done = t('ui.customLaneDoneValue', lane.done)
++        const title = [
++          label,
++          status,
++          gauge != null ? t('ui.customLaneGaugeValue', gauge) : null,
++          balance?.anlas != null ? `Anlas ${balance.anlas}` : null,
++          done
++        ]
++          .filter(Boolean)
++          .join(' · ')
++        return (
++          <button
++            key={lane.accountId}
++            type="button"
++            role="tab"
++            aria-selected={selected}
++            title={title}
++            onClick={() => setViewLane(lane.accountId)}
++            className={cn(
++              'no-drag pointer-events-auto flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-1 text-[12px] backdrop-blur transition-colors',
++              selected
++                ? 'border-accent bg-paper/95 text-ink'
++                : 'border-line bg-paper/75 text-muted hover:text-ink'
++            )}
++          >
++            <span
++              aria-hidden
++              className={cn(
++                'size-2 shrink-0 rounded-full',
++                lane.generatingId
++                  ? 'animate-pulse bg-success'
++                  : lane.pauseReason
++                    ? 'bg-warning'
++                    : 'bg-faint'
++              )}
++            />
++            <span className="max-w-[8rem] truncate font-medium">{label}</span>
++            <span className={cn(lane.pauseReason && !lane.generatingId && 'text-warning-ink')}>
++              {status}
++            </span>
++            {gauge != null && (
++              <span
++                className={cn(
++                  'font-mono text-[11px]',
++                  balance?.usage?.isNegative ? 'text-danger-ink' : 'text-faint'
++                )}
++              >
++                {gauge}%
++              </span>
++            )}
++            <span className="text-[11px] text-faint">{done}</span>
++          </button>
++        )
++      })}
++    </div>
++  )
++}
+diff --git a/src/renderer/src/components/custom-send-to.tsx b/src/renderer/src/components/custom-send-to.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..6298fdeb3595a1c9ae8c82212c62e10a97a4f2af
+--- /dev/null
++++ b/src/renderer/src/components/custom-send-to.tsx
+@@ -0,0 +1,37 @@
++import { useT } from '../lib/i18n'
++import { useParallelStore, useQueueLanes } from '../stores/custom-parallel-store'
++import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select'
++
++const AUTO = 'auto'
++
++/**
++ * [custom] 동시 생성 중 생성 버튼 위 '보낼 곳' — 새로 넣는 생성을 맡을 계정.
++ * 자동이면 비어 있는 계정이 가져간다. 동시 생성이 아니면 보이지 않는다.
++ */
++export function SendToPicker(): React.JSX.Element | null {
++  const t = useT()
++  const lanes = useQueueLanes()
++  const accounts = useParallelStore((s) => s.accounts)
++  const target = useParallelStore((s) => s.config.target)
++  const setTarget = useParallelStore((s) => s.setTarget)
++  if (!lanes) return null
++  const value = target && lanes.some((l) => l.accountId === target) ? target : AUTO
++  return (
++    <div className="flex items-center gap-2" title={t('ui.customSendToHint')}>
++      <span className="shrink-0 text-[12px] text-muted">{t('ui.customSendTo')}</span>
++      <Select value={value} onValueChange={(v) => void setTarget(v === AUTO ? null : v)}>
++        <SelectTrigger className="h-8 min-w-0 flex-1" aria-label={t('ui.customSendTo')}>
++          <SelectValue />
++        </SelectTrigger>
++        <SelectContent>
++          <SelectItem value={AUTO}>{t('ui.customSendToAuto')}</SelectItem>
++          {lanes.map((lane, index) => (
++            <SelectItem key={lane.accountId} value={lane.accountId}>
++              {accounts.find((a) => a.id === lane.accountId)?.label ?? `#${String(index + 1)}`}
++            </SelectItem>
++          ))}
++        </SelectContent>
++      </Select>
++    </div>
++  )
++}
+diff --git a/src/renderer/src/components/preview-pane.tsx b/src/renderer/src/components/preview-pane.tsx
+index c412b705a9a909e202585fcfd808559c9bb756c5..2910145602237b3fcab2f6d42f876d2b60fb729f 100644
+--- a/src/renderer/src/components/preview-pane.tsx
++++ b/src/renderer/src/components/preview-pane.tsx
+@@ -10,6 +10,8 @@ import { useT } from '../lib/i18n'
+ import { greetingFor } from '../lib/greeting'
+ import { DropOverlay } from './drop-overlay'
+ import { ImageContextMenu } from './image-context-menu'
++import { LaneTabs } from './custom-lane-tabs'
++import { usePreviewFeed } from '../stores/custom-parallel-store'
+ 
+ /** 빈 미리보기의 시간대별 인사. 변형은 마운트 때 한 번 고르고, 시간대는 1분마다 다시 판정 */
+ function Greeting(): React.JSX.Element {
+@@ -43,15 +45,12 @@ function Greeting(): React.JSX.Element {
+ 
+ export function PreviewPane(): React.JSX.Element {
+   const t = useT()
+-  const previewPng = useGenerationStore((s) => s.previewPng)
+-  const progress = useGenerationStore((s) => s.progress)
++  // [custom] 동시 생성이면 보고 있는 계정 탭의 진행 (아니면 원래 전역 값 그대로)
++  const { previewPng, progress, generating, genStartAt } = usePreviewFeed()
+   const viewingFilePath = useGenerationStore((s) => s.viewingFilePath)
+-  const queue = useGenerationStore((s) => s.queue)
+-  const genStartAt = useGenerationStore((s) => s.genStartAt)
+   const avgDurationMs = useGenerationStore((s) => s.avgDurationMs)
+ 
+   const viewPinned = useGenerationStore((s) => s.viewPinned)
+-  const generating = queue?.items.some((i) => i.state === 'generating') ?? false
+   const preparing = generating && !progress // 스텝 진행 전 = 준비 중(인코딩 등)
+ 
+   // 생성 중엔 스트리밍 프레임 우선 — 단, 유저가 다른 이미지를 클릭(고정 보기)하면 그 파일 우선 (B11)
+@@ -133,6 +132,7 @@ export function PreviewPane(): React.JSX.Element {
+     >
+       {/* 상단 스트립을 창 드래그 영역으로 (이미지 위쪽) */}
+       <div className="drag absolute inset-x-0 top-0 z-20 h-6" />
++      <LaneTabs />
+       {src ? (
+         // 긴 쪽이 박스 테두리에 닿도록 꽉 채움 (object-contain으로 비율 유지).
+         // 완성작(파일)이 표시 중일 때만 우클릭 메뉴 — 스트리밍 미리보기(previewPng)는 파일이 아님
+diff --git a/src/renderer/src/components/prompt-panel.tsx b/src/renderer/src/components/prompt-panel.tsx
+index 0c47da41fe7f5e0f149034d95ca21bb5124d3d71..f995fa14745240ad81a346457387c1ef6642cf1e 100644
+--- a/src/renderer/src/components/prompt-panel.tsx
++++ b/src/renderer/src/components/prompt-panel.tsx
+@@ -40,6 +40,8 @@ import { ResolutionPicker } from './resolution-picker'
+ import { SOURCE_BANNER_HEIGHT, SourceBanner } from './source-banner'
+ import { Button } from './ui/button'
+ import { Popover, PopoverContent, PopoverTrigger } from './ui/popover'
++import { SendToPicker } from './custom-send-to'
++import { useQueueLanes } from '../stores/custom-parallel-store'
+ 
+ export function PromptPanel(): React.JSX.Element {
+   const t = useT()
+@@ -125,6 +127,7 @@ export function PromptPanel(): React.JSX.Element {
+   const queueCount =
+     queue?.items.filter((i) => i.state === 'pending' || i.state === 'generating').length ?? 0
+   const generating = queueCount > 0
++  const parallel = useQueueLanes() != null // [custom] 여러 계정으로 동시 생성 중
+   const activeChars = charItems.filter((c) => c.enabled && c.prompt.trim()).length
+ 
+   // 토큰 표시: 포지티브는 기본+캐릭터 합산(공홈과 동일), 네거티브는 메인 것만 —
+@@ -390,6 +393,9 @@ export function PromptPanel(): React.JSX.Element {
+ 
+       {quickGenerationControlsEnabled && <QuickGenerationControls />}
+ 
++      {/* [custom] 동시 생성: 새로 넣는 생성을 맡을 계정 */}
++      <SendToPicker />
++
+       {/* 생성 행: 파라미터 / 배치 / 생성 */}
+       <div className="flex items-center gap-2">
+         <Button
+@@ -433,7 +439,8 @@ export function PromptPanel(): React.JSX.Element {
+             <Plus size={13} />
+           </Button>
+         </div>
+-        {generating ? (
++        {/* [custom] 동시 생성 중엔 생성 버튼을 남겨 다른 계정 앞으로 더 넣을 수 있게 (취소는 옆에 작게) */}
++        {generating && !parallel ? (
+           <Button variant="danger" size="lg" className="flex-1" onClick={() => void cancelAll()}>
+             <Square size={14} /> {t('ui.cancel')} ({queueCount})
+           </Button>
+@@ -467,6 +474,18 @@ export function PromptPanel(): React.JSX.Element {
+             {t('ui.generate')}
+           </Button>
+         )}
++        {generating && parallel && (
++          <Button
++            variant="danger"
++            size="lg"
++            className="shrink-0 gap-1.5 px-3"
++            title={t('ui.customCancelAllValue', queueCount)}
++            aria-label={t('ui.customCancelAllValue', queueCount)}
++            onClick={() => void cancelAll()}
++          >
++            <Square size={14} /> {queueCount}
++          </Button>
++        )}
+       </div>
+ 
+       <ParamsDialog open={paramsOpen} onOpenChange={setParamsOpen} />
+diff --git a/src/renderer/src/components/scene-detail.tsx b/src/renderer/src/components/scene-detail.tsx
+index 9e4a7b860143a12c04a08d50d7fee20c25addfce..d7065932cbb333b2c597e72000e5bbb23659ca7f 100644
+--- a/src/renderer/src/components/scene-detail.tsx
++++ b/src/renderer/src/components/scene-detail.tsx
+@@ -16,6 +16,11 @@ import { PromptEditor } from './prompt-editor'
+ import { ReserveCount } from './reserve-count'
+ import { Button } from './ui/button'
+ import { useT } from '../lib/i18n'
++import {
++  useSceneFrame,
++  useSceneGenerating,
++  useSceneHasFrame
++} from '../stores/custom-parallel-store'
+ 
+ export function SceneDetail({ scene }: { scene: Scene }): React.JSX.Element {
+   const t = useT()
+@@ -45,11 +50,9 @@ export function SceneDetail({ scene }: { scene: Scene }): React.JSX.Element {
+   const charItems = useCharactersStore((s) => s.items)
+   // Only whether a frame exists — the frame itself is read by StreamingFrame so per-step
+   // previews don't re-render the whole image grid
+-  const hasPreview = useGenerationStore((s) => s.previewPng != null)
+-  const generatingSceneId = useGenerationStore(
+-    (s) => s.queue?.items.find((i) => i.state === 'generating')?.request.sceneId ?? null
+-  )
+-  const streaming = generatingSceneId === scene.id
++  // [custom] 동시 생성이면 여러 씬을 함께 뽑으므로 이 씬을 뽑는 항목 기준
++  const streaming = useSceneGenerating(scene.id)
++  const hasPreview = useSceneHasFrame(scene.id, streaming)
+   const sentinelRef = useRef<HTMLDivElement>(null)
+   const [cols, setCols] = useState(3)
+   const [lightboxIdx, setLightboxIdx] = useState(-1)
+@@ -318,7 +321,7 @@ export function SceneDetail({ scene }: { scene: Scene }): React.JSX.Element {
+                 className="relative overflow-hidden rounded-md bg-surface-2 ring-2 ring-accent/50"
+                 style={{ aspectRatio: `${scene.width} / ${scene.height}` }}
+               >
+-                <StreamingFrame key={scene.id} streaming={streaming} />
++                <StreamingFrame key={scene.id} sceneId={scene.id} streaming={streaming} />
+                 {streaming && (
+                   <span className="absolute bottom-1 left-1 rounded bg-black/55 px-1.5 py-0.5 text-[10px] font-medium text-white">
+                     {t('ui.generating')}
+@@ -405,8 +408,14 @@ export function SceneDetail({ scene }: { scene: Scene }): React.JSX.Element {
+  * Streaming tile image. Subscribes to the preview frame on its own so each step re-renders
+  * only this tile, and keeps the last frame after streaming ends until the parent releases it.
+  */
+-function StreamingFrame({ streaming }: { streaming: boolean }): React.JSX.Element {
+-  const previewPng = useGenerationStore((s) => s.previewPng)
++function StreamingFrame({
++  sceneId,
++  streaming
++}: {
++  sceneId: number
++  streaming: boolean
++}): React.JSX.Element {
++  const previewPng = useSceneFrame(sceneId, streaming) // [custom] 동시 생성이면 이 씬을 뽑는 계정 것
+   const [heldFrame, setHeldFrame] = useState<string | null>(null)
+   // Remember the latest frame during render (no extra effect pass per step)
+   if (streaming && previewPng && previewPng !== heldFrame) setHeldFrame(previewPng)
+diff --git a/src/renderer/src/components/scene-mode.tsx b/src/renderer/src/components/scene-mode.tsx
+index 171fd49d25547aa8a7a96db196129c984cb3f24f..e806d4cb8a17dad98aec33077a3ee06cd9ee69b4 100644
+--- a/src/renderer/src/components/scene-mode.tsx
++++ b/src/renderer/src/components/scene-mode.tsx
+@@ -35,7 +35,15 @@ import {
+ } from '@dnd-kit/core'
+ import { arrayMove, rectSortingStrategy, SortableContext, useSortable } from '@dnd-kit/sortable'
+ import { AnimatePresence, motion } from 'motion/react'
+-import { memo, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
++import {
++  memo,
++  useEffect,
++  useLayoutEffect,
++  useMemo,
++  useRef,
++  useState,
++  type CSSProperties
++} from 'react'
+ import type { Scene, SceneCast } from '@shared/types'
+ import { RESOLUTIONS, imageUrl, thumbnailFallback } from '../lib/constants'
+ import { useT } from '../lib/i18n'
+@@ -62,6 +70,11 @@ import { Popover, PopoverContent, PopoverTrigger } from './ui/popover'
+ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select'
+ import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip'
+ import { useSortActivation } from '../lib/custom-touch-mode'
++import {
++  sceneIdsFromKey,
++  useGeneratingSceneKey,
++  useSceneFrame
++} from '../stores/custom-parallel-store'
+ 
+ export function SceneMode(): React.JSX.Element {
+   const scenes = useScenesStore((s) => s.scenes)
+@@ -418,8 +431,11 @@ function SceneGrid(): React.JSX.Element {
+ 
+   // Streaming: only the scene being generated. The card subscribes to the preview frame itself,
+   // so per-step frames re-render that one card instead of the whole sortable grid
+-  const generatingSceneId = useGenerationStore(
+-    (s) => s.queue?.items.find((i) => i.state === 'generating')?.request.sceneId ?? null
++  // [custom] 동시 생성이면 여러 씬을 함께 뽑는다 — 문자열 키라 단계마다 그리드를 다시 그리지 않는다
++  const generatingSceneKey = useGeneratingSceneKey()
++  const generatingSceneIds = useMemo(
++    () => sceneIdsFromKey(generatingSceneKey),
++    [generatingSceneKey]
+   )
+ 
+   async function exportJson(): Promise<void> {
+@@ -587,7 +603,7 @@ function SceneGrid(): React.JSX.Element {
+                 <SceneCard
+                   key={scene.id}
+                   scene={scene}
+-                  generating={scene.id === generatingSceneId}
++                  generating={generatingSceneIds.has(scene.id)}
+                 />
+               ))}
+               <button
+@@ -862,7 +878,7 @@ const SceneCard = memo(function SceneCard({
+   scene: Scene
+   generating: boolean
+ }): React.JSX.Element {
+-  const live = useGenerationStore((s) => (generating ? s.previewPng : null))
++  const live = useSceneFrame(scene.id, generating) // [custom] 동시 생성이면 이 씬을 뽑는 계정 것
+   const editMode = useScenesStore((s) => s.editMode)
+   const cardOrientation = useScenesStore((s) => s.cardOrientation)
+   const selection = useScenesStore((s) => s.selection)
+diff --git a/src/renderer/src/components/token-dialog.tsx b/src/renderer/src/components/token-dialog.tsx
+index b19f459544ab03bcbde173cb60d150a892d050c9..9df679337bd07bcbe721370aed9f68e4a08c52f8 100644
+--- a/src/renderer/src/components/token-dialog.tsx
++++ b/src/renderer/src/components/token-dialog.tsx
+@@ -54,6 +54,7 @@ import { Slider } from './ui/slider'
+ import { Switch } from './ui/switch'
+ import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs'
+ import { TOUCH_MODE_KEY, applyTouchMode } from '../lib/custom-touch-mode'
++import { useParallelStore } from '../stores/custom-parallel-store'
+ 
+ type SectionId = 'appearance' | 'generation' | 'storage' | 'shortcuts' | 'account' | 'about'
+ 
+@@ -733,6 +734,9 @@ function AccountSection(): React.JSX.Element {
+   // 계정 자동 전환 (기본 켜짐) — 브라우저 버전은 전환하지 않는다
+   const [autoSwitch, setAutoSwitch] = useState(true)
+   const canAutoSwitch = window.nais.runtime !== 'browser' && accounts.length > 1
++  // [custom] 여러 계정으로 동시에 생성
++  const parallelEnabled = useParallelStore((s) => s.config.enabled)
++  const setParallelEnabled = useParallelStore((s) => s.setEnabled)
+   const anlasBalance = useGenerationStore((s) => s.anlasBalance)
+   const opusUsage = useGenerationStore((s) => s.opusUsage)
+   const subscriptionTier = useGenerationStore((s) => s.subscriptionTier)
+@@ -976,6 +980,17 @@ function AccountSection(): React.JSX.Element {
+         </Row>
+       )}
+ 
++      {/* [custom] 여러 계정으로 동시에 생성 (계정마다 한 장씩) */}
++      {canAutoSwitch && (
++        <Row label={t('ui.customParallelAccounts')} hint={t('ui.customParallelAccountsHint')}>
++          <Switch
++            aria-label={t('ui.customParallelAccounts')}
++            checked={parallelEnabled}
++            onCheckedChange={(v) => void setParallelEnabled(v)}
++          />
++        </Row>
++      )}
++
+       {activeAccount && subscriptionTier === 'opus' && (
+         <div className="min-w-0 rounded-lg border border-line bg-surface-2/50 p-3">
+           <div className="mb-2 flex items-center justify-between gap-2">
+@@ -1013,9 +1028,11 @@ function AccountSection(): React.JSX.Element {
+             {opusUsage
+               ? opusUsage.isNegative
+                 ? `${
+-                    canAutoSwitch && autoSwitch
+-                      ? t('ui.depletedWillSwitchToAnAvailableAccountBeforeTheNextV5Generation')
+-                      : t('ui.depletedV5GenerationsWillUseAnlasUntilItRecharges')
++                    canAutoSwitch && parallelEnabled
++                      ? t('ui.customLaneRestsUntilRecharge') // [custom] 동시 생성은 Anlas 대신 쉰다
++                      : canAutoSwitch && autoSwitch
++                        ? t('ui.depletedWillSwitchToAnAvailableAccountBeforeTheNextV5Generation')
++                        : t('ui.depletedV5GenerationsWillUseAnlasUntilItRecharges')
+                   } · ${formatOpusUsageRefill(opusUsage, t)}`
+                 : formatOpusUsageRefill(opusUsage, t)
+               : t('ui.checkingUsage')}
+diff --git a/src/renderer/src/stores/custom-parallel-store.ts b/src/renderer/src/stores/custom-parallel-store.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..58f35f18ca4b432fabd007f3ebb7c636ece581db
+--- /dev/null
++++ b/src/renderer/src/stores/custom-parallel-store.ts
+@@ -0,0 +1,282 @@
++import { create } from 'zustand'
++import type { OpusUsageStatus, ParallelConfig, QueueLane, QueueStatus } from '@shared/types'
++import { useGenerationStore } from './generation-store'
++
++/**
++ * [custom] 여러 계정으로 동시 생성 — 화면 쪽 상태.
++ * 설정(켜짐·보낼 곳)은 메인에 저장하고, 여기는 계정 이름·계정별 게이지·항목별 진행 미리보기만 든다.
++ * 동시 생성이 아닐 때(lanes 없음)는 아무것도 바꾸지 않는다 — 원래 전역 미리보기 그대로.
++ */
++
++export interface LaneAccount {
++  id: string
++  label: string
++}
++
++export interface LaneBalance {
++  anlas: number | null
++  tier: string | null
++  usage?: OpusUsageStatus
++}
++
++export interface LiveFrame {
++  png: string | null
++  stepIx: number
++  totalSteps: number
++}
++
++interface ParallelState {
++  config: ParallelConfig
++  accounts: LaneAccount[]
++  balances: Record<string, LaneBalance>
++  /** 생성 중인 항목별 진행 (동시 생성일 때만 채운다) */
++  live: Record<string, LiveFrame>
++  /** 생성 중인 항목별 시작 시각 — 남은 시간 표시용 */
++  starts: Record<string, number>
++  /** 미리보기 탭에서 보고 있는 계정 */
++  viewLane: string | null
++  load: () => Promise<void>
++  loadAccounts: () => Promise<void>
++  setEnabled: (enabled: boolean) => Promise<void>
++  setTarget: (target: string | null) => Promise<void>
++  setViewLane: (accountId: string) => void
++}
++
++const canUse = (): boolean => window.nais.runtime !== 'browser'
++
++export const useParallelStore = create<ParallelState>((set, get) => ({
++  config: { enabled: false, target: null },
++  accounts: [],
++  balances: {},
++  live: {},
++  starts: {},
++  viewLane: null,
++
++  load: async () => {
++    if (!canUse()) return
++    const config = await window.nais.invoke('custom:parallelGet', undefined)
++    set({ config })
++    if (config.enabled) await get().loadAccounts()
++  },
++
++  loadAccounts: async () => {
++    if (!canUse()) return
++    const { accounts } = await window.nais.invoke('nai:listAccounts', undefined)
++    const prev = get().balances
++    const balances: Record<string, LaneBalance> = {}
++    for (const a of accounts) {
++      // 조회가 실패한 계정(tier 없음)은 직전에 받은 값을 유지
++      balances[a.id] =
++        a.tier == null && prev[a.id]
++          ? prev[a.id]
++          : { anlas: a.anlas, tier: a.tier, ...(a.usage ? { usage: a.usage } : {}) }
++    }
++    set({ accounts: accounts.map((a) => ({ id: a.id, label: a.label })), balances })
++  },
++
++  setEnabled: async (enabled) => {
++    const config = await window.nais.invoke('custom:parallelSet', { enabled })
++    set({ config })
++    if (enabled) await get().loadAccounts()
++  },
++
++  setTarget: async (target) => {
++    const config = await window.nais.invoke('custom:parallelSet', { target })
++    set({ config })
++  },
++
++  setViewLane: (viewLane) => set({ viewLane })
++}))
++
++/** 동시 생성 중이면 계정 목록, 아니면 null */
++export function useQueueLanes(): QueueLane[] | null {
++  return useGenerationStore((s) => s.queue?.lanes ?? null)
++}
++
++/** 탭에서 보고 있는 계정의 상태 (고른 계정이 없어졌으면 첫 계정) */
++export function useViewedLane(): QueueLane | null {
++  const lanes = useQueueLanes()
++  const viewLane = useParallelStore((s) => s.viewLane)
++  if (!lanes || lanes.length === 0) return null
++  return lanes.find((l) => l.accountId === viewLane) ?? lanes[0]
++}
++
++export interface PreviewFeed {
++  previewPng: string | null
++  progress: { stepIx: number; totalSteps: number } | null
++  generating: boolean
++  genStartAt: number | null
++}
++
++/**
++ * 가운데 미리보기가 보여 줄 진행. 동시 생성이면 보고 있는 계정 탭의 항목 것,
++ * 아니면 원래 전역 값 (그때는 원본 코드와 같은 값을 그대로 돌려준다).
++ */
++export function usePreviewFeed(): PreviewFeed {
++  const parallel = useGenerationStore((s) => s.queue?.lanes != null)
++  // 동시 생성 중엔 전역 프레임이 두 계정 것으로 번갈아 바뀌므로 구독 자체를 끊는다 (null 고정)
++  const globalPng = useGenerationStore((s) => (s.queue?.lanes ? null : s.previewPng))
++  const globalProgress = useGenerationStore((s) => (s.queue?.lanes ? null : s.progress))
++  const globalStart = useGenerationStore((s) => (s.queue?.lanes ? null : s.genStartAt))
++  const anyGenerating = useGenerationStore(
++    (s) => s.queue?.items.some((i) => i.state === 'generating') ?? false
++  )
++  const lane = useViewedLane()
++  const itemId = lane?.generatingId ?? null
++  const frame = useParallelStore((s) => (itemId ? (s.live[itemId] ?? null) : null))
++  const start = useParallelStore((s) => (itemId ? (s.starts[itemId] ?? null) : null))
++  if (!parallel || !lane) {
++    return {
++      previewPng: globalPng,
++      progress: globalProgress,
++      generating: anyGenerating,
++      genStartAt: globalStart
++    }
++  }
++  return {
++    previewPng: frame?.png ?? null,
++    progress:
++      frame && frame.totalSteps > 0 ? { stepIx: frame.stepIx, totalSteps: frame.totalSteps } : null,
++    generating: itemId != null,
++    genStartAt: start
++  }
++}
++
++/** 이 씬을 지금 뽑고 있는 항목 (동시 생성이면 여럿 중 처음 것) */
++function generatingItemFor(queue: QueueStatus | null, sceneId: number): string | null {
++  return (
++    queue?.items.find((i) => i.state === 'generating' && i.request.sceneId === sceneId)?.id ?? null
++  )
++}
++
++/** 씬 카드·씬 상세의 생성 중 표시 — 지금 뽑고 있는 씬 id들 (동시 생성이면 여러 개) */
++export function useGeneratingSceneKey(): string {
++  return useGenerationStore(
++    (s) =>
++      s.queue?.items
++        .filter((i) => i.state === 'generating' && i.request.sceneId != null)
++        .map((i) => i.request.sceneId)
++        .join(',') ?? ''
++  )
++}
++
++export function sceneIdsFromKey(key: string): Set<number> {
++  return new Set(key ? key.split(',').map(Number) : [])
++}
++
++/**
++ * 이 씬의 진행 중 미리보기 프레임. 동시 생성이면 그 씬을 뽑는 항목 것,
++ * 아니면 원래처럼 전역 프레임 (generating이 false면 null).
++ */
++export function useSceneFrame(sceneId: number, generating: boolean): string | null {
++  const parallel = useGenerationStore((s) => s.queue?.lanes != null)
++  const globalPng = useGenerationStore((s) => (generating && !s.queue?.lanes ? s.previewPng : null))
++  const itemId = useGenerationStore((s) =>
++    generating && s.queue?.lanes ? generatingItemFor(s.queue, sceneId) : null
++  )
++  const framePng = useParallelStore((s) => (itemId ? (s.live[itemId]?.png ?? null) : null))
++  return parallel ? framePng : globalPng
++}
++
++/** 이 씬을 지금 뽑고 있는지 (동시 생성이면 여러 씬이 함께 뽑힐 수 있다) */
++export function useSceneGenerating(sceneId: number): boolean {
++  return useGenerationStore(
++    (s) =>
++      s.queue?.items.some((i) => i.state === 'generating' && i.request.sceneId === sceneId) ?? false
++  )
++}
++
++/** 프레임이 있는지만 — 단계마다 부모(이미지 그리드)를 다시 그리지 않게 boolean으로 */
++export function useSceneHasFrame(sceneId: number, generating: boolean): boolean {
++  const parallel = useGenerationStore((s) => s.queue?.lanes != null)
++  const globalHas = useGenerationStore((s) => (s.queue?.lanes ? false : s.previewPng != null))
++  const itemId = useGenerationStore((s) =>
++    generating && s.queue?.lanes ? generatingItemFor(s.queue, sceneId) : null
++  )
++  const frameHas = useParallelStore((s) => (itemId ? s.live[itemId]?.png != null : false))
++  return parallel ? frameHas : globalHas
++}
++
++function sameKeys(a: Record<string, unknown>, keep: Set<string>): boolean {
++  const keys = Object.keys(a)
++  return keys.length === keep.size && keys.every((k) => keep.has(k))
++}
++
++function pick<T>(a: Record<string, T>, keep: Set<string>): Record<string, T> {
++  const out: Record<string, T> = {}
++  for (const k of keep) if (a[k] !== undefined) out[k] = a[k]
++  return out
++}
++
++export function bindParallelEvents(): () => void {
++  const offQueue = window.nais.on('queue:changed', (queue) => {
++    const st = useParallelStore.getState()
++    const generating = new Set(queue.items.filter((i) => i.state === 'generating').map((i) => i.id))
++    const patch: Partial<ParallelState> = {}
++    // 끝난 항목의 진행·시작 시각은 버린다
++    if (!sameKeys(st.live, generating)) patch.live = pick(st.live, generating)
++    const startsKept = pick(st.starts, generating)
++    let startsChanged = !sameKeys(st.starts, generating)
++    if (queue.lanes) {
++      for (const id of generating) {
++        if (startsKept[id] == null) {
++          startsKept[id] = Date.now()
++          startsChanged = true
++        }
++      }
++    }
++    if (startsChanged) patch.starts = startsKept
++    // 보고 있던 계정이 빠졌으면 뽑는 중인 계정(없으면 첫 계정)으로
++    const lanes = queue.lanes
++    if (lanes && lanes.length > 0 && !lanes.some((l) => l.accountId === st.viewLane)) {
++      patch.viewLane = (lanes.find((l) => l.generatingId) ?? lanes[0]).accountId
++    }
++    if (Object.keys(patch).length > 0) useParallelStore.setState(patch)
++  })
++
++  const offProgress = window.nais.on('generation:progress', (e) => {
++    if (!useGenerationStore.getState().queue?.lanes) return
++    useParallelStore.setState((s) => ({
++      live: {
++        ...s.live,
++        [e.id]: {
++          png: e.previewPng ?? s.live[e.id]?.png ?? null,
++          stepIx: e.stepIx,
++          totalSteps: e.totalSteps
++        }
++      }
++    }))
++  })
++
++  const offBalance = window.nais.on('custom:laneBalance', ({ accountId, anlas, tier, usage }) => {
++    useParallelStore.setState((s) => ({
++      balances: { ...s.balances, [accountId]: { anlas, tier, ...(usage ? { usage } : {}) } }
++    }))
++  })
++
++  const offAccount = window.nais.on('nai:accountChanged', ({ reason }) => {
++    if (!useParallelStore.getState().config.enabled) return
++    if (reason === 'added' || reason === 'deleted') void useParallelStore.getState().loadAccounts()
++  })
++
++  // 쉬는 계정의 게이지도 다시 차오르므로 가끔 새로 받는다 (원본의 활성 계정 갱신 주기와 같게)
++  const timer = setInterval(
++    () => {
++      if (useParallelStore.getState().config.enabled) {
++        void useParallelStore
++          .getState()
++          .loadAccounts()
++          .catch(() => undefined)
++      }
++    },
++    5 * 60 * 1000
++  )
++
++  return () => {
++    offQueue()
++    offProgress()
++    offBalance()
++    offAccount()
++    clearInterval(timer)
++  }
++}
+diff --git a/src/shared/i18n/catalog-en.ts b/src/shared/i18n/catalog-en.ts
+index cda05808e93e2904108f6e95e8949c5019497304..6f77317234b0f39c112ace6208a7ff0e416b1804 100644
+--- a/src/shared/i18n/catalog-en.ts
++++ b/src/shared/i18n/catalog-en.ts
+@@ -156,6 +156,24 @@ export const EN = {
+   'ui.customReviewHint': '←/→, wheel or swipe to browse · R queue again · Esc close',
+   'ui.customPrevious': 'Previous',
+   'ui.customNext': 'Next',
++  'ui.customLaneTabs': 'Progress by account',
++  'ui.customLaneGenerating': 'Generating',
++  'ui.customLaneIdle': 'Idle',
++  'ui.customLanePausedExhausted': 'Resting · gauge empty',
++  'ui.customLanePausedNotOpus': 'Resting · not Opus',
++  'ui.customLanePausedUnknown': 'Resting · check failed',
++  'ui.customLaneDoneValue': '{0} this session',
++  'ui.customLaneGaugeValue': 'Gauge {0}%',
++  'ui.customParallelAccounts': 'Generate with several accounts at once',
++  'ui.customParallelAccountsHint':
++    'Each account generates one image at a time, side by side. Only Opus accounts take part, and an account whose V5 gauge runs out rests until it recharges instead of spending Anlas. While on, this replaces automatic account switching.',
++  'ui.customSendTo': 'Send to',
++  'ui.customSendToAuto': 'Auto (any free account)',
++  'ui.customSendToHint':
++    'The account that takes newly added generations. Auto lets any free account take them.',
++  'ui.customLaneRestsUntilRecharge':
++    'Depleted · with parallel generation this account rests until it recharges.',
++  'ui.customCancelAllValue': 'Cancel all ({0})',
+   'ui.customQueue1ForPendingValue': 'Queue 1 for the {0} not-yet-generated scene(s) only',
+   'ui.customShowScrollbars': 'Touch / remote mode',
+   'ui.customShowScrollbarsHint':
+diff --git a/src/shared/i18n/catalog-ko.ts b/src/shared/i18n/catalog-ko.ts
+index 0173048250ba594f90bcb4b173dd00a8885e5f80..f9b589ac33dbd927ae5fa314be0623cf651ed725 100644
+--- a/src/shared/i18n/catalog-ko.ts
++++ b/src/shared/i18n/catalog-ko.ts
+@@ -155,6 +155,22 @@ export const KO = {
+   'ui.customReviewHint': '←/→·휠·좌우로 끌어서 넘기기 · R 다시 뽑기 예약 · Esc 닫기',
+   'ui.customPrevious': '이전',
+   'ui.customNext': '다음',
++  'ui.customLaneTabs': '계정별 진행',
++  'ui.customLaneGenerating': '생성 중',
++  'ui.customLaneIdle': '대기',
++  'ui.customLanePausedExhausted': '쉬는 중 · 게이지 소진',
++  'ui.customLanePausedNotOpus': '쉬는 중 · Opus 아님',
++  'ui.customLanePausedUnknown': '쉬는 중 · 확인 실패',
++  'ui.customLaneDoneValue': '이번에 {0}장',
++  'ui.customLaneGaugeValue': '게이지 {0}%',
++  'ui.customParallelAccounts': '여러 계정으로 동시에 생성',
++  'ui.customParallelAccountsHint':
++    '계정마다 한 장씩 동시에 뽑습니다. Opus 계정만 뽑고, V5 게이지가 바닥난 계정은 Anlas를 쓰지 않고 다시 찰 때까지 쉽니다. 켜 두면 계정 자동 전환 대신 이 방식으로 뽑습니다.',
++  'ui.customSendTo': '보낼 곳',
++  'ui.customSendToAuto': '자동 (비어 있는 계정)',
++  'ui.customSendToHint': '새로 넣는 생성을 맡을 계정입니다. 자동이면 비어 있는 계정이 가져갑니다.',
++  'ui.customLaneRestsUntilRecharge': '소진됨 · 동시 생성에서는 다시 찰 때까지 이 계정이 쉽니다.',
++  'ui.customCancelAllValue': '전부 취소 ({0})',
+   'ui.customQueue1ForPendingValue': '미생성 씬 {0}개에만 1장씩 예약',
+   'ui.customShowScrollbars': '터치·원격 모드',
+   'ui.customShowScrollbarsHint':
+diff --git a/src/shared/i18n/catalog-zh-CN.ts b/src/shared/i18n/catalog-zh-CN.ts
+index 6aa3a98d121d6d3918de91dc895c47ff671972cb..146f93b376f8c15328df71203589cc074f9186b0 100644
+--- a/src/shared/i18n/catalog-zh-CN.ts
++++ b/src/shared/i18n/catalog-zh-CN.ts
+@@ -155,6 +155,22 @@ export const ZH_CN = {
+   'ui.customReviewHint': '←/→、滚轮或左右拖动翻看 · R 预约重新生成 · Esc 关闭',
+   'ui.customPrevious': '上一张',
+   'ui.customNext': '下一张',
++  'ui.customLaneTabs': '各账户进度',
++  'ui.customLaneGenerating': '生成中',
++  'ui.customLaneIdle': '空闲',
++  'ui.customLanePausedExhausted': '休息中 · 额度耗尽',
++  'ui.customLanePausedNotOpus': '休息中 · 非 Opus',
++  'ui.customLanePausedUnknown': '休息中 · 检查失败',
++  'ui.customLaneDoneValue': '本次 {0} 张',
++  'ui.customLaneGaugeValue': '额度 {0}%',
++  'ui.customParallelAccounts': '多个账户同时生成',
++  'ui.customParallelAccountsHint':
++    '每个账户一次生成一张，同时进行。只有 Opus 账户参与；V5 额度耗尽的账户不消耗 Anlas，而是休息到额度恢复。开启后将代替自动切换账户。',
++  'ui.customSendTo': '发送到',
++  'ui.customSendToAuto': '自动（空闲账户）',
++  'ui.customSendToHint': '负责新加入生成的账户。选择自动时由空闲账户接手。',
++  'ui.customLaneRestsUntilRecharge': '已耗尽 · 同时生成时该账户会休息到额度恢复。',
++  'ui.customCancelAllValue': '全部取消（{0}）',
+   'ui.customQueue1ForPendingValue': '仅为 {0} 个未生成的场景各预约 1 张',
+   'ui.customShowScrollbars': '触屏/远程模式',
+   'ui.customShowScrollbarsHint':
+diff --git a/src/shared/types.ts b/src/shared/types.ts
+index 10719e7319656680fe1b02742bbff520ae0a2452..9baf007aeb3e055545caac2030eaf0557cb91a20 100644
+--- a/src/shared/types.ts
++++ b/src/shared/types.ts
+@@ -113,12 +113,39 @@ export interface QueueItem {
+   filePath?: string
+   /** 전이성 오류(429/5xx 등)로 백오프 대기 중 — state는 'generating' 유지, UI 안내용 */
+   retrying?: boolean
++  /** [custom] 동시 생성: 이 계정으로 보낸 항목 (없으면 비어 있는 계정 아무나) */
++  accountId?: string
++  /** [custom] 동시 생성: 이 항목을 뽑는(뽑은) 계정 */
++  laneAccountId?: string
++}
++
++/** [custom] 여러 계정으로 동시 생성 설정 — target: 새 항목을 보낼 계정 (null = 자동) */
++export interface ParallelConfig {
++  enabled: boolean
++  target: string | null
++}
++
++/** [custom] 동시 생성에서 계정이 쉬는 이유 — 게이지 소진 / Opus 아님 / 계정 상태 조회 실패 */
++export type LanePauseReason = 'exhausted' | 'notOpus' | 'unknown'
++
++/** [custom] 동시 생성 계정(레인) 하나의 상태 */
++export interface QueueLane {
++  accountId: string
++  /** 지금 뽑는 항목 */
++  generatingId: string | null
++  /** 쉬는 중이면 다시 확인할 시각 (ms epoch) */
++  pausedUntil: number | null
++  pauseReason: LanePauseReason | null
++  /** 앱을 켠 뒤 이 계정이 뽑은 장수 */
++  done: number
+ }
+ 
+ export interface QueueStatus {
+   items: QueueItem[]
+   running: boolean
+   delayMs: number
++  /** [custom] 동시 생성이 켜져 있고 계정이 2개 이상일 때만 */
++  lanes?: QueueLane[]
+ }
+ 
+ export interface GenerationDelayRandomization {
+@@ -532,6 +559,9 @@ export interface IpcInvokeMap {
+   'chars:clearThumbnail': { req: { id: number }; res: void }
+   'chars:reorder': { req: { order: CharacterOrderEntry[] }; res: void }
+   'chars:folderCreate': { req: { name: string }; res: { id: number } }
++  /** [custom] 여러 계정으로 동시 생성 */
++  'custom:parallelGet': { req: void; res: ParallelConfig }
++  'custom:parallelSet': { req: Partial<ParallelConfig>; res: ParallelConfig }
+   /** [custom] 상위 폴더 */
+   'custom:folderGroups:list': {
+     req: { kind: FolderGroupKind }
+@@ -821,6 +851,13 @@ export interface IpcEventMap {
+     tier?: SubscriptionInfo['tier'] | null
+     usage?: OpusUsageStatus
+   }
++  /** [custom] 동시 생성 중 계정별 잔액·게이지 */
++  'custom:laneBalance': {
++    accountId: string
++    anlas: number | null
++    tier: SubscriptionInfo['tier'] | null
++    usage?: OpusUsageStatus
++  }
+   /** 수동 선택 또는 V5 게이지 소진으로 활성 계정이 바뀜 */
+   'nai:accountChanged': {
+     accountId: string | null
+diff --git a/tests/custom-parallel-lane.test.ts b/tests/custom-parallel-lane.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..08f18c1ea4ca66fc1764c2cbb2fa4f399c04a480
+--- /dev/null
++++ b/tests/custom-parallel-lane.test.ts
+@@ -0,0 +1,130 @@
++import { beforeEach, describe, expect, it, vi } from 'vitest'
++import type { GenerationRequest } from '../src/shared/types'
++import type { NaiAccountBalance } from '../src/main/nai/account-router'
++
++// [custom] 동시 생성: 계정마다 뽑아도 되는지 판정 (Anlas를 쓰지 않는 것이 원칙)
++
++const db = vi.hoisted(() => ({
++  settings: new Map<string, string>(),
++  activeId: 'a'
++}))
++const accounts = [
++  { id: 'a', label: 'A', token: 'token-a' },
++  { id: 'b', label: 'B', token: 'token-b' }
++]
++vi.mock('../src/main/db/settings', () => ({
++  getSetting: (key: string) => db.settings.get(key) ?? null,
++  setSetting: (key: string, value: string) => db.settings.set(key, value),
++  getNaiAccounts: () => accounts,
++  getActiveNaiAccount: () => accounts.find((a) => a.id === db.activeId) ?? null,
++  setActiveNaiAccount: () => true
++}))
++const net = vi.hoisted(() => ({
++  balances: {} as Record<string, NaiAccountBalance>,
++  calls: [] as string[]
++}))
++vi.mock('../src/main/nai/client', () => ({
++  fetchAnlasBalance: async (token: string) => {
++    net.calls.push(token)
++    return net.balances[token] ?? { anlas: null, tier: null }
++  }
++}))
++const sent = vi.hoisted(() => [] as [string, unknown][])
++vi.mock('../src/main/ipc', () => ({
++  broadcast: (channel: string, payload: unknown) => sent.push([channel, payload])
++}))
++const logged = vi.hoisted(() => [] as number[])
++vi.mock('../src/main/nai/anlas-log', () => ({ logBalance: (n: number) => logged.push(n) }))
++
++const { laneSelection, parallelLanes, parallelTarget, getParallelConfig, setParallelConfig } =
++  await import('../src/main/custom/parallel')
++const { LanePauseError } = await import('../src/main/queue/generation-queue')
++
++const V5 = { model: 'nai-diffusion-5-curated' } as GenerationRequest
++const V45 = { model: 'nai-diffusion-4-5-full' } as GenerationRequest
++const opus = (percent: number, isNegative = false): NaiAccountBalance => ({
++  anlas: 500,
++  tier: 'opus',
++  usage: { percent, isNegative, timeUntilNextPercent: 100 }
++})
++
++async function pauseReason(promise: Promise<unknown>): Promise<string | null> {
++  try {
++    await promise
++    return null
++  } catch (e) {
++    expect(e).toBeInstanceOf(LanePauseError)
++    return (e as InstanceType<typeof LanePauseError>).reason
++  }
++}
++
++describe('custom: lane account check', () => {
++  beforeEach(() => {
++    db.settings.clear()
++    net.balances = {}
++    net.calls.length = 0
++    sent.length = 0
++    logged.length = 0
++  })
++
++  it('uses an Opus account with gauge left and tells the screen its balance', async () => {
++    net.balances['token-b'] = opus(40)
++    const selection = await laneSelection('b', V5)
++    expect(selection.account.id).toBe('b')
++    expect(selection.rotated).toBe(false)
++    expect(sent.map(([c]) => c)).toEqual(['custom:laneBalance']) // b는 활성 계정이 아님
++  })
++
++  it('rests an account whose V5 gauge ran out instead of spending Anlas', async () => {
++    net.balances['token-a'] = opus(0, true)
++    expect(await pauseReason(laneSelection('a', V5))).toBe('exhausted')
++    // V4.5는 게이지를 쓰지 않으니 그대로 뽑는다
++    expect(await pauseReason(laneSelection('a', V45))).toBeNull()
++  })
++
++  it('asks for a fresh balance before every image', async () => {
++    net.balances['token-a'] = opus(1)
++    await laneSelection('a', V5)
++    net.balances['token-a'] = opus(0, true)
++    expect(await pauseReason(laneSelection('a', V5))).toBe('exhausted')
++    expect(net.calls).toEqual(['token-a', 'token-a'])
++  })
++
++  it('rests non-Opus accounts, failed checks, unknown gauges and removed accounts', async () => {
++    net.balances['token-a'] = { anlas: 500, tier: 'scroll' }
++    expect(await pauseReason(laneSelection('a', V45))).toBe('notOpus')
++    expect(await pauseReason(laneSelection('b', V5))).toBe('unknown') // 조회 실패
++    // 조회에 실패한 b는 화면 값을 건드리지 않는다 (알린 것은 a 뿐)
++    expect(sent.map(([, p]) => (p as { accountId?: string }).accountId ?? 'title')).toEqual([
++      'a',
++      'title'
++    ])
++    net.balances['token-b'] = { anlas: 500, tier: 'opus' }
++    expect(await pauseReason(laneSelection('b', V5))).toBe('unknown') // 게이지 모름
++    expect(await pauseReason(laneSelection('gone', V5))).toBe('unknown')
++  })
++
++  it('updates the title bar balance only for the active account', async () => {
++    net.balances['token-a'] = opus(50)
++    await laneSelection('a', V5)
++    expect(sent.map(([c]) => c)).toEqual(['custom:laneBalance', 'anlas:balance'])
++  })
++})
++
++describe('custom: parallel settings', () => {
++  beforeEach(() => db.settings.clear())
++
++  it('is off by default and lists every account when on', () => {
++    expect(getParallelConfig()).toEqual({ enabled: false, target: null })
++    expect(parallelLanes()).toBeNull()
++    expect(setParallelConfig({ enabled: true })).toEqual({ enabled: true, target: null })
++    expect(parallelLanes()).toEqual(['a', 'b'])
++  })
++
++  it('saves and clears the send-to account', () => {
++    setParallelConfig({ target: 'b' })
++    expect(parallelTarget()).toBe('b')
++    expect(setParallelConfig({ target: null })).toEqual({ enabled: false, target: null })
++    expect(parallelTarget()).toBeNull()
++  })
++})
+diff --git a/tests/custom-parallel-queue.test.ts b/tests/custom-parallel-queue.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..3fb319eb552f864f5e6f4fedff77942dd7b058d1
+--- /dev/null
++++ b/tests/custom-parallel-queue.test.ts
+@@ -0,0 +1,241 @@
++import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
++import type { GenerationRequest, QueueStatus } from '../src/shared/types'
++import { GenerationQueue, LanePauseError } from '../src/main/queue/generation-queue'
++
++// [custom] 동시 생성: 계정마다 한 장씩, 보낼 곳, 쉬는 계정, 끄면 원래대로 한 장씩
++
++const REQ = { seed: 1, prompt: '' } as GenerationRequest
++
++type Call = {
++  id: string
++  lane?: string
++  finish: (path?: string) => void
++  fail: (e: unknown) => void
++}
++
++/** 생성 호출을 붙잡아 두고 테스트가 끝내 주는 가짜 생성기 */
++function controlledGenerator(): {
++  generate: (r: GenerationRequest, id: string, s: AbortSignal, lane?: string) => Promise<string>
++  calls: Call[]
++} {
++  const calls: Call[] = []
++  const generate = (
++    _r: GenerationRequest,
++    id: string,
++    signal: AbortSignal,
++    lane?: string
++  ): Promise<string> =>
++    new Promise<string>((resolve, reject) => {
++      signal.addEventListener('abort', () => {
++        const e = new Error('Aborted')
++        e.name = 'AbortError'
++        reject(e)
++      })
++      calls.push({ id, lane, finish: (path) => resolve(path ?? `/${id}.png`), fail: reject })
++    })
++  return { generate, calls }
++}
++
++const states = (s: QueueStatus): string => s.items.map((i) => i.state).join(',')
++
++describe('custom: parallel generation queue', () => {
++  beforeEach(() => vi.useFakeTimers())
++  afterEach(() => vi.useRealTimers())
++
++  it('runs one item per account at the same time', async () => {
++    const { generate, calls } = controlledGenerator()
++    const q = new GenerationQueue(generate)
++    q.setParallel(
++      () => ['a', 'b'],
++      () => null
++    )
++    q.setDelayMs(0)
++    q.enqueue(REQ, 3)
++    await vi.advanceTimersByTimeAsync(0)
++    expect(calls.map((c) => c.lane)).toEqual(['a', 'b'])
++    expect(states(q.status())).toBe('generating,generating,pending')
++    expect(q.status().lanes?.map((l) => l.generatingId)).toEqual([calls[0].id, calls[1].id])
++
++    calls[1].finish()
++    await vi.advanceTimersByTimeAsync(0)
++    // b가 끝나자마자 남은 한 장을 b가 가져간다 (a는 아직 뽑는 중)
++    expect(calls.map((c) => c.lane)).toEqual(['a', 'b', 'b'])
++    calls[0].finish()
++    calls[2].finish()
++    await vi.advanceTimersByTimeAsync(0)
++    const status = q.status()
++    expect(states(status)).toBe('done,done,done')
++    expect(status.lanes?.map((l) => [l.accountId, l.done])).toEqual([
++      ['a', 1],
++      ['b', 2]
++    ])
++    expect(status.items.map((i) => i.laneAccountId)).toEqual(['a', 'b', 'b'])
++  })
++
++  it('sends new items to the chosen account only, others to any free account', async () => {
++    const { generate, calls } = controlledGenerator()
++    let target: string | null = 'b'
++    const q = new GenerationQueue(generate)
++    q.setParallel(
++      () => ['a', 'b'],
++      () => target
++    )
++    q.setDelayMs(0)
++    q.enqueue(REQ, 2) // b 앞으로 2장
++    target = null
++    q.enqueue(REQ, 1) // 자동 1장
++    await vi.advanceTimersByTimeAsync(0)
++    const indexOf = (id: string): number => q.status().items.findIndex((i) => i.id === id)
++    const byLane = (lane: string): Call[] => calls.filter((c) => c.lane === lane)
++    // a는 b 앞으로 온 항목을 건너뛰고 자동 항목을 가져간다
++    expect(byLane('a').map((c) => indexOf(c.id))).toEqual([2])
++    expect(byLane('b').map((c) => indexOf(c.id))).toEqual([0])
++    expect(q.status().items.map((i) => i.accountId ?? null)).toEqual(['b', 'b', null])
++    byLane('a')[0].finish()
++    await vi.advanceTimersByTimeAsync(0)
++    expect(calls).toHaveLength(2) // a는 b 몫을 가져가지 않는다
++    byLane('b')[0].finish()
++    await vi.advanceTimersByTimeAsync(0)
++    expect(byLane('b').map((c) => indexOf(c.id))).toEqual([0, 1])
++    byLane('b')[1].finish()
++    await vi.advanceTimersByTimeAsync(0)
++    expect(states(q.status())).toBe('done,done,done')
++  })
++
++  it('treats a target that is no longer an account as any free account', async () => {
++    const { generate, calls } = controlledGenerator()
++    let lanes = ['a', 'b', 'c']
++    const q = new GenerationQueue(generate)
++    q.setParallel(
++      () => lanes,
++      () => 'c'
++    )
++    q.setDelayMs(0)
++    lanes = ['a', 'b'] // c 계정이 지워짐 → 보낼 곳이 없어진 것과 같다
++    q.enqueue(REQ, 1)
++    await vi.advanceTimersByTimeAsync(0)
++    expect(q.status().items[0].accountId).toBeUndefined()
++    expect(calls.map((c) => c.lane)).toEqual(['a'])
++  })
++
++  it('pauses an account that must not generate and hands its item to the other account', async () => {
++    const { generate, calls } = controlledGenerator()
++    const q = new GenerationQueue(generate)
++    q.setParallel(
++      () => ['a', 'b'],
++      () => null
++    )
++    q.setDelayMs(0)
++    q.enqueue(REQ, 1)
++    await vi.advanceTimersByTimeAsync(0)
++    expect(calls.map((c) => c.lane)).toEqual(['a'])
++    calls[0].fail(new LanePauseError('exhausted', 60_000))
++    await vi.advanceTimersByTimeAsync(0)
++    // 같은 항목을 b가 이어받는다 — 실패·완료로 세지 않는다
++    expect(calls.map((c) => [c.lane, c.id])).toEqual([
++      ['a', calls[0].id],
++      ['b', calls[0].id]
++    ])
++    const lane = q.status().lanes?.find((l) => l.accountId === 'a')
++    expect(lane?.pauseReason).toBe('exhausted')
++    expect(lane?.pausedUntil).toBeGreaterThan(Date.now())
++    calls[1].finish()
++    await vi.advanceTimersByTimeAsync(0)
++    expect(states(q.status())).toBe('done')
++    expect(q.status().items[0].laneAccountId).toBe('b')
++  })
++
++  it('keeps an item sent to a paused account waiting until that account is back', async () => {
++    const { generate, calls } = controlledGenerator()
++    const q = new GenerationQueue(generate)
++    q.setParallel(
++      () => ['a', 'b'],
++      () => 'a'
++    )
++    q.setDelayMs(0)
++    q.enqueue(REQ, 1)
++    await vi.advanceTimersByTimeAsync(0)
++    calls[0].fail(new LanePauseError('exhausted', 60_000))
++    await vi.advanceTimersByTimeAsync(30_000)
++    expect(calls).toHaveLength(1) // b는 a 앞으로 온 항목을 가져가지 않는다
++    expect(states(q.status())).toBe('pending')
++    await vi.advanceTimersByTimeAsync(35_000)
++    expect(calls.map((c) => c.lane)).toEqual(['a', 'a'])
++    expect(q.status().lanes?.find((l) => l.accountId === 'a')?.pauseReason).toBeNull()
++    calls[1].finish()
++    await vi.advanceTimersByTimeAsync(0)
++    expect(states(q.status())).toBe('done')
++  })
++
++  it('cancels an item one account is generating without touching the other', async () => {
++    const { generate, calls } = controlledGenerator()
++    const q = new GenerationQueue(generate)
++    q.setParallel(
++      () => ['a', 'b'],
++      () => null
++    )
++    q.setDelayMs(0)
++    const ids = q.enqueue(REQ, 2)
++    await vi.advanceTimersByTimeAsync(0)
++    q.cancel([ids[0]])
++    await vi.advanceTimersByTimeAsync(0)
++    calls[1].finish()
++    await vi.advanceTimersByTimeAsync(0)
++    expect(states(q.status())).toBe('cancelled,done')
++  })
++
++  it('works one at a time without account ids when parallel is off or there is one account', async () => {
++    for (const lanes of [null, ['a']]) {
++      const { generate, calls } = controlledGenerator()
++      const q = new GenerationQueue(generate)
++      q.setParallel(
++        () => lanes,
++        () => 'a'
++      )
++      q.setDelayMs(0)
++      q.enqueue(REQ, 2)
++      await vi.advanceTimersByTimeAsync(0)
++      expect(calls.map((c) => c.lane)).toEqual([undefined])
++      expect(q.status().lanes).toBeUndefined()
++      expect(q.status().items.every((i) => i.accountId === undefined)).toBe(true)
++      calls[0].finish()
++      await vi.advanceTimersByTimeAsync(0)
++      expect(calls.map((c) => c.lane)).toEqual([undefined, undefined])
++      calls[1].finish()
++      await vi.advanceTimersByTimeAsync(0)
++      expect(states(q.status())).toBe('done,done')
++    }
++  })
++
++  it('switches between one-at-a-time and parallel without running both at once', async () => {
++    const { generate, calls } = controlledGenerator()
++    let on = false
++    const q = new GenerationQueue(generate)
++    q.setParallel(
++      () => (on ? ['a', 'b'] : null),
++      () => null
++    )
++    q.setDelayMs(0)
++    q.enqueue(REQ, 4)
++    await vi.advanceTimersByTimeAsync(0)
++    expect(calls.map((c) => c.lane)).toEqual([undefined])
++    on = true
++    q.kick() // 한 장씩 도는 중에는 겹쳐 돌지 않는다
++    await vi.advanceTimersByTimeAsync(0)
++    expect(calls).toHaveLength(1)
++    calls[0].finish()
++    await vi.advanceTimersByTimeAsync(0)
++    expect(calls.map((c) => c.lane)).toEqual([undefined, 'a', 'b'])
++    on = false
++    q.kick()
++    calls[1].finish()
++    await vi.advanceTimersByTimeAsync(0)
++    expect(calls).toHaveLength(3) // b가 아직 뽑는 중이라 한 장씩 루프는 기다린다
++    calls[2].finish()
++    await vi.advanceTimersByTimeAsync(0)
++    expect(calls.map((c) => c.lane)).toEqual([undefined, 'a', 'b', undefined])
++    calls[3].finish()
++    await vi.advanceTimersByTimeAsync(0)
++    expect(states(q.status())).toBe('done,done,done,done')
++  })
++})
+diff --git a/tests/custom-parallel-ui.test.ts b/tests/custom-parallel-ui.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..20fedbd577134c1dc231713ed8a4d66ead3d167c
+--- /dev/null
++++ b/tests/custom-parallel-ui.test.ts
+@@ -0,0 +1,313 @@
++// @vitest-environment happy-dom
++import { act, createElement as h } from 'react'
++import { createRoot, type Root } from 'react-dom/client'
++import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
++import type { NaisApi } from '../src/preload/index'
++import type { QueueItem, QueueLane, QueueStatus, Scene } from '../src/shared/types'
++import { PreviewPane } from '../src/renderer/src/components/preview-pane'
++import { PromptPanel } from '../src/renderer/src/components/prompt-panel'
++import { SceneDetail } from '../src/renderer/src/components/scene-detail'
++import { useLanguageStore } from '../src/renderer/src/lib/i18n'
++import {
++  bindParallelEvents,
++  useParallelStore
++} from '../src/renderer/src/stores/custom-parallel-store'
++import { DEFAULT_REQUEST, useGenerationStore } from '../src/renderer/src/stores/generation-store'
++import { useLayoutStore } from '../src/renderer/src/stores/layout-store'
++import { useScenesStore } from '../src/renderer/src/stores/scenes-store'
++
++// [custom] 동시 생성 화면: 계정별 진행 기록, 미리보기 계정 탭, 씬별 프레임, 생성 버튼 줄
++
++const item = (
++  id: string,
++  state: QueueItem['state'],
++  sceneId?: number,
++  extra: Partial<QueueItem> = {}
++): QueueItem => ({
++  id,
++  state,
++  request: { ...DEFAULT_REQUEST, ...(sceneId != null ? { sceneId } : {}) },
++  ...extra
++})
++
++const lane = (
++  accountId: string,
++  generatingId: string | null,
++  extra: Partial<QueueLane> = {}
++): QueueLane => ({
++  accountId,
++  generatingId,
++  pausedUntil: null,
++  pauseReason: null,
++  done: 0,
++  ...extra
++})
++
++function status(items: QueueItem[], lanes?: QueueLane[]): QueueStatus {
++  return {
++    items,
++    running: items.some((i) => i.state === 'pending' || i.state === 'generating'),
++    delayMs: 0,
++    ...(lanes ? { lanes } : {})
++  }
++}
++
++const ACCOUNTS = [
++  { id: 'a', label: '계정 1' },
++  { id: 'b', label: '계정 2' }
++]
++
++const streamSrcs = (container: HTMLElement): string[] =>
++  [...container.querySelectorAll('img')]
++    .map((img) => img.getAttribute('src') ?? '')
++    .filter((src) => src.startsWith('data:image/png'))
++
++function resetParallel(): void {
++  useParallelStore.setState({
++    config: { enabled: true, target: null },
++    accounts: ACCOUNTS,
++    balances: {},
++    live: {},
++    starts: {},
++    viewLane: null
++  })
++}
++
++describe('custom: parallel event binding', () => {
++  let handlers: Record<string, (payload: unknown) => void>
++  let unbind: () => void
++
++  beforeEach(() => {
++    handlers = {}
++    window.nais = {
++      invoke: vi.fn(async () => ({ accounts: [], activeId: null })),
++      on: vi.fn((channel: string, handler: (payload: unknown) => void) => {
++        handlers[channel] = handler
++        return () => {}
++      })
++    } as unknown as NaisApi
++    resetParallel()
++    unbind = bindParallelEvents()
++  })
++
++  afterEach(() => unbind())
++
++  const emit = (queue: QueueStatus): void => {
++    useGenerationStore.setState({ queue })
++    handlers['queue:changed'](queue)
++  }
++
++  it('keeps one live frame per item while accounts generate side by side', () => {
++    emit(
++      status([item('x', 'generating'), item('y', 'generating')], [lane('a', 'x'), lane('b', 'y')])
++    )
++    handlers['generation:progress']({ id: 'x', stepIx: 3, totalSteps: 23, previewPng: 'XXX' })
++    handlers['generation:progress']({ id: 'y', stepIx: 5, totalSteps: 23, previewPng: 'YYY' })
++    // 프레임 없이 단계만 오면 직전 프레임 유지
++    handlers['generation:progress']({ id: 'x', stepIx: 4, totalSteps: 23 })
++    const st = useParallelStore.getState()
++    expect(st.live).toEqual({
++      x: { png: 'XXX', stepIx: 4, totalSteps: 23 },
++      y: { png: 'YYY', stepIx: 5, totalSteps: 23 }
++    })
++    expect(Object.keys(st.starts).sort()).toEqual(['x', 'y'])
++    expect(st.viewLane).toBe('a')
++
++    emit(
++      status(
++        [item('x', 'done', undefined, { filePath: '/x.png' }), item('y', 'generating')],
++        [lane('a', null, { done: 1 }), lane('b', 'y')]
++      )
++    )
++    expect(Object.keys(useParallelStore.getState().live)).toEqual(['y'])
++    expect(Object.keys(useParallelStore.getState().starts)).toEqual(['y'])
++  })
++
++  it('records nothing when generation is not parallel', () => {
++    emit(status([item('x', 'generating')]))
++    handlers['generation:progress']({ id: 'x', stepIx: 1, totalSteps: 23, previewPng: 'XXX' })
++    expect(useParallelStore.getState().live).toEqual({})
++    expect(useParallelStore.getState().starts).toEqual({})
++  })
++
++  it('moves the viewed tab to a generating account when the viewed one is gone', () => {
++    useParallelStore.setState({ viewLane: 'gone' })
++    emit(status([item('y', 'generating')], [lane('a', null), lane('b', 'y')]))
++    expect(useParallelStore.getState().viewLane).toBe('b')
++  })
++
++  it('stores each account gauge from lane balance events', () => {
++    const usage = { percent: 63, isNegative: false, timeUntilNextPercent: 600 }
++    handlers['custom:laneBalance']({ accountId: 'b', anlas: 1200, tier: 'opus', usage })
++    expect(useParallelStore.getState().balances.b).toEqual({ anlas: 1200, tier: 'opus', usage })
++  })
++})
++
++describe('custom: parallel screens', () => {
++  let root: Root
++  let container: HTMLDivElement
++  let invoke: ReturnType<typeof vi.fn>
++
++  beforeEach(() => {
++    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
++    invoke = vi.fn(async (channel: string, payload?: { target?: string | null }) => {
++      if (channel === 'promptPresets:list') return { items: [] }
++      if (channel === 'custom:parallelSet')
++        return { enabled: true, target: payload?.target ?? null }
++      return { value: null, counts: [], items: [], total: 0 }
++    })
++    window.nais = { invoke, on: () => () => {} } as unknown as NaisApi
++    useLanguageStore.setState({ lang: 'ko' })
++    useLayoutStore.setState({ centerMode: 'main', quickGenerationControlsEnabled: false })
++    useGenerationStore.setState({
++      request: { ...DEFAULT_REQUEST },
++      queue: null,
++      previewPng: null,
++      progress: null,
++      viewingFilePath: null,
++      viewPinned: false
++    })
++    resetParallel()
++    container = document.createElement('div')
++    document.body.append(container)
++    root = createRoot(container)
++  })
++
++  afterEach(async () => {
++    await act(async () => root.unmount())
++    container.remove()
++    vi.unstubAllGlobals()
++  })
++
++  it('shows a tab per account and streams the chosen account', async () => {
++    useParallelStore.setState({
++      live: {
++        x: { png: 'XXX', stepIx: 3, totalSteps: 23 },
++        y: { png: 'YYY', stepIx: 9, totalSteps: 23 }
++      },
++      balances: {
++        b: {
++          anlas: 0,
++          tier: 'opus',
++          usage: { percent: 63, isNegative: false, timeUntilNextPercent: 1 }
++        }
++      }
++    })
++    useGenerationStore.setState({
++      // 전역 프레임은 두 계정 것이 번갈아 들어오므로 동시 생성 중엔 쓰지 않는다
++      previewPng: 'GLOBAL',
++      queue: status(
++        [item('x', 'generating'), item('y', 'generating')],
++        [lane('a', 'x'), lane('b', 'y', { done: 41 })]
++      )
++    })
++    await act(async () => root.render(h(PreviewPane)))
++    const tabs = [...container.querySelectorAll<HTMLButtonElement>('[role="tab"]')]
++    expect(tabs.map((t) => t.getAttribute('aria-selected'))).toEqual(['true', 'false'])
++    expect(tabs[0].textContent).toContain('계정 1')
++    expect(tabs[0].textContent).toContain('생성 중')
++    expect(tabs[1].textContent).toContain('63%')
++    expect(tabs[1].textContent).toContain('이번에 41장')
++    expect(streamSrcs(container)).toEqual(['data:image/png;base64,XXX'])
++    expect(container.textContent).toContain('3/23')
++
++    await act(async () => tabs[1].click())
++    expect(streamSrcs(container)).toEqual(['data:image/png;base64,YYY'])
++    expect(container.textContent).toContain('9/23')
++  })
++
++  it('shows why an account is resting', async () => {
++    useGenerationStore.setState({
++      queue: status(
++        [item('y', 'generating')],
++        [
++          lane('a', null, { pauseReason: 'exhausted', pausedUntil: Date.now() + 60_000 }),
++          lane('b', 'y')
++        ]
++      )
++    })
++    await act(async () => root.render(h(PreviewPane)))
++    const tabs = [...container.querySelectorAll('[role="tab"]')]
++    expect(tabs[0].textContent).toContain('쉬는 중 · 게이지 소진')
++    // 보고 있는 계정이 쉬는 중이면 가운데에 다른 계정의 진행을 끌어오지 않는다
++    expect(streamSrcs(container)).toEqual([])
++  })
++
++  it('keeps the original single preview without tabs when not parallel', async () => {
++    useGenerationStore.setState({
++      queue: status([item('x', 'generating')]),
++      previewPng: 'GLOBAL',
++      progress: { stepIx: 2, totalSteps: 23 }
++    })
++    await act(async () => root.render(h(PreviewPane)))
++    expect(container.querySelectorAll('[role="tab"]')).toHaveLength(0)
++    expect(streamSrcs(container)).toEqual(['data:image/png;base64,GLOBAL'])
++    expect(container.textContent).toContain('2/23')
++  })
++
++  it('streams the frame of the account generating this scene', async () => {
++    const scene = (id: number): Scene => ({
++      id,
++      presetId: 1,
++      name: `Scene ${id}`,
++      prompt: '',
++      negativePrompt: '',
++      width: 832,
++      height: 1216,
++      reserveCount: 0,
++      reserves: {},
++      thumbnail: '',
++      thumbnailPath: '',
++      imageCount: 0,
++      hasFavorite: false
++    })
++    useScenesStore.setState({ images: [], imagesTotal: 0, imagesLoading: false })
++    useParallelStore.setState({
++      live: {
++        x: { png: 'XXX', stepIx: 3, totalSteps: 23 },
++        y: { png: 'YYY', stepIx: 9, totalSteps: 23 }
++      }
++    })
++    useGenerationStore.setState({
++      previewPng: 'GLOBAL',
++      queue: status(
++        [item('x', 'generating', 7), item('y', 'generating', 8)],
++        [lane('a', 'x'), lane('b', 'y')]
++      )
++    })
++    await act(async () => root.render(h(SceneDetail, { scene: scene(8) })))
++    expect(streamSrcs(container)).toEqual(['data:image/png;base64,YYY'])
++  })
++
++  it('keeps the generate button while accounts generate, with a small cancel next to it', async () => {
++    useGenerationStore.setState({
++      queue: status(
++        [item('x', 'generating'), item('y', 'generating')],
++        [lane('a', 'x'), lane('b', 'y')]
++      )
++    })
++    await act(async () => root.render(h(PromptPanel)))
++    const buttons = [...container.querySelectorAll('button')].map((b) => b.textContent?.trim())
++    expect(buttons).toContain('생성')
++    expect(container.querySelector('button[aria-label="전부 취소 (2)"]')).not.toBeNull()
++    expect(container.textContent).toContain('보낼 곳')
++    expect(container.querySelector('[aria-label="보낼 곳"]')?.textContent).toContain('자동')
++
++    // 동시 생성이 아니면 원래대로 생성 버튼 자리가 취소 버튼
++    await act(async () => useGenerationStore.setState({ queue: status([item('x', 'generating')]) }))
++    expect(
++      [...container.querySelectorAll('button')].map((b) => b.textContent?.trim())
++    ).not.toContain('생성')
++    expect(container.textContent).not.toContain('보낼 곳')
++  })
++
++  it('shows the chosen account in the send-to picker and saves a new choice', async () => {
++    useParallelStore.setState({ config: { enabled: true, target: 'b' } })
++    useGenerationStore.setState({ queue: status([], [lane('a', null), lane('b', null)]) })
++    await act(async () => root.render(h(PromptPanel)))
++    expect(container.querySelector('[aria-label="보낼 곳"]')?.textContent).toContain('계정 2')
++    await act(async () => useParallelStore.getState().setTarget(null))
++    expect(invoke).toHaveBeenCalledWith('custom:parallelSet', { target: null })
++    expect(container.querySelector('[aria-label="보낼 곳"]')?.textContent).toContain('자동')
++  })
++})

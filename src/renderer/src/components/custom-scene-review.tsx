@@ -1,10 +1,12 @@
-import { ChevronLeft, ChevronRight, Download, Plus, X } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Download, Plus, RefreshCw, X } from 'lucide-react'
 import { useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import type { Scene } from '@shared/types'
 import { imageUrl } from '../lib/constants'
 import { useT } from '../lib/i18n'
 import { cn } from '../lib/utils'
+import { useSceneFrame, useSceneGenerating } from '../stores/custom-parallel-store'
+import { useGenerationStore } from '../stores/generation-store'
 import { useScenesStore } from '../stores/scenes-store'
 import { toast } from '../stores/toast-store'
 import { ImageContextMenu } from './image-context-menu'
@@ -14,14 +16,17 @@ const SWIPE_PX = 60
 
 /**
  * [custom] 검수 모드 — 프리셋의 씬 대표 이미지(카드에 보이는 그림)를 크게 한 장씩 넘겨 본다.
- * ←/→·휠·스와이프·화면 버튼으로 넘기고, R로 그 씬을 다시 뽑기 예약(+1), Esc로 닫는다.
- * 이미지가 없는 씬은 건너뛴다. 닫으면 마지막으로 본 씬 카드로 목록을 데려간다.
+ * ←/→·휠·스와이프·화면 버튼으로 넘기고, G로 그 씬을 바로 다시 뽑기(1장), R로 다시 뽑기 예약(+1),
+ * Esc로 닫는다. 다시 뽑는 동안은 진행 화면을 보여 주고, 다 되면 새 그림이 대표 이미지가 된다
+ * (즐겨찾기가 있는 씬은 즐겨찾기가 대표라 그대로). 이미지가 없는 씬은 건너뛴다.
+ * 닫으면 마지막으로 본 씬 카드로 목록을 데려간다.
  */
 export function SceneReview({ scenes }: { scenes: Scene[] }): React.JSX.Element | null {
   const t = useT()
   const reviewSceneId = useScenesStore((s) => s.reviewSceneId)
   const setReviewScene = useScenesStore((s) => s.setReviewScene)
   const adjustReserve = useScenesStore((s) => s.adjustReserve)
+  const regenerateScene = useScenesStore((s) => s.regenerateScene)
   const presetName = useScenesStore(
     (s) => s.presets.find((p) => p.id === s.activePresetId)?.name ?? ''
   )
@@ -29,6 +34,16 @@ export function SceneReview({ scenes }: { scenes: Scene[] }): React.JSX.Element 
   const list = scenes.filter((s) => s.thumbnailPath)
   const index = list.findIndex((s) => s.id === reviewSceneId)
   const scene = index >= 0 ? list[index] : undefined
+
+  // 이 씬을 지금 뽑는 중인지 · 대기 중인 장수 · 진행 화면 (동시 생성이면 이 씬을 뽑는 계정 것)
+  const sceneId = scene?.id ?? -1
+  const generating = useSceneGenerating(sceneId)
+  const waiting = useGenerationStore(
+    (s) =>
+      s.queue?.items.filter((i) => i.state === 'pending' && i.request.sceneId === sceneId).length ??
+      0
+  )
+  const frame = useSceneFrame(sceneId, generating)
 
   const go = (i: number): void => {
     const next = list[Math.min(list.length - 1, Math.max(0, i))]
@@ -41,6 +56,19 @@ export function SceneReview({ scenes }: { scenes: Scene[] }): React.JSX.Element 
     if (!scene) return
     void adjustReserve(scene.id, 1)
     toast(t('ui.customReviewQueuedValue', scene.name), 'success')
+  }
+  const regenerate = (): void => {
+    if (!scene) return
+    regenerateScene(scene.id).catch((error: unknown) =>
+      toast(error instanceof Error ? error.message : String(error), 'error')
+    )
+    toast(
+      t(
+        scene.hasFavorite ? 'ui.customReviewRegenFavoriteValue' : 'ui.customReviewRegenValue',
+        scene.name
+      ),
+      'success'
+    )
   }
   const save = (): void => {
     if (!scene) return
@@ -63,6 +91,7 @@ export function SceneReview({ scenes }: { scenes: Scene[] }): React.JSX.Element 
       else if (e.key === 'ArrowLeft') go(index - 1)
       else if (e.key === 'ArrowRight') go(index + 1)
       else if (e.code === 'KeyR' && !e.repeat) queue()
+      else if (e.code === 'KeyG' && !e.repeat) regenerate()
       else return
       e.preventDefault()
       e.stopPropagation()
@@ -147,8 +176,26 @@ export function SceneReview({ scenes }: { scenes: Scene[] }): React.JSX.Element 
             <span className="shrink-0 font-mono text-[12px] opacity-70">
               {index + 1} / {list.length}
             </span>
+            {generating && (
+              <span className="flex shrink-0 items-center gap-1 text-[12px] text-success">
+                <span className="size-1.5 animate-pulse rounded-full bg-success" />
+                {t('ui.customLaneGenerating')}
+              </span>
+            )}
+            {waiting > 0 && (
+              <span className="shrink-0 text-[12px] opacity-70">
+                {t('ui.customReviewWaitingValue', waiting)}
+              </span>
+            )}
           </div>
         </div>
+        <button
+          className="flex h-10 items-center gap-1.5 rounded-full bg-accent px-3.5 text-[13px] font-medium text-on-accent hover:opacity-90"
+          title={t('ui.customReviewRegenHint')}
+          onClick={regenerate}
+        >
+          <RefreshCw size={15} /> {t('ui.customReviewRegen')}
+        </button>
         <button
           className="flex h-10 items-center gap-1.5 rounded-full bg-white/10 px-3.5 text-[13px] hover:bg-white/20"
           onClick={queue}
@@ -187,21 +234,32 @@ export function SceneReview({ scenes }: { scenes: Scene[] }): React.JSX.Element 
         >
           <ChevronLeft size={26} />
         </button>
-        {/* 우클릭 메뉴 (복사·메타데이터 등) — 라이트박스와 같다 */}
-        <ImageContextMenu filePath={scene.thumbnailPath}>
+        {generating && frame ? (
+          // 다시 뽑는 중 — 진행 화면 (다 되면 새 그림이 대표 이미지로 들어온다)
           <img
-            key={scene.id}
-            src={imageUrl(scene.thumbnailPath)}
-            className="max-h-full max-w-full rounded-lg object-contain shadow-2xl"
-            onError={(e) => {
-              // 원본 파일이 옮겨졌으면 저장된 썸네일이라도 보여 준다
-              if (scene.thumbnailUrl && e.currentTarget.src !== scene.thumbnailUrl)
-                e.currentTarget.src = scene.thumbnailUrl
-            }}
+            key={`live-${scene.id}`}
+            src={`data:image/png;base64,${frame}`}
+            className="h-full w-full rounded-lg object-contain"
             draggable={false}
             alt=""
           />
-        </ImageContextMenu>
+        ) : (
+          /* 우클릭 메뉴 (복사·메타데이터 등) — 라이트박스와 같다 */
+          <ImageContextMenu filePath={scene.thumbnailPath}>
+            <img
+              key={scene.id}
+              src={imageUrl(scene.thumbnailPath)}
+              className="max-h-full max-w-full rounded-lg object-contain shadow-2xl"
+              onError={(e) => {
+                // 원본 파일이 옮겨졌으면 저장된 썸네일이라도 보여 준다
+                if (scene.thumbnailUrl && e.currentTarget.src !== scene.thumbnailUrl)
+                  e.currentTarget.src = scene.thumbnailUrl
+              }}
+              draggable={false}
+              alt=""
+            />
+          </ImageContextMenu>
+        )}
         <button
           className={cn(navButton, 'right-4')}
           disabled={!hasNext}

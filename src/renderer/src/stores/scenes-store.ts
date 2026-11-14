@@ -135,6 +135,8 @@ interface ScenesState {
   /** 프리셋 캐릭터 바인드 (null = 해제) */
   /** 이 씬 1장 바로 생성 (예약 없이 — NAIS2식 즉석 생성) */
   generateOne: (sceneId: number) => Promise<void>
+  /** [custom] 검수 모드의 바로 다시 뽑기 — 이 씬 1장, 시드 고정이어도 새 시드 */
+  regenerateScene: (sceneId: number) => Promise<void>
 }
 
 /**
@@ -586,6 +588,19 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
     const cast = castId === '' ? null : (get().casts.find((c) => c.id === castId) ?? null)
     await window.nais.invoke('queue:enqueue', {
       request: { ...applySceneRequest(buildCastRequest(cast), scene), seed: sceneSeed(0) },
+      count: 1
+    })
+  },
+
+  regenerateScene: async (sceneId) => {
+    const scene = get().scenes.find((s) => s.id === sceneId)
+    if (!scene) return
+    // 바로 생성과 같이 지금 선택된 출연으로. 다시 뽑기라서 시드 고정이어도 새 시드 —
+    // 고정 시드 그대로면 같은 그림이 또 나온다
+    const castId = get().activeCastId
+    const cast = castId === '' ? null : (get().casts.find((c) => c.id === castId) ?? null)
+    await window.nais.invoke('queue:enqueue', {
+      request: { ...applySceneRequest(buildCastRequest(cast), scene), seed: randomSeed() },
       count: 1
     })
   },

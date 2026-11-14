@@ -153,7 +153,14 @@ export const EN = {
   'ui.customReviewFromHere': 'Review mode (from here)',
   'ui.customReviewQueue': 'Queue again',
   'ui.customReviewQueuedValue': 'Queued {0} again (+1)',
-  'ui.customReviewHint': '←/→, wheel or swipe to browse · R queue again · Esc close',
+  'ui.customReviewRegen': 'Regenerate now',
+  'ui.customReviewRegenHint':
+    'Generate one more image of this scene right away (G). Uses a new seed even when the seed is locked.',
+  'ui.customReviewRegenValue': 'Regenerating {0}',
+  'ui.customReviewRegenFavoriteValue': 'Regenerating {0} · its favorite stays as the cover here',
+  'ui.customReviewWaitingValue': '{0} waiting',
+  'ui.customReviewHint':
+    '←/→, wheel or swipe to browse · G regenerate now · R queue again · Esc close',
   'ui.customPrevious': 'Previous',
   'ui.customNext': 'Next',
   'ui.customLaneTabs': 'Progress by account',

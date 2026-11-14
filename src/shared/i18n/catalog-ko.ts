@@ -152,7 +152,15 @@ export const KO = {
   'ui.customReviewFromHere': '검수 모드 (여기부터)',
   'ui.customReviewQueue': '다시 뽑기 예약',
   'ui.customReviewQueuedValue': '{0} 다시 뽑기 예약 +1',
-  'ui.customReviewHint': '←/→·휠·좌우로 끌어서 넘기기 · R 다시 뽑기 예약 · Esc 닫기',
+  'ui.customReviewRegen': '바로 다시 뽑기',
+  'ui.customReviewRegenHint':
+    '이 씬을 지금 바로 1장 더 뽑습니다 (G). 시드 고정이어도 새 시드로 뽑습니다.',
+  'ui.customReviewRegenValue': '{0} 다시 뽑는 중',
+  'ui.customReviewRegenFavoriteValue':
+    '{0} 다시 뽑는 중 · 즐겨찾기가 대표 이미지라 여기 그림은 그대로입니다',
+  'ui.customReviewWaitingValue': '대기 {0}장',
+  'ui.customReviewHint':
+    '←/→·휠·좌우로 끌어서 넘기기 · G 바로 다시 뽑기 · R 다시 뽑기 예약 · Esc 닫기',
   'ui.customPrevious': '이전',
   'ui.customNext': '다음',
   'ui.customLaneTabs': '계정별 진행',

@@ -156,6 +156,24 @@ export const EN = {
   'ui.customReviewHint': '←/→, wheel or swipe to browse · R queue again · Esc close',
   'ui.customPrevious': 'Previous',
   'ui.customNext': 'Next',
+  'ui.customLaneTabs': 'Progress by account',
+  'ui.customLaneGenerating': 'Generating',
+  'ui.customLaneIdle': 'Idle',
+  'ui.customLanePausedExhausted': 'Resting · gauge empty',
+  'ui.customLanePausedNotOpus': 'Resting · not Opus',
+  'ui.customLanePausedUnknown': 'Resting · check failed',
+  'ui.customLaneDoneValue': '{0} this session',
+  'ui.customLaneGaugeValue': 'Gauge {0}%',
+  'ui.customParallelAccounts': 'Generate with several accounts at once',
+  'ui.customParallelAccountsHint':
+    'Each account generates one image at a time, side by side. Only Opus accounts take part, and an account whose V5 gauge runs out rests until it recharges instead of spending Anlas. While on, this replaces automatic account switching.',
+  'ui.customSendTo': 'Send to',
+  'ui.customSendToAuto': 'Auto (any free account)',
+  'ui.customSendToHint':
+    'The account that takes newly added generations. Auto lets any free account take them.',
+  'ui.customLaneRestsUntilRecharge':
+    'Depleted · with parallel generation this account rests until it recharges.',
+  'ui.customCancelAllValue': 'Cancel all ({0})',
   'ui.customQueue1ForPendingValue': 'Queue 1 for the {0} not-yet-generated scene(s) only',
   'ui.customShowScrollbars': 'Touch / remote mode',
   'ui.customShowScrollbarsHint':

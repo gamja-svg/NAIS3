@@ -10,6 +10,8 @@ import { useT } from '../lib/i18n'
 import { greetingFor } from '../lib/greeting'
 import { DropOverlay } from './drop-overlay'
 import { ImageContextMenu } from './image-context-menu'
+import { LaneTabs } from './custom-lane-tabs'
+import { usePreviewFeed } from '../stores/custom-parallel-store'
 
 /** 빈 미리보기의 시간대별 인사. 변형은 마운트 때 한 번 고르고, 시간대는 1분마다 다시 판정 */
 function Greeting(): React.JSX.Element {
@@ -43,15 +45,12 @@ function Greeting(): React.JSX.Element {
 
 export function PreviewPane(): React.JSX.Element {
   const t = useT()
-  const previewPng = useGenerationStore((s) => s.previewPng)
-  const progress = useGenerationStore((s) => s.progress)
+  // [custom] 동시 생성이면 보고 있는 계정 탭의 진행 (아니면 원래 전역 값 그대로)
+  const { previewPng, progress, generating, genStartAt } = usePreviewFeed()
   const viewingFilePath = useGenerationStore((s) => s.viewingFilePath)
-  const queue = useGenerationStore((s) => s.queue)
-  const genStartAt = useGenerationStore((s) => s.genStartAt)
   const avgDurationMs = useGenerationStore((s) => s.avgDurationMs)
 
   const viewPinned = useGenerationStore((s) => s.viewPinned)
-  const generating = queue?.items.some((i) => i.state === 'generating') ?? false
   const preparing = generating && !progress // 스텝 진행 전 = 준비 중(인코딩 등)
 
   // 생성 중엔 스트리밍 프레임 우선 — 단, 유저가 다른 이미지를 클릭(고정 보기)하면 그 파일 우선 (B11)
@@ -133,6 +132,7 @@ export function PreviewPane(): React.JSX.Element {
     >
       {/* 상단 스트립을 창 드래그 영역으로 (이미지 위쪽) */}
       <div className="drag absolute inset-x-0 top-0 z-20 h-6" />
+      <LaneTabs />
       {src ? (
         // 긴 쪽이 박스 테두리에 닿도록 꽉 채움 (object-contain으로 비율 유지).
         // 완성작(파일)이 표시 중일 때만 우클릭 메뉴 — 스트리밍 미리보기(previewPng)는 파일이 아님

@@ -31,6 +31,7 @@ import { requestUsesV5Usage, resolveNaiAccountForGeneration } from './nai/accoun
 import { localPromptMetadata } from './nai/payload'
 import { prepareCharRefs, prepareVibes } from './refs/prepare'
 import { GenerationQueue } from './queue/generation-queue'
+import { laneSelection, parallelLanes, parallelTarget, refreshLaneBalance } from './custom/parallel'
 import { getPresetName, getScene } from './scenes/repo'
 
 // 앱 이름 (dev 메뉴바·dock에서 'Electron' 대신 표시). 패키징 앱은 productName 사용
@@ -184,8 +185,10 @@ const startup = app.whenReady().then(async () => {
   }
 
   // 생성 파이프라인: 큐 → 조각/와일드카드 치환 → 바이브/캐릭레퍼 준비 → 스트리밍 생성 → 저장
-  const queue = new GenerationQueue(async (rawRequest, id, signal) => {
-    const selection = await resolveNaiAccountForGeneration(requestUsesV5Usage(rawRequest))
+  const queue = new GenerationQueue(async (rawRequest, id, signal, laneAccountId) => {
+    const selection = laneAccountId
+      ? await laneSelection(laneAccountId, rawRequest) // [custom] 동시 생성: 정해진 계정 (못 뽑으면 쉼)
+      : await resolveNaiAccountForGeneration(requestUsesV5Usage(rawRequest))
     if (!selection) throw new Error(t('ui.naiTokenIsNotConfigured'))
     const token = selection.account.token
     if (selection.rotated) {
@@ -319,12 +322,15 @@ const startup = app.whenReady().then(async () => {
       broadcast('scenes:changed', { sceneId: request.sceneId, filePath: saved.filePath })
 
     // 생성 후 잔액 갱신 (실사용량 추적의 진실 공급원) — 실패해도 생성 흐름엔 영향 없음
-    void fetchAnlasBalance(token).then(({ anlas, tier, usage }) => {
-      if (anlas !== null) {
-        logBalance(anlas)
-        broadcast('anlas:balance', { anlas, tier, ...(usage ? { usage } : {}) })
-      }
-    })
+    // [custom] 동시 생성이면 계정별로 알린다 (상단 잔액·사용량 기록은 활성 계정일 때만)
+    if (laneAccountId) refreshLaneBalance(laneAccountId, token)
+    else
+      void fetchAnlasBalance(token).then(({ anlas, tier, usage }) => {
+        if (anlas !== null) {
+          logBalance(anlas)
+          broadcast('anlas:balance', { anlas, tier, ...(usage ? { usage } : {}) })
+        }
+      })
 
     return saved.filePath
   })
@@ -333,6 +339,7 @@ const startup = app.whenReady().then(async () => {
   const savedDelay = Number(getSetting('gen_delay_ms'))
   const savedDelayMinus = Number(getSetting('gen_delay_minus_ms'))
   const savedDelayPlus = Number(getSetting('gen_delay_plus_ms'))
+  queue.setParallel(parallelLanes, parallelTarget) // [custom] 여러 계정으로 동시 생성
   queue.setDelayMs(Number.isFinite(savedDelay) && savedDelay >= 0 ? savedDelay : 600, {
     enabled: getSetting('gen_delay_random_enabled') === '1',
     minusMs: Number.isFinite(savedDelayMinus) ? savedDelayMinus : 0,

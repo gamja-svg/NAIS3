@@ -121,6 +121,7 @@ import {
   listFolderGroups,
   updateFolderGroup
 } from './custom/folder-groups'
+import { getParallelConfig, setParallelConfig } from './custom/parallel'
 import {
   listPromptPresets,
   createPromptPreset,
@@ -248,6 +249,7 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
       reason: 'added',
       label: account.label
     })
+    ctx.queue.kick() // [custom] 동시 생성 중이면 새 계정도 바로 거든다
     return { ...result, accountId: account.id, label: account.label }
   })
   handle('nai:setActiveAccount', async ({ id }) => {
@@ -271,6 +273,7 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
   handle('nai:deleteAccount', ({ id }) => {
     const activeId = deleteNaiAccount(id)
     broadcast('nai:accountChanged', { accountId: activeId, reason: 'deleted' })
+    ctx.queue.kick() // [custom] 동시 생성 계정 목록이 바뀜
     return { activeId }
   })
   handle('nai:balance', async () => {
@@ -514,6 +517,13 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
 
   handle('scenes:exportJson', async ({ presetId }) => ({ saved: await exportScenesJson(presetId) }))
   handle('scenes:importJson', ({ presetId }) => importScenesJson(presetId))
+  // [custom] 여러 계정으로 동시 생성 — 바꾸면 큐를 다시 돌린다 (계정별 루프 ↔ 한 장씩)
+  handle('custom:parallelGet', () => getParallelConfig())
+  handle('custom:parallelSet', (patch) => {
+    const config = setParallelConfig(patch)
+    ctx.queue.kick()
+    return config
+  })
   // [custom] 상위 폴더
   handle('custom:folderGroups:list', ({ kind }) => listFolderGroups(kind))
   handle('custom:folderGroups:create', ({ kind, name }) => ({ id: createFolderGroup(kind, name) }))

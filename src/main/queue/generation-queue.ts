@@ -11,6 +11,7 @@ import type {
   CharacterPromptInput,
   GenerationDelayRandomization,
   GenerationRequest,
+  LanePauseReason,
   QueueItem,
   QueueStatus,
   SceneReservation
@@ -30,6 +31,22 @@ const MAX_RETRIES = 3
 /** 백오프 기준·상한 (ms) — 실제 대기는 지수 백오프 + 지터, Retry-After가 더 크면 그걸 따름 */
 const RETRY_BASE_MS = 2000
 const RETRY_MAX_MS = 20000
+/** [custom] 쉬는 계정이 다시 확인하기 전까지 대기를 끊어 보는 간격 (설정이 바뀌면 빨리 반응) */
+const LANE_POLL_MS = 5000
+
+/**
+ * [custom] 동시 생성에서 계정 하나가 지금 뽑으면 안 될 때 생성 함수가 던진다
+ * (게이지 소진·Opus 아님·조회 실패). 큐는 그 계정을 retryAfterMs 동안 쉬게 하고 항목을 대기로 돌린다.
+ */
+export class LanePauseError extends Error {
+  constructor(
+    readonly reason: LanePauseReason,
+    readonly retryAfterMs: number
+  ) {
+    super(`lane paused: ${reason}`)
+    this.name = 'LanePauseError'
+  }
+}
 
 export class GenerationQueue extends EventEmitter {
   private items = new Map<string, QueueItem>()
@@ -42,12 +59,21 @@ export class GenerationQueue extends EventEmitter {
     minusMs: 0,
     plusMs: 0
   }
+  // [custom] 동시 생성 — 계정(레인)마다 한 장씩. 꺼져 있으면 아래 run()의 한 장씩 루프 그대로
+  private lanesProvider: (() => string[] | null) | null = null
+  private targetProvider: (() => string | null) | null = null
+  private laneRunning = new Set<string>()
+  private laneGenerating = new Map<string, string>()
+  private lanePause = new Map<string, { until: number; reason: LanePauseReason }>()
+  private laneDone = new Map<string, number>()
 
   constructor(
     private readonly generate: (
       request: GenerationRequest,
       id: string,
-      signal: AbortSignal
+      signal: AbortSignal,
+      /** [custom] 동시 생성이면 이 항목을 뽑을 계정 */
+      laneAccountId?: string
     ) => Promise<string>,
     private readonly random: () => number = Math.random
   ) {
@@ -60,13 +86,14 @@ export class GenerationQueue extends EventEmitter {
     randomCharacterPrompts: readonly CharacterPromptInput[] = []
   ): string[] {
     const ids: string[] = []
+    const target = this.currentTarget()
     for (let i = 0; i < count; i++) {
       const id = randomUUID()
       // 배치는 장마다 시드+i — 같은 시드 N장(동일 그림 N장) 방지, 시드 고정 시에도 각 장 재현 가능
       const seededRequest =
         i === 0 ? request : { ...request, seed: (request.seed + i) % 4294967296 }
       const req = applyRandomCharacterPrompt(seededRequest, randomCharacterPrompts)
-      this.items.set(id, { id, state: 'pending', request: req })
+      this.items.set(id, { id, state: 'pending', request: req, ...target })
       ids.push(id)
     }
     this.emitChanged()
@@ -83,11 +110,13 @@ export class GenerationQueue extends EventEmitter {
     if (reservations && reservations.length !== requests.length) {
       throw new Error('Reservation count must match request count')
     }
+    const target = this.currentTarget()
     const entries = requests.map((request, index): QueueItem => ({
       id: randomUUID(),
       state: 'pending',
       request,
-      ...(reservations ? { reservation: reservations[index] } : {})
+      ...(reservations ? { reservation: reservations[index] } : {}),
+      ...target
     }))
     try {
       for (const item of entries) this.items.set(item.id, item)
@@ -133,19 +162,70 @@ export class GenerationQueue extends EventEmitter {
   }
 
   status(): QueueStatus {
+    const lanes = this.activeLanes()
+    const now = Date.now()
     return {
       items: [...this.items.values()].map(queueItemSnapshot),
-      running: this.running,
-      delayMs: this.delayMs
+      running: this.running || this.laneRunning.size > 0,
+      delayMs: this.delayMs,
+      ...(lanes
+        ? {
+            lanes: lanes.map((accountId) => {
+              const pause = this.lanePause.get(accountId)
+              const paused = pause && pause.until > now ? pause : null
+              return {
+                accountId,
+                generatingId: this.laneGenerating.get(accountId) ?? null,
+                pausedUntil: paused?.until ?? null,
+                pauseReason: paused?.reason ?? null,
+                done: this.laneDone.get(accountId) ?? 0
+              }
+            })
+          }
+        : {})
     }
   }
 
+  /**
+   * [custom] 동시 생성 설정. lanes: 동시에 뽑을 계정 id 목록 (2개 미만·null이면 원래대로 한 장씩),
+   * target: 새로 넣는 항목을 보낼 계정 (null = 비어 있는 계정 아무나)
+   */
+  setParallel(lanes: () => string[] | null, target: () => string | null): void {
+    this.lanesProvider = lanes
+    this.targetProvider = target
+  }
+
+  /** [custom] 동시 생성 설정·계정이 바뀌었을 때 — 상태를 다시 알리고 남은 항목을 다시 돌린다 */
+  kick(): void {
+    this.emitChanged()
+    void this.run()
+  }
+
+  private activeLanes(): string[] | null {
+    const lanes = this.lanesProvider?.() ?? null
+    return lanes && lanes.length >= 2 ? lanes : null
+  }
+
+  /** 새 항목에 붙일 보낼 곳 — 동시 생성 중이고 그 계정이 있을 때만 */
+  private currentTarget(): { accountId: string } | Record<string, never> {
+    const lanes = this.activeLanes()
+    const target = lanes ? (this.targetProvider?.() ?? null) : null
+    return target && lanes?.includes(target) ? { accountId: target } : {}
+  }
+
   private async run(): Promise<void> {
-    if (this.running) return
+    // [custom] 동시 생성이면 계정마다 루프를 띄운다. 한 장씩 루프가 아직 도는 중이면 그 루프가 끝날 때 넘겨준다
+    const lanes = this.activeLanes()
+    if (lanes) {
+      if (this.running) return
+      for (const lane of lanes) if (!this.laneRunning.has(lane)) void this.runLane(lane)
+      return
+    }
+    if (this.running || this.laneRunning.size > 0) return
     this.running = true
     try {
       let next: QueueItem | undefined
-      while ((next = this.nextPending())) {
+      while (!this.activeLanes() && (next = this.nextPending())) {
         next.state = 'generating'
         const controller = new AbortController()
         this.controllers.set(next.id, controller)
@@ -175,6 +255,78 @@ export class GenerationQueue extends EventEmitter {
     } finally {
       this.running = false
       this.emitChanged()
+      // [custom] 도는 사이에 동시 생성이 켜졌으면 남은 항목을 계정별 루프로 넘긴다
+      if (this.activeLanes() && this.nextPending()) void this.run()
+    }
+  }
+
+  /**
+   * [custom] 계정 하나의 루프 — 그 계정 앞으로 온 항목이나 보낼 곳이 없는 항목을 한 장씩 뽑는다.
+   * 생성 함수가 LanePauseError를 던지면 항목을 대기로 돌리고(다른 계정이 가져가게) 이 계정은 쉰다.
+   */
+  private async runLane(lane: string): Promise<void> {
+    this.laneRunning.add(lane)
+    this.emitChanged()
+    try {
+      for (;;) {
+        const lanes = this.activeLanes()
+        if (!lanes || !lanes.includes(lane)) break // 동시 생성이 꺼졌거나 계정이 빠짐
+        const pause = this.lanePause.get(lane)
+        if (pause) {
+          const wait = pause.until - Date.now()
+          if (wait > 0) {
+            // 맡을 항목이 없으면 기다리지 않고 끝낸다 (다음에 항목이 들어오면 다시 깨어난다)
+            if (!this.nextPendingFor(lane, lanes)) break
+            await sleep(Math.min(wait, LANE_POLL_MS))
+            continue
+          }
+          this.lanePause.delete(lane)
+          this.emitChanged()
+        }
+        const next = this.nextPendingFor(lane, lanes)
+        if (!next) break
+        next.state = 'generating'
+        next.laneAccountId = lane
+        const controller = new AbortController()
+        this.controllers.set(next.id, controller)
+        this.laneGenerating.set(lane, next.id)
+        this.emitChanged()
+        let paused: LanePauseError | null = null
+        try {
+          next.filePath = await this.generateWithRetry(next, controller, lane)
+          next.state = 'done'
+          this.laneDone.set(lane, (this.laneDone.get(lane) ?? 0) + 1)
+        } catch (e) {
+          if (e instanceof LanePauseError && !controller.signal.aborted) {
+            paused = e
+            next.state = 'pending'
+            delete next.laneAccountId
+            this.lanePause.set(lane, { until: Date.now() + e.retryAfterMs, reason: e.reason })
+          } else if (controller.signal.aborted || isAbortError(e)) {
+            next.state = 'cancelled'
+            this.emit('cancelled', [next])
+          } else {
+            next.state = 'failed'
+            next.error = e instanceof Error ? e.message : String(e)
+          }
+        } finally {
+          this.controllers.delete(next.id)
+          this.laneGenerating.delete(lane)
+          next.retrying = false
+          if (!paused) this.markFinished(next)
+        }
+        this.emitChanged()
+        if (paused) {
+          void this.run() // 쉬지 않는 다른 계정이 돌려받은 항목을 바로 가져가게
+          continue
+        }
+        if (this.nextPendingFor(lane, this.activeLanes() ?? [])) await sleep(this.nextDelayMs())
+      }
+    } finally {
+      this.laneRunning.delete(lane)
+      this.emitChanged()
+      // 동시 생성이 꺼졌으면 남은 항목은 한 장씩 루프가 이어받는다
+      if (!this.activeLanes() && this.laneRunning.size === 0 && this.nextPending()) void this.run()
     }
   }
 
@@ -183,11 +335,15 @@ export class GenerationQueue extends EventEmitter {
    * 재시도 대기 중엔 retrying 플래그로 UI에 알린다 (state는 'generating' 유지).
    * 같은 controller를 재시도 내내 공유하므로 대기 중 취소도 정상 반영된다.
    */
-  private async generateWithRetry(item: QueueItem, controller: AbortController): Promise<string> {
+  private async generateWithRetry(
+    item: QueueItem,
+    controller: AbortController,
+    lane?: string
+  ): Promise<string> {
     const { signal } = controller
     for (let attempt = 0; ; attempt++) {
       try {
-        return await this.generate(item.request, item.id, signal)
+        return await this.generate(item.request, item.id, signal, lane)
       } catch (e) {
         if (signal.aborted || isAbortError(e)) throw e
         if (attempt >= MAX_RETRIES || !isRetryableError(e)) throw e
@@ -209,6 +365,16 @@ export class GenerationQueue extends EventEmitter {
   private nextPending(): QueueItem | undefined {
     for (const item of this.items.values()) {
       if (item.state === 'pending') return item
+    }
+    return undefined
+  }
+
+  /** [custom] 이 계정이 맡을 다음 항목 — 이 계정 앞으로 온 것이나 보낼 곳이 없는(없어진) 것, 들어온 순서대로 */
+  private nextPendingFor(lane: string, lanes: string[]): QueueItem | undefined {
+    for (const item of this.items.values()) {
+      if (item.state !== 'pending') continue
+      const target = item.accountId && lanes.includes(item.accountId) ? item.accountId : null
+      if (target === null || target === lane) return item
     }
     return undefined
   }

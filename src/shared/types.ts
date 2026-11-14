@@ -113,12 +113,39 @@ export interface QueueItem {
   filePath?: string
   /** 전이성 오류(429/5xx 등)로 백오프 대기 중 — state는 'generating' 유지, UI 안내용 */
   retrying?: boolean
+  /** [custom] 동시 생성: 이 계정으로 보낸 항목 (없으면 비어 있는 계정 아무나) */
+  accountId?: string
+  /** [custom] 동시 생성: 이 항목을 뽑는(뽑은) 계정 */
+  laneAccountId?: string
+}
+
+/** [custom] 여러 계정으로 동시 생성 설정 — target: 새 항목을 보낼 계정 (null = 자동) */
+export interface ParallelConfig {
+  enabled: boolean
+  target: string | null
+}
+
+/** [custom] 동시 생성에서 계정이 쉬는 이유 — 게이지 소진 / Opus 아님 / 계정 상태 조회 실패 */
+export type LanePauseReason = 'exhausted' | 'notOpus' | 'unknown'
+
+/** [custom] 동시 생성 계정(레인) 하나의 상태 */
+export interface QueueLane {
+  accountId: string
+  /** 지금 뽑는 항목 */
+  generatingId: string | null
+  /** 쉬는 중이면 다시 확인할 시각 (ms epoch) */
+  pausedUntil: number | null
+  pauseReason: LanePauseReason | null
+  /** 앱을 켠 뒤 이 계정이 뽑은 장수 */
+  done: number
 }
 
 export interface QueueStatus {
   items: QueueItem[]
   running: boolean
   delayMs: number
+  /** [custom] 동시 생성이 켜져 있고 계정이 2개 이상일 때만 */
+  lanes?: QueueLane[]
 }
 
 export interface GenerationDelayRandomization {
@@ -532,6 +559,9 @@ export interface IpcInvokeMap {
   'chars:clearThumbnail': { req: { id: number }; res: void }
   'chars:reorder': { req: { order: CharacterOrderEntry[] }; res: void }
   'chars:folderCreate': { req: { name: string }; res: { id: number } }
+  /** [custom] 여러 계정으로 동시 생성 */
+  'custom:parallelGet': { req: void; res: ParallelConfig }
+  'custom:parallelSet': { req: Partial<ParallelConfig>; res: ParallelConfig }
   /** [custom] 상위 폴더 */
   'custom:folderGroups:list': {
     req: { kind: FolderGroupKind }
@@ -819,6 +849,13 @@ export interface IpcEventMap {
   'anlas:balance': {
     anlas: number
     tier?: SubscriptionInfo['tier'] | null
+    usage?: OpusUsageStatus
+  }
+  /** [custom] 동시 생성 중 계정별 잔액·게이지 */
+  'custom:laneBalance': {
+    accountId: string
+    anlas: number | null
+    tier: SubscriptionInfo['tier'] | null
     usage?: OpusUsageStatus
   }
   /** 수동 선택 또는 V5 게이지 소진으로 활성 계정이 바뀜 */

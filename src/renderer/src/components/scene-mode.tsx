@@ -35,7 +35,15 @@ import {
 } from '@dnd-kit/core'
 import { arrayMove, rectSortingStrategy, SortableContext, useSortable } from '@dnd-kit/sortable'
 import { AnimatePresence, motion } from 'motion/react'
-import { memo, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
+import {
+  memo,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties
+} from 'react'
 import type { Scene, SceneCast } from '@shared/types'
 import { RESOLUTIONS, imageUrl, thumbnailFallback } from '../lib/constants'
 import { useT } from '../lib/i18n'
@@ -62,6 +70,11 @@ import { Popover, PopoverContent, PopoverTrigger } from './ui/popover'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select'
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip'
 import { useSortActivation } from '../lib/custom-touch-mode'
+import {
+  sceneIdsFromKey,
+  useGeneratingSceneKey,
+  useSceneFrame
+} from '../stores/custom-parallel-store'
 
 export function SceneMode(): React.JSX.Element {
   const scenes = useScenesStore((s) => s.scenes)
@@ -418,8 +431,11 @@ function SceneGrid(): React.JSX.Element {
 
   // Streaming: only the scene being generated. The card subscribes to the preview frame itself,
   // so per-step frames re-render that one card instead of the whole sortable grid
-  const generatingSceneId = useGenerationStore(
-    (s) => s.queue?.items.find((i) => i.state === 'generating')?.request.sceneId ?? null
+  // [custom] 동시 생성이면 여러 씬을 함께 뽑는다 — 문자열 키라 단계마다 그리드를 다시 그리지 않는다
+  const generatingSceneKey = useGeneratingSceneKey()
+  const generatingSceneIds = useMemo(
+    () => sceneIdsFromKey(generatingSceneKey),
+    [generatingSceneKey]
   )
 
   async function exportJson(): Promise<void> {
@@ -587,7 +603,7 @@ function SceneGrid(): React.JSX.Element {
                 <SceneCard
                   key={scene.id}
                   scene={scene}
-                  generating={scene.id === generatingSceneId}
+                  generating={generatingSceneIds.has(scene.id)}
                 />
               ))}
               <button
@@ -862,7 +878,7 @@ const SceneCard = memo(function SceneCard({
   scene: Scene
   generating: boolean
 }): React.JSX.Element {
-  const live = useGenerationStore((s) => (generating ? s.previewPng : null))
+  const live = useSceneFrame(scene.id, generating) // [custom] 동시 생성이면 이 씬을 뽑는 계정 것
   const editMode = useScenesStore((s) => s.editMode)
   const cardOrientation = useScenesStore((s) => s.cardOrientation)
   const selection = useScenesStore((s) => s.selection)

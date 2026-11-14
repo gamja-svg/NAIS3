@@ -40,6 +40,8 @@ import { ResolutionPicker } from './resolution-picker'
 import { SOURCE_BANNER_HEIGHT, SourceBanner } from './source-banner'
 import { Button } from './ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover'
+import { SendToPicker } from './custom-send-to'
+import { useQueueLanes } from '../stores/custom-parallel-store'
 
 export function PromptPanel(): React.JSX.Element {
   const t = useT()
@@ -125,6 +127,7 @@ export function PromptPanel(): React.JSX.Element {
   const queueCount =
     queue?.items.filter((i) => i.state === 'pending' || i.state === 'generating').length ?? 0
   const generating = queueCount > 0
+  const parallel = useQueueLanes() != null // [custom] 여러 계정으로 동시 생성 중
   const activeChars = charItems.filter((c) => c.enabled && c.prompt.trim()).length
 
   // 토큰 표시: 포지티브는 기본+캐릭터 합산(공홈과 동일), 네거티브는 메인 것만 —
@@ -390,6 +393,9 @@ export function PromptPanel(): React.JSX.Element {
 
       {quickGenerationControlsEnabled && <QuickGenerationControls />}
 
+      {/* [custom] 동시 생성: 새로 넣는 생성을 맡을 계정 */}
+      <SendToPicker />
+
       {/* 생성 행: 파라미터 / 배치 / 생성 */}
       <div className="flex items-center gap-2">
         <Button
@@ -433,7 +439,8 @@ export function PromptPanel(): React.JSX.Element {
             <Plus size={13} />
           </Button>
         </div>
-        {generating ? (
+        {/* [custom] 동시 생성 중엔 생성 버튼을 남겨 다른 계정 앞으로 더 넣을 수 있게 (취소는 옆에 작게) */}
+        {generating && !parallel ? (
           <Button variant="danger" size="lg" className="flex-1" onClick={() => void cancelAll()}>
             <Square size={14} /> {t('ui.cancel')} ({queueCount})
           </Button>
@@ -465,6 +472,18 @@ export function PromptPanel(): React.JSX.Element {
             onClick={() => void generate()}
           >
             {t('ui.generate')}
+          </Button>
+        )}
+        {generating && parallel && (
+          <Button
+            variant="danger"
+            size="lg"
+            className="shrink-0 gap-1.5 px-3"
+            title={t('ui.customCancelAllValue', queueCount)}
+            aria-label={t('ui.customCancelAllValue', queueCount)}
+            onClick={() => void cancelAll()}
+          >
+            <Square size={14} /> {queueCount}
           </Button>
         )}
       </div>

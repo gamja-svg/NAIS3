@@ -54,6 +54,7 @@ import { Slider } from './ui/slider'
 import { Switch } from './ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs'
 import { TOUCH_MODE_KEY, applyTouchMode } from '../lib/custom-touch-mode'
+import { useParallelStore } from '../stores/custom-parallel-store'
 
 type SectionId = 'appearance' | 'generation' | 'storage' | 'shortcuts' | 'account' | 'about'
 
@@ -733,6 +734,9 @@ function AccountSection(): React.JSX.Element {
   // 계정 자동 전환 (기본 켜짐) — 브라우저 버전은 전환하지 않는다
   const [autoSwitch, setAutoSwitch] = useState(true)
   const canAutoSwitch = window.nais.runtime !== 'browser' && accounts.length > 1
+  // [custom] 여러 계정으로 동시에 생성
+  const parallelEnabled = useParallelStore((s) => s.config.enabled)
+  const setParallelEnabled = useParallelStore((s) => s.setEnabled)
   const anlasBalance = useGenerationStore((s) => s.anlasBalance)
   const opusUsage = useGenerationStore((s) => s.opusUsage)
   const subscriptionTier = useGenerationStore((s) => s.subscriptionTier)
@@ -976,6 +980,17 @@ function AccountSection(): React.JSX.Element {
         </Row>
       )}
 
+      {/* [custom] 여러 계정으로 동시에 생성 (계정마다 한 장씩) */}
+      {canAutoSwitch && (
+        <Row label={t('ui.customParallelAccounts')} hint={t('ui.customParallelAccountsHint')}>
+          <Switch
+            aria-label={t('ui.customParallelAccounts')}
+            checked={parallelEnabled}
+            onCheckedChange={(v) => void setParallelEnabled(v)}
+          />
+        </Row>
+      )}
+
       {activeAccount && subscriptionTier === 'opus' && (
         <div className="min-w-0 rounded-lg border border-line bg-surface-2/50 p-3">
           <div className="mb-2 flex items-center justify-between gap-2">
@@ -1013,9 +1028,11 @@ function AccountSection(): React.JSX.Element {
             {opusUsage
               ? opusUsage.isNegative
                 ? `${
-                    canAutoSwitch && autoSwitch
-                      ? t('ui.depletedWillSwitchToAnAvailableAccountBeforeTheNextV5Generation')
-                      : t('ui.depletedV5GenerationsWillUseAnlasUntilItRecharges')
+                    canAutoSwitch && parallelEnabled
+                      ? t('ui.customLaneRestsUntilRecharge') // [custom] 동시 생성은 Anlas 대신 쉰다
+                      : canAutoSwitch && autoSwitch
+                        ? t('ui.depletedWillSwitchToAnAvailableAccountBeforeTheNextV5Generation')
+                        : t('ui.depletedV5GenerationsWillUseAnlasUntilItRecharges')
                   } · ${formatOpusUsageRefill(opusUsage, t)}`
                 : formatOpusUsageRefill(opusUsage, t)
               : t('ui.checkingUsage')}

@@ -16,6 +16,11 @@ import { PromptEditor } from './prompt-editor'
 import { ReserveCount } from './reserve-count'
 import { Button } from './ui/button'
 import { useT } from '../lib/i18n'
+import {
+  useSceneFrame,
+  useSceneGenerating,
+  useSceneHasFrame
+} from '../stores/custom-parallel-store'
 
 export function SceneDetail({ scene }: { scene: Scene }): React.JSX.Element {
   const t = useT()
@@ -45,11 +50,9 @@ export function SceneDetail({ scene }: { scene: Scene }): React.JSX.Element {
   const charItems = useCharactersStore((s) => s.items)
   // Only whether a frame exists — the frame itself is read by StreamingFrame so per-step
   // previews don't re-render the whole image grid
-  const hasPreview = useGenerationStore((s) => s.previewPng != null)
-  const generatingSceneId = useGenerationStore(
-    (s) => s.queue?.items.find((i) => i.state === 'generating')?.request.sceneId ?? null
-  )
-  const streaming = generatingSceneId === scene.id
+  // [custom] 동시 생성이면 여러 씬을 함께 뽑으므로 이 씬을 뽑는 항목 기준
+  const streaming = useSceneGenerating(scene.id)
+  const hasPreview = useSceneHasFrame(scene.id, streaming)
   const sentinelRef = useRef<HTMLDivElement>(null)
   const [cols, setCols] = useState(3)
   const [lightboxIdx, setLightboxIdx] = useState(-1)
@@ -318,7 +321,7 @@ export function SceneDetail({ scene }: { scene: Scene }): React.JSX.Element {
                 className="relative overflow-hidden rounded-md bg-surface-2 ring-2 ring-accent/50"
                 style={{ aspectRatio: `${scene.width} / ${scene.height}` }}
               >
-                <StreamingFrame key={scene.id} streaming={streaming} />
+                <StreamingFrame key={scene.id} sceneId={scene.id} streaming={streaming} />
                 {streaming && (
                   <span className="absolute bottom-1 left-1 rounded bg-black/55 px-1.5 py-0.5 text-[10px] font-medium text-white">
                     {t('ui.generating')}
@@ -405,8 +408,14 @@ export function SceneDetail({ scene }: { scene: Scene }): React.JSX.Element {
  * Streaming tile image. Subscribes to the preview frame on its own so each step re-renders
  * only this tile, and keeps the last frame after streaming ends until the parent releases it.
  */
-function StreamingFrame({ streaming }: { streaming: boolean }): React.JSX.Element {
-  const previewPng = useGenerationStore((s) => s.previewPng)
+function StreamingFrame({
+  sceneId,
+  streaming
+}: {
+  sceneId: number
+  streaming: boolean
+}): React.JSX.Element {
+  const previewPng = useSceneFrame(sceneId, streaming) // [custom] 동시 생성이면 이 씬을 뽑는 계정 것
   const [heldFrame, setHeldFrame] = useState<string | null>(null)
   // Remember the latest frame during render (no extra effect pass per step)
   if (streaming && previewPng && previewPng !== heldFrame) setHeldFrame(previewPng)

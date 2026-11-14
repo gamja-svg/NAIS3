@@ -33,6 +33,7 @@ import { useLayoutStore } from './stores/layout-store'
 import { useThemeStore } from './stores/theme-store'
 import { bindDragScroll, hydrateTouchMode } from './lib/custom-touch-mode'
 import { useFolderGroupsStore } from './stores/custom-folder-groups-store'
+import { bindParallelEvents, useParallelStore } from './stores/custom-parallel-store'
 
 // 새 설치 첫 실행에만 뜨므로 평소 실행에선 읽지 않는다
 const Onboarding = lazy(() =>
@@ -77,6 +78,7 @@ export default function App(): React.JSX.Element {
         useGenerationStore.getState().hydrate(),
         useCharactersStore.getState().load(),
         useFolderGroupsStore.getState().load(), // [custom] 상위 폴더
+        useParallelStore.getState().load(), // [custom] 여러 계정으로 동시 생성
         useFragmentsStore.getState().load(),
         useVibesStore.getState().load(),
         useCharRefsStore.getState().load(),
@@ -93,6 +95,7 @@ export default function App(): React.JSX.Element {
     const unbindUpdate = bindUpdateEvents()
     const unbindNav = bindNavMouse() // 마우스 4/5번 버튼 뒤로/앞으로
     const unbindDragScroll = bindDragScroll() // [custom] 터치·원격 모드: 끌어서 스크롤
+    const unbindParallel = bindParallelEvents() // [custom] 계정별 진행·게이지
     // F5 새로고침 (프로덕션에서도)
     const onF5 = (e: KeyboardEvent): void => {
       if (e.key === 'F5') {
@@ -103,6 +106,7 @@ export default function App(): React.JSX.Element {
     window.addEventListener('keydown', onF5)
     return () => {
       unbindDragScroll()
+      unbindParallel()
       unbindGen()
       unbindScene()
       unbindKeys()

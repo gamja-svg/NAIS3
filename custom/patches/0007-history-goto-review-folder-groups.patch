@@ -1,0 +1,2250 @@
+diff --git a/src/main/custom/folder-groups.ts b/src/main/custom/folder-groups.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..9278b81aaebcfa577a6b52c06b457b0c1cca9605
+--- /dev/null
++++ b/src/main/custom/folder-groups.ts
+@@ -0,0 +1,140 @@
++import type {
++  FolderGroup,
++  FolderGroupKind,
++  FolderGroupLink,
++  FolderGroupPatch
++} from '../../shared/types'
++import { getDb } from '../db'
++
++/**
++ * [custom] 상위 폴더 — 폴더 여러 개를 묶는다 (지금은 캐릭터 프롬프트만).
++ * 원본 표는 건드리지 않고 전용 표 두 개에 둔다. 원본 마이그레이션 번호와 겹치지 않게 처음 쓸 때 만든다.
++ * - custom_folder_groups: 상위 폴더 (종류별 순서·접힘·색)
++ * - custom_folder_group_links: 폴더 → 상위 폴더 (행이 없으면 상위 폴더 밖)
++ * 폴더끼리의 순서는 원본 폴더 표의 순서를 그대로 쓴다.
++ */
++
++/** 종류별 원본 폴더 표 — SQL에 이름을 넣으므로 여기 있는 값만 받는다 */
++const FOLDER_TABLES: Record<FolderGroupKind, string> = { chars: 'character_folders' }
++
++function folderTable(kind: FolderGroupKind): string {
++  const table = FOLDER_TABLES[kind]
++  if (!table) throw new Error(`unknown folder group kind: ${String(kind)}`)
++  return table
++}
++
++const ready = new WeakSet<object>()
++function groupsDb(): ReturnType<typeof getDb> {
++  const db = getDb()
++  if (!ready.has(db)) {
++    db.exec(`
++      CREATE TABLE IF NOT EXISTS custom_folder_groups (
++        id INTEGER PRIMARY KEY,
++        kind TEXT NOT NULL,
++        name TEXT NOT NULL,
++        collapsed INTEGER NOT NULL DEFAULT 0,
++        color TEXT,
++        sort_order INTEGER NOT NULL DEFAULT 0
++      );
++      CREATE TABLE IF NOT EXISTS custom_folder_group_links (
++        kind TEXT NOT NULL,
++        folder_id INTEGER NOT NULL,
++        group_id INTEGER NOT NULL,
++        PRIMARY KEY (kind, folder_id)
++      );
++    `)
++    ready.add(db)
++  }
++  return db
++}
++
++export function listFolderGroups(kind: FolderGroupKind): {
++  groups: FolderGroup[]
++  links: FolderGroupLink[]
++} {
++  const table = folderTable(kind)
++  const db = groupsDb()
++  // 지워진 폴더나 상위 폴더를 가리키는 연결은 치운다
++  db.prepare(
++    `DELETE FROM custom_folder_group_links
++     WHERE kind = ?
++       AND (folder_id NOT IN (SELECT id FROM ${table})
++            OR group_id NOT IN (SELECT id FROM custom_folder_groups WHERE kind = ?))`
++  ).run(kind, kind)
++  const groups = (
++    db
++      .prepare(
++        `SELECT id, name, collapsed, color FROM custom_folder_groups
++         WHERE kind = ? ORDER BY sort_order, id`
++      )
++      .all(kind) as { id: number; name: string; collapsed: number; color: string | null }[]
++  ).map((r) => ({ id: r.id, name: r.name, collapsed: r.collapsed === 1, color: r.color ?? null }))
++  const links = db
++    .prepare(
++      `SELECT folder_id AS folderId, group_id AS groupId
++       FROM custom_folder_group_links WHERE kind = ?`
++    )
++    .all(kind) as FolderGroupLink[]
++  return { groups, links }
++}
++
++export function createFolderGroup(kind: FolderGroupKind, name: string): number {
++  folderTable(kind)
++  const db = groupsDb()
++  const { m } = db
++    .prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM custom_folder_groups WHERE kind = ?')
++    .get(kind) as { m: number }
++  return Number(
++    db
++      .prepare('INSERT INTO custom_folder_groups (kind, name, sort_order) VALUES (?, ?, ?)')
++      .run(kind, name, m + 1).lastInsertRowid
++  )
++}
++
++export function updateFolderGroup(id: number, patch: FolderGroupPatch): void {
++  const db = groupsDb()
++  if (patch.name !== undefined)
++    db.prepare('UPDATE custom_folder_groups SET name = ? WHERE id = ?').run(patch.name, id)
++  if (patch.collapsed !== undefined)
++    db.prepare('UPDATE custom_folder_groups SET collapsed = ? WHERE id = ?').run(
++      patch.collapsed ? 1 : 0,
++      id
++    )
++  if (patch.color !== undefined)
++    db.prepare('UPDATE custom_folder_groups SET color = ? WHERE id = ?').run(patch.color, id)
++}
++
++/** 상위 폴더만 지운다 — 안의 폴더·카드는 그대로 남아 상위 폴더 밖으로 나온다 */
++export function deleteFolderGroup(id: number): void {
++  const db = groupsDb()
++  db.transaction(() => {
++    db.prepare('DELETE FROM custom_folder_group_links WHERE group_id = ?').run(id)
++    db.prepare('DELETE FROM custom_folder_groups WHERE id = ?').run(id)
++  })()
++}
++
++/** 상위 폴더 순서와 폴더 소속을 한 번에 저장 (끌어 놓기·메뉴로 옮긴 뒤) */
++export function arrangeFolderGroups(
++  kind: FolderGroupKind,
++  groupIds: number[],
++  links: FolderGroupLink[]
++): void {
++  const table = folderTable(kind)
++  const db = groupsDb()
++  const setOrder = db.prepare(
++    'UPDATE custom_folder_groups SET sort_order = ? WHERE id = ? AND kind = ?'
++  )
++  const insert = db.prepare(
++    `INSERT OR REPLACE INTO custom_folder_group_links (kind, folder_id, group_id)
++     SELECT ?, ?, ?
++     WHERE EXISTS (SELECT 1 FROM ${table} WHERE id = ?)
++       AND EXISTS (SELECT 1 FROM custom_folder_groups WHERE id = ? AND kind = ?)`
++  )
++  db.transaction(() => {
++    groupIds.forEach((id, i) => setOrder.run(i, id, kind))
++    db.prepare('DELETE FROM custom_folder_group_links WHERE kind = ?').run(kind)
++    for (const link of links) {
++      insert.run(kind, link.folderId, link.groupId, link.folderId, link.groupId, kind)
++    }
++  })()
++}
+diff --git a/src/main/images/storage.ts b/src/main/images/storage.ts
+index 600b0743ebedaae9b64900cca151cf799b278020..5eb0e2b87ee5ca1d133bbab667cbc91716e96f0a 100644
+--- a/src/main/images/storage.ts
++++ b/src/main/images/storage.ts
+@@ -331,7 +331,7 @@ export function listImages(limit: number, offset: number): { items: HistoryItem[
+     .prepare(
+       // [custom] 씬 이미지는 씬·프리셋 이름을 같이 읽는다 (히스토리에 출처 표시)
+       `SELECT i.id, i.file_path, length(i.thumbnail) AS thumb_size, i.kind, i.seed, i.created_at,
+-              s.name AS scene_name, p.name AS preset_name
++              s.name AS scene_name, p.name AS preset_name, s.id AS scene_id, p.id AS preset_id
+        FROM images i
+        LEFT JOIN gen_scenes s ON s.id = i.scene_id
+        LEFT JOIN scene_presets p ON p.id = s.preset_id
+@@ -346,6 +346,8 @@ export function listImages(limit: number, offset: number): { items: HistoryItem[
+     created_at: string
+     scene_name: string | null
+     preset_name: string | null
++    scene_id: number | null
++    preset_id: number | null
+   }[]
+ 
+   return {
+@@ -358,7 +360,9 @@ export function listImages(limit: number, offset: number): { items: HistoryItem[
+       seed: r.seed,
+       createdAt: r.created_at,
+       sceneName: r.scene_name,
+-      presetName: r.preset_name
++      presetName: r.preset_name,
++      sceneId: r.scene_id,
++      presetId: r.preset_id
+     }))
+   }
+ }
+diff --git a/src/main/ipc.ts b/src/main/ipc.ts
+index afcabe2003e069c75438280ba4e9b4a040960688..4e249295f391b2e20cf36da38f848af216b2c0a0 100644
+--- a/src/main/ipc.ts
++++ b/src/main/ipc.ts
+@@ -114,6 +114,13 @@ import {
+   setWatchFolderEnabled,
+   startWatchFolder
+ } from './custom/watch-folder'
++import {
++  arrangeFolderGroups,
++  createFolderGroup,
++  deleteFolderGroup,
++  listFolderGroups,
++  updateFolderGroup
++} from './custom/folder-groups'
+ import {
+   listPromptPresets,
+   createPromptPreset,
+@@ -507,6 +514,14 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
+ 
+   handle('scenes:exportJson', async ({ presetId }) => ({ saved: await exportScenesJson(presetId) }))
+   handle('scenes:importJson', ({ presetId }) => importScenesJson(presetId))
++  // [custom] 상위 폴더
++  handle('custom:folderGroups:list', ({ kind }) => listFolderGroups(kind))
++  handle('custom:folderGroups:create', ({ kind, name }) => ({ id: createFolderGroup(kind, name) }))
++  handle('custom:folderGroups:update', ({ id, patch }) => updateFolderGroup(id, patch))
++  handle('custom:folderGroups:delete', ({ id }) => deleteFolderGroup(id))
++  handle('custom:folderGroups:arrange', ({ kind, groupIds, links }) =>
++    arrangeFolderGroups(kind, groupIds, links)
++  )
+   // [custom] 감시 폴더
+   handle('custom:watchGet', () => getWatchFolderConfig())
+   handle('custom:watchSetEnabled', ({ enabled }) => setWatchFolderEnabled(enabled))
+@@ -608,15 +623,26 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
+     if (isUnderImagesRoot(filePath)) shell.showItemInFolder(filePath)
+   })
+ 
+-  handle('images:saveAs', async ({ filePath }) => {
++  handle('images:saveAs', async ({ filePath, defaultName }) => {
+     const memory = isMemoryPath(filePath)
+     if (!memory && !isUnderImagesRoot(filePath)) return { saved: false }
+     const memBuf = memory ? getMemoryImage(filePath) : null
+     if (memory && !memBuf) return { saved: false } // 원본 만료 (자동저장 꺼짐 생성분)
+     const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
++    // [custom] 이름을 정해 주면 그 이름 + 원본 확장자 (파일 이름에 못 쓰는 글자는 _ 로)
++    const named = defaultName
++      ? Array.from(defaultName, (ch) => (ch < ' ' || '\\/:*?"<>|'.includes(ch) ? '_' : ch))
++          .join('')
++          .trim()
++      : ''
++    const ext = memory ? '.png' : (/\.[^.\\/]+$/.exec(filePath)?.[0] ?? '.png')
+     const result = await dialog.showSaveDialog(win, {
+       title: t('ui.saveAs'),
+-      defaultPath: memory ? `NAIS3_${Date.now()}.png` : basename(filePath),
++      defaultPath: named
++        ? `${named}${ext}`
++        : memory
++          ? `NAIS3_${Date.now()}.png`
++          : basename(filePath),
+       filters: [{ name: 'PNG', extensions: ['png'] }]
+     })
+     if (result.canceled || !result.filePath) return { saved: false }
+diff --git a/src/renderer/src/App.tsx b/src/renderer/src/App.tsx
+index bc36c7fd128f5a4b25a9321a89685a0c6e6df527..a3aba879dfb347f03a3222b1458ba62dbbee5a3c 100644
+--- a/src/renderer/src/App.tsx
++++ b/src/renderer/src/App.tsx
+@@ -32,6 +32,7 @@ import { cn } from './lib/utils'
+ import { useLayoutStore } from './stores/layout-store'
+ import { useThemeStore } from './stores/theme-store'
+ import { bindDragScroll, hydrateTouchMode } from './lib/custom-touch-mode'
++import { useFolderGroupsStore } from './stores/custom-folder-groups-store'
+ 
+ // 새 설치 첫 실행에만 뜨므로 평소 실행에선 읽지 않는다
+ const Onboarding = lazy(() =>
+@@ -75,6 +76,7 @@ export default function App(): React.JSX.Element {
+         useLayoutStore.getState().hydrate(),
+         useGenerationStore.getState().hydrate(),
+         useCharactersStore.getState().load(),
++        useFolderGroupsStore.getState().load(), // [custom] 상위 폴더
+         useFragmentsStore.getState().load(),
+         useVibesStore.getState().load(),
+         useCharRefsStore.getState().load(),
+diff --git a/src/renderer/src/browser/install-browser-api.ts b/src/renderer/src/browser/install-browser-api.ts
+index db42bdbd1a79fbe3d92244c3a557dfd6282c4b7d..e7db8f526a971b450b32ad1a5c781615a2e8e26a 100644
+--- a/src/renderer/src/browser/install-browser-api.ts
++++ b/src/renderer/src/browser/install-browser-api.ts
+@@ -874,6 +874,10 @@ async function dispatch(channel: string, rawRequest: unknown): Promise<unknown>
+ 
+   // [custom] 감시 폴더는 데스크톱 전용
+   if (channel.startsWith('custom:watch')) return { enabled: false, dir: '' }
++  // [custom] 상위 폴더도 데스크톱 전용 (브라우저 체험판에서는 저장하지 않는다)
++  if (channel === 'custom:folderGroups:list') return { groups: [], links: [] }
++  if (channel === 'custom:folderGroups:create') return { id: -Date.now() }
++  if (channel.startsWith('custom:folderGroups:')) return undefined
+   if (channel === 'settings:getSaveDir') return { dir: 'Browser downloads', isDefault: true }
+   if (channel === 'settings:pickSaveDir') return { dir: null }
+   if (channel === 'settings:resetSaveDir') return { dir: 'Browser downloads' }
+diff --git a/src/renderer/src/components/character-overlay.tsx b/src/renderer/src/components/character-overlay.tsx
+index 051132804e1e5abee3fadb5bd95a727f4e7a051b..ae2585231be530a453981360d830cc4563506b3d 100644
+--- a/src/renderer/src/components/character-overlay.tsx
++++ b/src/renderer/src/components/character-overlay.tsx
+@@ -4,6 +4,7 @@ import {
+   Crosshair,
+   Dices,
+   FolderPlus,
++  FolderTree,
+   ImageOff,
+   ImagePlus,
+   Pencil,
+@@ -27,7 +28,7 @@ import {
+ import { cn } from '../lib/utils'
+ import { useT } from '../lib/i18n'
+ import { applyClickSelection, useSelectAllShortcut } from '../lib/edit-selection'
+-import { buildDisplayRows } from '../lib/folder-list'
++import { buildGroupedRows } from '../lib/custom-folder-groups'
+ import {
+   DEFAULT_POSITION_GUIDES,
+   getPositionableCharacters,
+@@ -47,6 +48,8 @@ import { Dialog, DialogContent, DialogTitle } from './ui/dialog'
+ import { Input } from './ui/input'
+ import { Popover, PopoverContent, PopoverTrigger } from './ui/popover'
+ import { Switch } from './ui/switch'
++import { useFolderGroupsStore } from '../stores/custom-folder-groups-store'
++import { FolderGroupMenu } from './custom-folder-group-row'
+ 
+ /** V4/V4.5 웹의 5×5 수동 배치 그리드 (실캡처: 0.1~0.9). V5는 자유 배치 편집기를 쓴다. */
+ const GRID = [0.1, 0.3, 0.5, 0.7, 0.9]
+@@ -95,7 +98,16 @@ export function CharacterOverlay(): React.JSX.Element {
+   const toggleCollapse = useCharactersStore((s) => s.toggleCollapse)
+   const setFolderColor = useCharactersStore((s) => s.setFolderColor)
+   const removeFolder = useCharactersStore((s) => s.removeFolder)
+-  const move = useCharactersStore((s) => s.move)
++  // [custom] 상위 폴더 — 끌어 놓기는 상위 폴더를 아는 쪽으로 처리한다
++  const groups = useFolderGroupsStore((s) => s.groups)
++  const groupLinks = useFolderGroupsStore((s) => s.links)
++  const move = useFolderGroupsStore((s) => s.move)
++  const createGroup = useFolderGroupsStore((s) => s.createGroup)
++  const renameGroup = useFolderGroupsStore((s) => s.renameGroup)
++  const toggleGroup = useFolderGroupsStore((s) => s.toggleGroup)
++  const setGroupColor = useFolderGroupsStore((s) => s.setGroupColor)
++  const removeGroup = useFolderGroupsStore((s) => s.removeGroup)
++  const addFolderToGroup = useFolderGroupsStore((s) => s.addFolderToGroup)
+   const useCoords = useGenerationStore((s) => s.request.useCoords)
+   const model = useGenerationStore((s) => s.request.model)
+   const outputWidth = useGenerationStore((s) => s.request.width)
+@@ -145,7 +157,7 @@ export function CharacterOverlay(): React.JSX.Element {
+ 
+   const searching = search.trim().length > 0
+   const rows = useMemo(() => {
+-    const all = buildDisplayRows(folders, items)
++    const all = buildGroupedRows(groups, groupLinks, folders, items)
+     if (!searching) return all
+     const q = search.trim().toLowerCase()
+     return all.filter(
+@@ -153,7 +165,7 @@ export function CharacterOverlay(): React.JSX.Element {
+         r.type === 'item' &&
+         (r.item.name.toLowerCase().includes(q) || r.item.prompt.toLowerCase().includes(q))
+     )
+-  }, [folders, items, searching, search])
++  }, [groups, groupLinks, folders, items, searching, search])
+ 
+   const enabledCount = items.filter((c) => c.enabled && c.prompt.trim()).length
+   const positionableCharacters = useMemo(
+@@ -522,6 +534,15 @@ export function CharacterOverlay(): React.JSX.Element {
+         >
+           <FolderPlus size={14} />
+         </Button>
++        {/* [custom] 상위 폴더 추가 */}
++        <Button
++          size="sm"
++          variant="ghost"
++          title={t('ui.customAddFolderGroup')}
++          onClick={() => void createGroup()}
++        >
++          <FolderTree size={14} />
++        </Button>
+         <Button
+           size="sm"
+           variant={randomMode ? 'accent' : 'ghost'}
+@@ -640,6 +661,14 @@ export function CharacterOverlay(): React.JSX.Element {
+             addItem: (folderId) => void createCard(folderId, maxCharacters)
+           }}
+           onMove={move}
++          groupActions={{
++            rename: renameGroup,
++            toggleCollapse: toggleGroup,
++            setColor: setGroupColor,
++            remove: removeGroup,
++            addFolder: (groupId) => void addFolderToGroup(groupId)
++          }}
++          folderMenuExtra={(folder) => <FolderGroupMenu folderId={folder.id} />}
+           itemClassName={(char) =>
+             cn(
+               'transition-colors hover:border-muted/60', // F2: 호버 강조
+diff --git a/src/renderer/src/components/custom-folder-group-row.tsx b/src/renderer/src/components/custom-folder-group-row.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..c181e6f12c261cf58fa65a25ce1421fec4bd826d
+--- /dev/null
++++ b/src/renderer/src/components/custom-folder-group-row.tsx
+@@ -0,0 +1,252 @@
++import { useSortable } from '@dnd-kit/sortable'
++import {
++  Check,
++  ChevronDown,
++  ChevronRight,
++  FolderInput,
++  FolderOutput,
++  FolderPlus,
++  Folders,
++  Palette,
++  Pencil,
++  Trash2,
++  X
++} from 'lucide-react'
++import { memo, useState } from 'react'
++import { FOLDER_COLORS, type FolderGroup } from '@shared/types'
++import { useT } from '../lib/i18n'
++import { cn } from '../lib/utils'
++import type { GroupActions } from '../lib/custom-folder-groups'
++import { useFolderGroupsStore } from '../stores/custom-folder-groups-store'
++import { Button } from './ui/button'
++import {
++  ContextMenu,
++  ContextMenuContent,
++  ContextMenuItem,
++  ContextMenuSeparator,
++  ContextMenuSub,
++  ContextMenuSubContent,
++  ContextMenuSubTrigger,
++  ContextMenuTrigger
++} from './ui/context-menu'
++import { Input } from './ui/input'
++import { Popover, PopoverContent, PopoverTrigger } from './ui/popover'
++
++// dnd-kit은 useSortable 반환값으로 콜백 ref와 렌더 시점 상태를 함께 준다 (원본 폴더 행과 같은 사정)
++/* eslint-disable react-hooks/refs */
++/**
++ * [custom] 상위 폴더 행 — 폴더 행과 같은 동작(접기·이름·색·삭제, 통째로 끌기)에
++ * 폴더 행과 헷갈리지 않게 테두리와 묶음 아이콘을 둔다.
++ */
++export const FolderGroupRow = memo(
++  FolderGroupRowInner,
++  // actions는 부모가 매 렌더 새로 만들지만 동작만 담으므로 비교에서 제외 (원본 폴더 행과 같다)
++  (a, b) => a.group === b.group && a.folderCount === b.folderCount && a.searching === b.searching
++) as typeof FolderGroupRowInner
++
++function FolderGroupRowInner({
++  group,
++  folderCount,
++  actions,
++  searching
++}: {
++  group: FolderGroup
++  folderCount: number
++  actions: GroupActions
++  searching: boolean
++}): React.JSX.Element {
++  const t = useT()
++  const [editing, setEditing] = useState(false)
++  const sortable = useSortable({ id: `g-${group.id}`, disabled: searching || editing })
++  const move = sortable.transform
++  const style: React.CSSProperties = {
++    transform: move ? `translate3d(0, ${Math.round(move.y)}px, 0)` : undefined,
++    transition: sortable.transition,
++    ...(group.color
++      ? {
++          borderColor: group.color,
++          backgroundColor: `color-mix(in srgb, ${group.color} 16%, var(--surface))`
++        }
++      : {})
++  }
++
++  return (
++    <ContextMenu>
++      <ContextMenuTrigger asChild>
++        <div
++          ref={sortable.setNodeRef}
++          style={style}
++          className={cn(
++            'group flex h-10 items-center gap-1.5 rounded-lg border-2 border-line bg-surface px-1.5',
++            sortable.isDragging && 'relative z-20 opacity-75'
++          )}
++          {...(searching || editing ? {} : sortable.attributes)}
++          {...(searching || editing ? {} : sortable.listeners)}
++        >
++          <button className="text-muted" onClick={() => actions.toggleCollapse(group.id)}>
++            {group.collapsed ? <ChevronRight size={15} /> : <ChevronDown size={15} />}
++          </button>
++          <Folders
++            size={15}
++            className="shrink-0 text-muted"
++            style={group.color ? { color: group.color } : undefined}
++          />
++          {editing ? (
++            <Input
++              autoFocus
++              className="h-7 w-0 flex-1 text-[13px]"
++              defaultValue={group.name}
++              onPointerDown={(e) => e.stopPropagation()}
++              onBlur={(e) => {
++                if (e.target.value.trim()) actions.rename(group.id, e.target.value.trim())
++                setEditing(false)
++              }}
++              onKeyDown={(e) => {
++                if (e.key === 'Enter') e.currentTarget.blur()
++                if (e.key === 'Escape') setEditing(false)
++              }}
++            />
++          ) : (
++            // 이름 클릭 = 접기/펼치기 (이름 변경은 연필 버튼/우클릭으로만)
++            <button
++              className="min-w-0 flex-1 truncate text-left text-[13.5px] font-semibold text-ink"
++              onClick={() => actions.toggleCollapse(group.id)}
++            >
++              {group.name}
++              <span className="ml-1.5 font-mono text-[10.5px] font-normal text-faint">
++                {folderCount}
++              </span>
++            </button>
++          )}
++          {/* opacity로 숨김(display 아님) — 팝오버 앵커 유지 (원본 폴더 행과 같다) */}
++          <div className="flex items-center gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
++            <Button
++              size="sm"
++              variant="ghost"
++              className="h-7 w-7 p-0"
++              title={t('ui.customAddFolderToGroup')}
++              onClick={() => actions.addFolder(group.id)}
++            >
++              <FolderPlus size={14} />
++            </Button>
++            <Popover>
++              <PopoverTrigger asChild>
++                <Button
++                  size="sm"
++                  variant="ghost"
++                  className="h-7 w-7 p-0"
++                  title={t('ui.folderColor')}
++                  onPointerDown={(e) => e.stopPropagation()}
++                >
++                  <Palette size={13} />
++                </Button>
++              </PopoverTrigger>
++              <PopoverContent className="w-auto p-1.5" onPointerDown={(e) => e.stopPropagation()}>
++                <div className="flex items-center gap-1">
++                  <button
++                    className="grid size-6 place-items-center rounded-md border border-line text-faint hover:text-ink"
++                    title={t('ui.noColor')}
++                    onClick={() => actions.setColor(group.id, null)}
++                  >
++                    <X size={13} />
++                  </button>
++                  {FOLDER_COLORS.map((c) => (
++                    <button
++                      key={c}
++                      className={cn(
++                        'size-6 rounded-md border transition-transform hover:scale-110',
++                        group.color === c ? 'border-ink' : 'border-transparent'
++                      )}
++                      style={{ backgroundColor: c }}
++                      onClick={() => actions.setColor(group.id, c)}
++                    />
++                  ))}
++                </div>
++              </PopoverContent>
++            </Popover>
++            <Button
++              size="sm"
++              variant="ghost"
++              className="h-7 w-7 p-0"
++              title={t('ui.rename.d3f4cb8')}
++              onClick={() => setEditing(true)}
++            >
++              <Pencil size={13} />
++            </Button>
++            <Button
++              size="sm"
++              variant="ghost"
++              className="h-7 w-7 p-0 hover:text-danger-ink"
++              title={t('ui.customDeleteFolderGroup')}
++              onClick={() => actions.remove(group.id)}
++            >
++              <Trash2 size={13} />
++            </Button>
++          </div>
++        </div>
++      </ContextMenuTrigger>
++      <ContextMenuContent>
++        <ContextMenuItem onSelect={() => actions.addFolder(group.id)}>
++          <FolderPlus size={13} /> {t('ui.customAddFolderToGroup')}
++        </ContextMenuItem>
++        <ContextMenuItem
++          onSelect={() => {
++            // 우클릭 메뉴가 닫힌 뒤 인라인 편집 시작
++            setTimeout(() => setEditing(true), 0)
++          }}
++        >
++          <Pencil size={13} /> {t('ui.rename')}
++        </ContextMenuItem>
++        <ContextMenuSeparator />
++        <ContextMenuItem danger onSelect={() => actions.remove(group.id)}>
++          <Trash2 size={13} /> {t('ui.customDeleteFolderGroup')}
++        </ContextMenuItem>
++      </ContextMenuContent>
++    </ContextMenu>
++  )
++}
++/* eslint-enable react-hooks/refs */
++
++/**
++ * [custom] 폴더 우클릭 메뉴의 '상위 폴더로 이동' — 메뉴를 열 때마다 최신 상위 폴더 목록을 읽는다
++ * (폴더 행은 memo라 다시 그려지지 않아도 이 부분은 스토어를 직접 구독한다)
++ */
++export function FolderGroupMenu({ folderId }: { folderId: number }): React.JSX.Element {
++  const t = useT()
++  const groups = useFolderGroupsStore((s) => s.groups)
++  const linked = useFolderGroupsStore((s) => s.links.get(folderId) ?? null)
++  const setFolderGroup = useFolderGroupsStore((s) => s.setFolderGroup)
++  const createGroup = useFolderGroupsStore((s) => s.createGroup)
++  const inGroup = groups.some((g) => g.id === linked) ? linked : null
++  return (
++    <>
++      <ContextMenuSub>
++        <ContextMenuSubTrigger>
++          <FolderInput size={13} /> {t('ui.customMoveToFolderGroup')}
++        </ContextMenuSubTrigger>
++        <ContextMenuSubContent>
++          {groups.map((g) => (
++            <ContextMenuItem
++              key={g.id}
++              disabled={g.id === inGroup}
++              onSelect={() => setFolderGroup(folderId, g.id)}
++            >
++              <Folders size={13} style={g.color ? { color: g.color } : undefined} />
++              <span className="min-w-0 flex-1 truncate">{g.name}</span>
++              {g.id === inGroup && <Check size={13} className="text-accent-ink" />}
++            </ContextMenuItem>
++          ))}
++          {groups.length > 0 && <ContextMenuSeparator />}
++          <ContextMenuItem onSelect={() => void createGroup(folderId)}>
++            <FolderPlus size={13} /> {t('ui.customNewFolderGroupWithFolder')}
++          </ContextMenuItem>
++        </ContextMenuSubContent>
++      </ContextMenuSub>
++      {inGroup != null && (
++        <ContextMenuItem onSelect={() => setFolderGroup(folderId, null)}>
++          <FolderOutput size={13} /> {t('ui.customRemoveFromFolderGroup')}
++        </ContextMenuItem>
++      )}
++    </>
++  )
++}
+diff --git a/src/renderer/src/components/custom-scene-review.tsx b/src/renderer/src/components/custom-scene-review.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..65f83d694d9e63bd5effa2ec4690d3bbcf90aabc
+--- /dev/null
++++ b/src/renderer/src/components/custom-scene-review.tsx
+@@ -0,0 +1,221 @@
++import { ChevronLeft, ChevronRight, Download, Plus, X } from 'lucide-react'
++import { useEffect, useRef } from 'react'
++import { createPortal } from 'react-dom'
++import type { Scene } from '@shared/types'
++import { imageUrl } from '../lib/constants'
++import { useT } from '../lib/i18n'
++import { cn } from '../lib/utils'
++import { useScenesStore } from '../stores/scenes-store'
++import { toast } from '../stores/toast-store'
++import { ImageContextMenu } from './image-context-menu'
++
++/** 이만큼 가로로 끌면 넘긴 것으로 본다 (원격 접속의 터치는 마우스 드래그로 들어온다) */
++const SWIPE_PX = 60
++
++/**
++ * [custom] 검수 모드 — 프리셋의 씬 대표 이미지(카드에 보이는 그림)를 크게 한 장씩 넘겨 본다.
++ * ←/→·휠·스와이프·화면 버튼으로 넘기고, R로 그 씬을 다시 뽑기 예약(+1), Esc로 닫는다.
++ * 이미지가 없는 씬은 건너뛴다. 닫으면 마지막으로 본 씬 카드로 목록을 데려간다.
++ */
++export function SceneReview({ scenes }: { scenes: Scene[] }): React.JSX.Element | null {
++  const t = useT()
++  const reviewSceneId = useScenesStore((s) => s.reviewSceneId)
++  const setReviewScene = useScenesStore((s) => s.setReviewScene)
++  const adjustReserve = useScenesStore((s) => s.adjustReserve)
++  const presetName = useScenesStore(
++    (s) => s.presets.find((p) => p.id === s.activePresetId)?.name ?? ''
++  )
++
++  const list = scenes.filter((s) => s.thumbnailPath)
++  const index = list.findIndex((s) => s.id === reviewSceneId)
++  const scene = index >= 0 ? list[index] : undefined
++
++  const go = (i: number): void => {
++    const next = list[Math.min(list.length - 1, Math.max(0, i))]
++    if (next && next.id !== reviewSceneId) setReviewScene(next.id)
++  }
++  const close = (): void => {
++    useScenesStore.setState({ reviewSceneId: null, focusSceneId: scene?.id ?? null })
++  }
++  const queue = (): void => {
++    if (!scene) return
++    void adjustReserve(scene.id, 1)
++    toast(t('ui.customReviewQueuedValue', scene.name), 'success')
++  }
++  const save = (): void => {
++    if (!scene) return
++    void window.nais.invoke('images:saveAs', {
++      filePath: scene.thumbnailPath,
++      defaultName: scene.name
++    })
++  }
++
++  // 보던 씬이 목록에서 빠지면(씬·이미지 삭제) 닫는다
++  useEffect(() => {
++    if (index < 0) setReviewScene(null)
++  }, [index, setReviewScene])
++
++  // 키보드 — 다른 단축키보다 먼저 받아서, 처리한 키만 막는다
++  useEffect(() => {
++    const onKey = (e: KeyboardEvent): void => {
++      if (e.ctrlKey || e.metaKey || e.altKey) return
++      if (e.key === 'Escape') close()
++      else if (e.key === 'ArrowLeft') go(index - 1)
++      else if (e.key === 'ArrowRight') go(index + 1)
++      else if (e.code === 'KeyR' && !e.repeat) queue()
++      else return
++      e.preventDefault()
++      e.stopPropagation()
++    }
++    window.addEventListener('keydown', onKey, true)
++    return () => window.removeEventListener('keydown', onKey, true)
++  })
++
++  // 휠로 이전/다음 — 트랙패드 관성으로 여러 장 튀지 않게 누적 임계값 + 쿨다운 (라이트박스와 같은 방식)
++  const overlayRef = useRef<HTMLDivElement | null>(null)
++  const wheel = useRef({ accum: 0, lockUntil: 0 })
++  useEffect(() => {
++    const el = overlayRef.current
++    if (!el) return
++    const onWheel = (e: WheelEvent): void => {
++      e.preventDefault()
++      const now = performance.now()
++      const w = wheel.current
++      if (now < w.lockUntil) return
++      w.accum += e.deltaY
++      if (Math.abs(w.accum) < 50) return
++      const dir = w.accum > 0 ? 1 : -1
++      w.accum = 0
++      w.lockUntil = now + 160
++      go(index + dir)
++    }
++    el.addEventListener('wheel', onWheel, { passive: false })
++    return () => el.removeEventListener('wheel', onWheel)
++  })
++
++  // 앞뒤 이미지를 미리 받아 둔다 (넘길 때 바로 보이게)
++  const prevPath = list[index - 1]?.thumbnailPath
++  const nextPath = list[index + 1]?.thumbnailPath
++  useEffect(() => {
++    for (const path of [prevPath, nextPath]) {
++      if (!path) continue
++      const img = new Image()
++      img.src = imageUrl(path)
++    }
++  }, [prevPath, nextPath])
++
++  // 스와이프 (가로로 충분히, 세로보다 확실히 많이 움직였을 때만)
++  const swipe = useRef<{ x: number; y: number; id: number } | null>(null)
++
++  if (!scene) return null
++  const hasPrev = index > 0
++  const hasNext = index < list.length - 1
++  const navButton =
++    'absolute top-1/2 grid size-12 -translate-y-1/2 place-items-center rounded-full bg-white/10 text-white transition hover:bg-white/20 disabled:pointer-events-none disabled:opacity-20'
++
++  return createPortal(
++    <div
++      ref={overlayRef}
++      className="fixed inset-0 z-50 flex select-none flex-col bg-black/90 text-white backdrop-blur-sm"
++      onPointerDown={(e) => {
++        if (e.button === 0) swipe.current = { x: e.clientX, y: e.clientY, id: e.pointerId }
++      }}
++      onPointerUp={(e) => {
++        const start = swipe.current
++        swipe.current = null
++        if (!start || start.id !== e.pointerId) return
++        const dx = e.clientX - start.x
++        const dy = e.clientY - start.y
++        if (Math.abs(dx) >= SWIPE_PX && Math.abs(dx) > Math.abs(dy) * 1.5) {
++          go(index + (dx < 0 ? 1 : -1))
++        }
++      }}
++      onPointerCancel={() => {
++        swipe.current = null
++      }}
++    >
++      <header className="flex shrink-0 items-center gap-2 px-4 py-3">
++        <div className="min-w-0 flex-1">
++          <div className="truncate text-[12px] opacity-70">{presetName}</div>
++          <div className="flex min-w-0 items-baseline gap-2">
++            <span className="truncate text-[19px] font-semibold">{scene.name}</span>
++            {scene.pending && (
++              <span className="shrink-0 rounded-full bg-accent px-1.5 py-0.5 text-[11px] font-bold leading-none text-on-accent">
++                {t('ui.notGenerated')}
++              </span>
++            )}
++            <span className="shrink-0 font-mono text-[12px] opacity-70">
++              {index + 1} / {list.length}
++            </span>
++          </div>
++        </div>
++        <button
++          className="flex h-10 items-center gap-1.5 rounded-full bg-white/10 px-3.5 text-[13px] hover:bg-white/20"
++          onClick={queue}
++        >
++          <Plus size={15} /> {t('ui.customReviewQueue')}
++          {scene.reserveCount > 0 && (
++            <span className="ml-0.5 min-w-5 rounded-full bg-danger px-1.5 text-center text-[12px] font-medium text-on-danger">
++              {scene.reserveCount}
++            </span>
++          )}
++        </button>
++        <button
++          className="grid size-10 place-items-center rounded-full bg-white/10 hover:bg-white/20"
++          title={t('ui.customSaveTopImage')}
++          aria-label={t('ui.customSaveTopImage')}
++          onClick={save}
++        >
++          <Download size={17} />
++        </button>
++        <button
++          className="grid size-10 place-items-center rounded-full bg-white/10 hover:bg-white/20"
++          title={t('ui.close')}
++          aria-label={t('ui.close')}
++          onClick={close}
++        >
++          <X size={19} />
++        </button>
++      </header>
++
++      <main className="relative flex min-h-0 flex-1 items-center justify-center px-20 pb-2">
++        <button
++          className={cn(navButton, 'left-4')}
++          disabled={!hasPrev}
++          aria-label={t('ui.customPrevious')}
++          onClick={() => go(index - 1)}
++        >
++          <ChevronLeft size={26} />
++        </button>
++        {/* 우클릭 메뉴 (복사·메타데이터 등) — 라이트박스와 같다 */}
++        <ImageContextMenu filePath={scene.thumbnailPath}>
++          <img
++            key={scene.id}
++            src={imageUrl(scene.thumbnailPath)}
++            className="max-h-full max-w-full rounded-lg object-contain shadow-2xl"
++            onError={(e) => {
++              // 원본 파일이 옮겨졌으면 저장된 썸네일이라도 보여 준다
++              if (scene.thumbnailUrl && e.currentTarget.src !== scene.thumbnailUrl)
++                e.currentTarget.src = scene.thumbnailUrl
++            }}
++            draggable={false}
++            alt=""
++          />
++        </ImageContextMenu>
++        <button
++          className={cn(navButton, 'right-4')}
++          disabled={!hasNext}
++          aria-label={t('ui.customNext')}
++          onClick={() => go(index + 1)}
++        >
++          <ChevronRight size={26} />
++        </button>
++      </main>
++
++      <footer className="shrink-0 pb-3 text-center text-[11.5px] opacity-60">
++        {t('ui.customReviewHint')}
++      </footer>
++    </div>,
++    document.body
++  )
++}
+diff --git a/src/renderer/src/components/folder-list-view.tsx b/src/renderer/src/components/folder-list-view.tsx
+index 4bb438ce799f4ec7a30cb95181b7ca30543105ca..1c75d929fff04fb7d2dcca14e7006677e4f2899e 100644
+--- a/src/renderer/src/components/folder-list-view.tsx
++++ b/src/renderer/src/components/folder-list-view.tsx
+@@ -20,7 +20,14 @@ import { memo, useState, type CSSProperties } from 'react'
+ import { FOLDER_COLORS, type ListFolder } from '@shared/types'
+ import { useT } from '../lib/i18n'
+ import { cn } from '../lib/utils'
+-import { DIVIDER_KEY, rowKey, type DisplayRow, type FolderListItem } from '../lib/folder-list'
++import { DIVIDER_KEY, type FolderListItem } from '../lib/folder-list'
++import {
++  groupedRowKey,
++  NO_GROUP_ACTIONS,
++  type GroupActions,
++  type GroupedRow
++} from '../lib/custom-folder-groups'
++import { FolderGroupRow } from './custom-folder-group-row'
+ import {
+   ContextMenu,
+   ContextMenuContent,
+@@ -100,12 +107,15 @@ function FolderRowInner({
+   folder,
+   actions,
+   count,
+-  searching
++  searching,
++  menuExtra
+ }: {
+   folder: ListFolder
+   actions: FolderActions
+   count: number
+   searching: boolean
++  /** [custom] 우클릭 메뉴에 덧붙일 항목 (상위 폴더로 이동 등) — 스스로 스토어를 구독하는 요소로 넘길 것 */
++  menuExtra?: React.ReactNode
+ }): React.JSX.Element {
+   const t = useT()
+   const [editing, setEditing] = useState(false)
+@@ -237,6 +247,7 @@ function FolderRowInner({
+         >
+           <Pencil size={13} /> {t('ui.rename')}
+         </ContextMenuItem>
++        {menuExtra}
+         <ContextMenuSeparator />
+         <ContextMenuItem danger onSelect={() => actions.remove(folder.id)}>
+           <Trash2 size={13} /> {t('ui.deleteFolderItemsBecomeUncategorized')}
+@@ -274,7 +285,8 @@ function ItemRow({
+ }: {
+   id: string
+   disabled: boolean
+-  indent: boolean
++  /** [custom] 들여쓰기 단계 — 0 미분류, 1 폴더 안, 2 상위 폴더 안의 폴더 안 */
++  indent: number
+   children: React.ReactNode
+ }): React.JSX.Element {
+   const sortable = useSortable({ id, disabled })
+@@ -288,7 +300,8 @@ function ItemRow({
+       style={dndStyle(sortable, false)}
+       className={cn(
+         'overflow-hidden',
+-        indent && 'ml-5',
++        indent === 1 && 'ml-5',
++        indent >= 2 && 'ml-9',
+         sortable.isDragging && 'relative z-20 opacity-75'
+       )}
+       {...(disabled ? {} : sortable.attributes)}
+@@ -332,7 +345,7 @@ function ItemCardRowInner<T extends FolderListItem>({
+   rowId: string
+   item: T
+   disabled: boolean
+-  indent: boolean
++  indent: number
+   expanded: boolean
+   renderKey?: unknown
+   renderHeader?: (item: T) => React.ReactNode
+@@ -419,9 +432,12 @@ export function FolderListView<T extends FolderListItem>({
+   renderTile,
+   columns,
+   emptyText,
+-  renderKey
++  renderKey,
++  groupActions = NO_GROUP_ACTIONS,
++  folderMenuExtra
+ }: {
+-  rows: DisplayRow<T>[]
++  /** [custom] 상위 폴더 행을 포함할 수 있다 (캐릭터 프롬프트). 없으면 원본과 같다 */
++  rows: GroupedRow<T>[]
+   searching: boolean
+   expandedId: number | null
+   folderActions: FolderActions
+@@ -438,6 +454,10 @@ export function FolderListView<T extends FolderListItem>({
+   emptyText: string
+   /** render 콜백이 item·expanded 외에 의존하는 외부 상태 — 바뀌면 memo된 카드 전체를 리렌더 */
+   renderKey?: unknown
++  /** [custom] 상위 폴더 행 동작 */
++  groupActions?: GroupActions
++  /** [custom] 폴더 우클릭 메뉴에 덧붙일 항목 */
++  folderMenuExtra?: (folder: ListFolder) => React.ReactNode
+ }): React.JSX.Element {
+   const grid = renderTile != null && columns != null
+   const sensors = useSensors(
+@@ -446,9 +466,13 @@ export function FolderListView<T extends FolderListItem>({
+   )
+   // 폴더 드래그 중엔 소속 카드를 임시로 접는다 — "따라오는지 애매한" UX 제거
+   const [draggingFolderId, setDraggingFolderId] = useState<number | null>(null)
++  // [custom] 상위 폴더를 끄는 동안엔 그 안의 폴더·카드를 임시로 접는다 (폴더 드래그와 같은 이유)
++  const [draggingGroupId, setDraggingGroupId] = useState<number | null>(null)
+ 
+   const visible = rows.filter((r) => {
+-    if (r.type === 'folder' || r.type === 'divider') return true
++    if (r.type === 'group' || r.type === 'divider') return true
++    if (draggingGroupId !== null && r.groupId === draggingGroupId) return false
++    if (r.type === 'folder') return !r.hidden // 접힌 상위 폴더 안의 폴더
+     if (r.hidden) return false
+     return draggingFolderId === null || r.item.folderId !== draggingFolderId
+   })
+@@ -462,10 +486,12 @@ export function FolderListView<T extends FolderListItem>({
+   function handleDragStart(e: DragStartEvent): void {
+     const key = String(e.active.id)
+     setDraggingFolderId(key.startsWith('f-') ? Number(key.slice(2)) : null)
++    setDraggingGroupId(key.startsWith('g-') ? Number(key.slice(2)) : null)
+   }
+ 
+   function handleDragEnd(e: DragEndEvent): void {
+     setDraggingFolderId(null)
++    setDraggingGroupId(null)
+     const { active, over } = e
+     if (!over || active.id === over.id) return
+     onMove(String(active.id), String(over.id))
+@@ -482,11 +508,14 @@ export function FolderListView<T extends FolderListItem>({
+       // 그리드는 x·y 자유 이동, 리스트는 세로축 고정
+       modifiers={grid ? [] : [restrictToVerticalAxis]}
+       onDragStart={handleDragStart}
+-      onDragCancel={() => setDraggingFolderId(null)}
++      onDragCancel={() => {
++        setDraggingFolderId(null)
++        setDraggingGroupId(null)
++      }}
+       onDragEnd={handleDragEnd}
+     >
+       <SortableContext
+-        items={visible.map(rowKey)}
++        items={visible.map(groupedRowKey)}
+         strategy={grid ? rectSortingStrategy : verticalListSortingStrategy}
+       >
+         <div
+@@ -500,20 +529,35 @@ export function FolderListView<T extends FolderListItem>({
+                 <div key={DIVIDER_KEY} style={grid ? { gridColumn: '1 / -1' } : undefined}>
+                   <DividerRow />
+                 </div>
++              ) : row.type === 'group' ? (
++                // [custom] 상위 폴더 행
++                <div key={groupedRowKey(row)} style={grid ? { gridColumn: '1 / -1' } : undefined}>
++                  <FolderGroupRow
++                    group={row.group}
++                    folderCount={row.folderCount}
++                    actions={groupActions}
++                    searching={searching}
++                  />
++                </div>
+               ) : row.type === 'folder' ? (
+-                // 그리드에서 폴더 행은 전체 폭 차지
+-                <div key={rowKey(row)} style={grid ? { gridColumn: '1 / -1' } : undefined}>
++                // 그리드에서 폴더 행은 전체 폭 차지. [custom] 상위 폴더 안의 폴더는 들여쓴다
++                <div
++                  key={groupedRowKey(row)}
++                  className={row.groupId != null ? 'ml-4' : undefined}
++                  style={grid ? { gridColumn: '1 / -1' } : undefined}
++                >
+                   <FolderRow
+                     folder={row.folder}
+                     actions={folderActions}
+                     count={counts.get(row.folder.id) ?? 0}
+                     searching={searching}
++                    menuExtra={folderMenuExtra?.(row.folder)}
+                   />
+                 </div>
+               ) : grid ? (
+                 <GridTile
+-                  key={rowKey(row)}
+-                  rowId={rowKey(row)}
++                  key={groupedRowKey(row)}
++                  rowId={groupedRowKey(row)}
+                   item={row.item}
+                   disabled={searching}
+                   renderKey={renderKey}
+@@ -521,11 +565,11 @@ export function FolderListView<T extends FolderListItem>({
+                 />
+               ) : (
+                 <ItemCardRow
+-                  key={rowKey(row)}
+-                  rowId={rowKey(row)}
++                  key={groupedRowKey(row)}
++                  rowId={groupedRowKey(row)}
+                   item={row.item}
+                   disabled={searching || expandedId === row.item.id}
+-                  indent={!searching && row.item.folderId != null}
++                  indent={searching ? 0 : (row.depth ?? (row.item.folderId != null ? 1 : 0))}
+                   expanded={expandedId === row.item.id}
+                   renderKey={renderKey}
+                   renderHeader={renderHeader}
+diff --git a/src/renderer/src/components/history-panel.tsx b/src/renderer/src/components/history-panel.tsx
+index 368bebfd339daccbd47d00e3c4d89e05dfc416a6..a77459884101d7fc90b29e677506c510fd5a6e13 100644
+--- a/src/renderer/src/components/history-panel.tsx
++++ b/src/renderer/src/components/history-panel.tsx
+@@ -1,4 +1,4 @@
+-import { History, Trash2 } from 'lucide-react'
++import { History, LocateFixed, Trash2 } from 'lucide-react'
+ import { thumbnailFallback } from '../lib/constants'
+ import { cn } from '../lib/utils'
+ import { useT } from '../lib/i18n'
+@@ -8,6 +8,8 @@ import { useLayoutStore } from '../stores/layout-store'
+ import { askConfirm } from '../stores/dialog-store'
+ import { toast } from '../stores/toast-store'
+ import { ImageContextMenu } from './image-context-menu'
++import { ContextMenuItem, ContextMenuSeparator } from './ui/context-menu'
++import { useScenesStore } from '../stores/scenes-store'
+ 
+ export function HistoryPanel(): React.JSX.Element {
+   const t = useT()
+@@ -17,6 +19,7 @@ export function HistoryPanel(): React.JSX.Element {
+   const view = useGenerationStore((s) => s.view)
+   const refreshHistory = useGenerationStore((s) => s.refreshHistory)
+   const setCenterMode = useLayoutStore((s) => s.setCenterMode)
++  const goToScene = useScenesStore((s) => s.goToScene)
+ 
+   const deleteOne = async (id: number, filePath: string): Promise<void> => {
+     await window.nais.invoke('images:delete', { id })
+@@ -68,6 +71,20 @@ export function HistoryPanel(): React.JSX.Element {
+                 key={item.id}
+                 filePath={item.filePath}
+                 onDelete={() => void deleteOne(item.id, item.filePath)}
++                extra={
++                  // [custom] 이 이미지를 만든 씬이 있는 곳으로 이동
++                  item.sceneId != null && item.presetId != null ? (
++                    <>
++                      <ContextMenuSeparator />
++                      <ContextMenuItem
++                        onSelect={() => void goToScene(item.presetId!, item.sceneId!)}
++                      >
++                        <LocateFixed size={13} className="text-hue-emerald" />{' '}
++                        {t('ui.customGoToScene')}
++                      </ContextMenuItem>
++                    </>
++                  ) : undefined
++                }
+               >
+                 <button
+                   className={cn(
+diff --git a/src/renderer/src/components/scene-mode.tsx b/src/renderer/src/components/scene-mode.tsx
+index 35b643d7a4abac36661598d5612bf5c202946363..171fd49d25547aa8a7a96db196129c984cb3f24f 100644
+--- a/src/renderer/src/components/scene-mode.tsx
++++ b/src/renderer/src/components/scene-mode.tsx
+@@ -4,6 +4,7 @@ import {
+   CalendarX,
+   ChevronDown,
+   Copy,
++  Download,
+   FileDown,
+   FileUp,
+   FolderArchive,
+@@ -16,6 +17,7 @@ import {
+   Plus,
+   RectangleHorizontal,
+   RectangleVertical,
++  ScanEye,
+   SlidersHorizontal,
+   Square,
+   Trash2,
+@@ -46,6 +48,7 @@ import { cn } from '../lib/utils'
+ import { ReserveCount } from './reserve-count'
+ import { SceneCastDialog } from './scene-cast-dialog'
+ import { SceneDetail } from './scene-detail'
++import { SceneReview } from './custom-scene-review'
+ import { SortableList, SortableRow } from './sortable-list'
+ import { Button } from './ui/button'
+ import {
+@@ -373,9 +376,31 @@ function SceneGrid(): React.JSX.Element {
+   )
+   const [dragScene, setDragScene] = useState<Scene | null>(null)
+   // [custom] 변경 후 미생성 씬만 보기. 걸러 보는 동안에는 순서 바꾸기를 막는다 (부분 목록 기준 재정렬 방지)
+-  const [pendingOnly, setPendingOnly] = useState(false)
++  const pendingOnly = useScenesStore((s) => s.pendingOnly)
++  const setPendingOnly = useScenesStore((s) => s.setPendingOnly)
+   const pendingCount = scenes.filter((s) => s.pending).length
+   const shownScenes = pendingOnly ? scenes.filter((s) => s.pending) : scenes
++
++  // [custom] 히스토리의 '씬 위치로 이동' — 그 씬 카드가 보이게 스크롤하고 잠깐 강조한다
++  const focusSceneId = useScenesStore((s) => s.focusSceneId)
++  const clearFocusScene = useScenesStore((s) => s.clearFocusScene)
++  const reviewSceneId = useScenesStore((s) => s.reviewSceneId)
++  // 목록에 아직 없으면(프리셋 전환 직후) 로드된 뒤 다시 실행된다. 미생성만 보기에 가려진 씬이면
++  // goToScene이 필터를 먼저 끈다
++  const focusTargetId = shownScenes.find((s) => s.id === focusSceneId)?.id
++  useEffect(() => {
++    if (focusTargetId == null) return
++    const frame = requestAnimationFrame(() =>
++      scrollRef.current
++        ?.querySelector(`[data-scene-id="${focusTargetId}"]`)
++        ?.scrollIntoView({ block: 'center' })
++    )
++    const timer = setTimeout(clearFocusScene, 2500)
++    return () => {
++      cancelAnimationFrame(frame)
++      clearTimeout(timer)
++    }
++  }, [focusTargetId, clearFocusScene])
+   const onDragStart = (e: DragStartEvent): void => {
+     setDragScene(scenes.find((s) => `scene-${s.id}` === e.active.id) ?? null)
+   }
+@@ -609,6 +634,8 @@ function SceneGrid(): React.JSX.Element {
+           </p>
+         )}
+       </div>
++      {/* [custom] 검수 모드 — 지금 보이는 순서(미생성만 보기면 그 목록)대로 대표 이미지를 넘겨 본다 */}
++      {reviewSceneId != null && <SceneReview scenes={shownScenes} />}
+     </div>
+   )
+ }
+@@ -851,6 +878,9 @@ const SceneCard = memo(function SceneCard({
+   const activeCastId = useScenesStore((s) => s.activeCastId)
+   const sortable = useSortable({ id: `scene-${scene.id}` })
+   const t = useT()
++  // [custom] 히스토리 '씬 위치로 이동'으로 찾아온 카드 강조 / 검수 모드
++  const focused = useScenesStore((s) => s.focusSceneId === scene.id)
++  const setReviewScene = useScenesStore((s) => s.setReviewScene)
+ 
+   // +/- 는 현재 선택된 출연의 예약을 조작하므로 그 출연의 수만 표시 (배지가 전체 내역 담당)
+   const activeCast = casts.find((c) => c.id === activeCastId) ?? null
+@@ -897,9 +927,11 @@ const SceneCard = memo(function SceneCard({
+           ref={sortable.setNodeRef}
+           {...sortable.attributes}
+           {...sortable.listeners}
++          data-scene-id={scene.id}
+           className={cn(
+             'group relative touch-none overflow-hidden rounded-lg border bg-surface-2 transition',
+             editMode && checked ? 'border-accent ring-2 ring-accent/40' : 'border-line',
++            focused && 'border-accent ring-4 ring-accent',
+             sortable.isDragging && 'shadow-xl'
+           )}
+           style={{ aspectRatio: CARD_ASPECT[cardOrientation], ...dndStyle(sortable) }}
+@@ -1104,6 +1136,25 @@ const SceneCard = memo(function SceneCard({
+             <CircleDashed size={13} /> {t('ui.markAsChecked')}
+           </ContextMenuItem>
+         )}
++        {/* [custom] 대표 이미지(카드에 보이는 그림) 저장 / 검수 모드 */}
++        {scene.thumbnailPath && (
++          <>
++            <ContextMenuSeparator />
++            <ContextMenuItem
++              onSelect={() =>
++                void window.nais.invoke('images:saveAs', {
++                  filePath: scene.thumbnailPath,
++                  defaultName: scene.name
++                })
++              }
++            >
++              <Download size={13} /> {t('ui.customSaveTopImage')}
++            </ContextMenuItem>
++            <ContextMenuItem onSelect={() => setReviewScene(scene.id)}>
++              <ScanEye size={13} className="text-hue-sky" /> {t('ui.customReviewFromHere')}
++            </ContextMenuItem>
++          </>
++        )}
+         <ContextMenuSeparator />
+         <ContextMenuItem danger onSelect={() => void removeScene()}>
+           <Trash2 size={13} /> {t('ui.delete')}
+diff --git a/src/renderer/src/lib/custom-folder-groups.ts b/src/renderer/src/lib/custom-folder-groups.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..264b26793d807a2182bab95327ff2d5bfff8fab5
+--- /dev/null
++++ b/src/renderer/src/lib/custom-folder-groups.ts
+@@ -0,0 +1,302 @@
++import type { FolderGroup, FolderGroupLink, ListFolder } from '@shared/types'
++import {
++  canonicalize,
++  DIVIDER_KEY,
++  moveRow,
++  rowKey,
++  type DisplayRow,
++  type FolderListItem
++} from './folder-list'
++
++/**
++ * [custom] 상위 폴더(폴더 묶음) — 폴더 리스트 모델 위에 한 단계를 더 얹는다.
++ * - 표시 순서: [상위 폴더 밖 폴더들..., 상위 폴더1, 그 폴더들..., 상위 폴더2, ..., 미분류 구분선, 미분류 카드...]
++ * - 폴더의 소속은 "바로 위 상위 폴더 행"에서 파생 — 카드가 바로 위 폴더 행에 속하는 원본 규칙과 같다.
++ *   그래서 첫 상위 폴더 행보다 위 = 상위 폴더 밖
++ * - 상위 폴더가 없으면 행 구성이 원본 buildDisplayRows와 같다
++ */
++
++/** 폴더 id → 상위 폴더 id */
++export type GroupLinks = ReadonlyMap<number, number>
++
++/** 상위 폴더를 아는 행 — 원본 DisplayRow에 상위 폴더 행, 깊이, 소속 상위 폴더를 더했다 */
++export type GroupedRow<T extends FolderListItem> =
++  | { type: 'group'; group: FolderGroup; folderCount: number }
++  | { type: 'folder'; folder: ListFolder; hidden?: boolean; groupId?: number | null }
++  | { type: 'item'; item: T; hidden: boolean; depth?: number; groupId?: number | null }
++  | { type: 'divider' }
++
++export interface GroupedState<T extends FolderListItem> {
++  groups: FolderGroup[]
++  links: GroupLinks
++  folders: ListFolder[]
++  items: T[]
++}
++
++export function groupedRowKey<T extends FolderListItem>(row: GroupedRow<T>): string {
++  return row.type === 'group' ? `g-${row.group.id}` : rowKey(row as DisplayRow<T>)
++}
++
++export function linksFrom(list: FolderGroupLink[]): Map<number, number> {
++  return new Map(list.map((l) => [l.folderId, l.groupId]))
++}
++
++export function linksTo(links: GroupLinks, folders: ListFolder[]): FolderGroupLink[] {
++  return folders.flatMap((f) => {
++    const groupId = links.get(f.id)
++    return groupId == null ? [] : [{ folderId: f.id, groupId }]
++  })
++}
++
++/** 폴더의 상위 폴더 — 없거나 사라진 상위 폴더면 null */
++function groupResolver(
++  groups: FolderGroup[],
++  links: GroupLinks
++): (folderId: number) => number | null {
++  const ids = new Set(groups.map((g) => g.id))
++  return (folderId) => {
++    const groupId = links.get(folderId)
++    return groupId != null && ids.has(groupId) ? groupId : null
++  }
++}
++
++/** 표시 순서대로 폴더 정렬 — 상위 폴더 밖 먼저, 그다음 상위 폴더 순서대로 (안에서는 원래 순서) */
++export function orderFoldersByGroup(
++  groups: FolderGroup[],
++  links: GroupLinks,
++  folders: ListFolder[]
++): ListFolder[] {
++  const groupOf = groupResolver(groups, links)
++  return [
++    ...folders.filter((f) => groupOf(f.id) == null),
++    ...groups.flatMap((g) => folders.filter((f) => groupOf(f.id) === g.id))
++  ]
++}
++
++export function buildGroupedRows<T extends FolderListItem>(
++  groups: FolderGroup[],
++  links: GroupLinks,
++  folders: ListFolder[],
++  items: T[]
++): GroupedRow<T>[] {
++  const groupOf = groupResolver(groups, links)
++  const folderIds = new Set(folders.map((f) => f.id))
++  const byFolder = new Map<number, T[]>()
++  const loose: T[] = []
++  for (const item of items) {
++    if (item.folderId != null && folderIds.has(item.folderId)) {
++      const list = byFolder.get(item.folderId)
++      if (list) list.push(item)
++      else byFolder.set(item.folderId, [item])
++    } else loose.push(item) // 사라진 폴더를 가리키는 카드도 미분류로 (원본과 같다)
++  }
++
++  const rows: GroupedRow<T>[] = []
++  const pushFolder = (
++    folder: ListFolder,
++    groupId: number | null,
++    groupCollapsed: boolean
++  ): void => {
++    rows.push({ type: 'folder', folder, hidden: groupCollapsed, groupId })
++    for (const item of byFolder.get(folder.id) ?? []) {
++      rows.push({
++        type: 'item',
++        item,
++        hidden: groupCollapsed || folder.collapsed,
++        depth: groupId == null ? 1 : 2,
++        groupId
++      })
++    }
++  }
++  for (const folder of folders) if (groupOf(folder.id) == null) pushFolder(folder, null, false)
++  for (const group of groups) {
++    const inside = folders.filter((f) => groupOf(f.id) === group.id)
++    rows.push({ type: 'group', group, folderCount: inside.length })
++    for (const folder of inside) pushFolder(folder, group.id, group.collapsed)
++  }
++  // 폴더나 상위 폴더가 있으면 미분류 경계 (여기로 놓으면 폴더에서 빠짐)
++  if (folders.length > 0 || groups.length > 0) rows.push({ type: 'divider' })
++  for (const item of loose)
++    rows.push({ type: 'item', item, hidden: false, depth: 0, groupId: null })
++  return rows
++}
++
++/** 키에서 종류와 id ("g-3" → ['g', 3], "divider" → ['d', NaN]) */
++function parseKey(key: string): [string, number] {
++  if (key === DIVIDER_KEY) return ['d', NaN]
++  const [kind, id] = key.split('-')
++  return [kind, Number(id)]
++}
++
++/**
++ * 끌어 놓기 결과 반영 (activeKey/overKey는 groupedRowKey 형식).
++ * - 카드: 원본 규칙 그대로. 상위 폴더 행 위에 놓으면 그 상위 폴더의 첫 폴더 행에 놓은 것으로 본다
++ * - 폴더: 소속 카드와 함께 블록으로 이동하고, 놓인 자리의 바로 위 상위 폴더 행에 들어간다
++ * - 상위 폴더: 안의 폴더·카드와 함께 상위 폴더끼리 순서만 바뀐다
++ * 결과의 folders는 항상 표시 순서다 (그대로 저장하면 원본 폴더 순서가 화면과 같아진다).
++ */
++export function moveGroupedRow<T extends FolderListItem>(
++  state: GroupedState<T>,
++  activeKey: string,
++  overKey: string
++): GroupedState<T> {
++  if (activeKey === overKey || activeKey === DIVIDER_KEY) return state
++  const { groups, links, folders, items } = state
++  const keys = buildGroupedRows(groups, links, folders, items).map(groupedRowKey)
++  const fromRow = keys.indexOf(activeKey)
++  const overRow = keys.indexOf(overKey)
++  if (fromRow < 0 || overRow < 0) return state
++  const down = overRow > fromRow
++  const groupOf = groupResolver(groups, links)
++  const ordered = orderFoldersByGroup(groups, links, folders)
++  const folderIds = new Set(folders.map((f) => f.id))
++  const [activeKind, activeId] = parseKey(activeKey)
++  const [overKind, overId] = parseKey(overKey)
++  /** 놓인 자리가 속한 폴더 (미분류 카드·구분선이면 null) */
++  const folderAt = (): number | null => {
++    const folderId =
++      overKind === 'f'
++        ? overId
++        : overKind === 'i'
++          ? (items.find((i) => i.id === overId)?.folderId ?? null)
++          : null
++    return folderId != null && folderIds.has(folderId) ? folderId : null
++  }
++
++  if (activeKind === 'i') {
++    let target = overKey
++    if (overKind === 'g') {
++      const first = ordered.find((f) => groupOf(f.id) === overId)
++      if (!first) return state // 빈 상위 폴더에는 카드를 바로 넣을 수 없다
++      target = `f-${first.id}`
++    }
++    const next = moveRow(ordered, items, activeKey, target)
++    return { ...state, folders: next.folders, items: next.items }
++  }
++
++  if (activeKind === 'f') {
++    // 폴더·상위 폴더 행만 남긴 순서에서 블록을 옮긴 뒤, 바로 위 상위 폴더 행으로 소속을 다시 정한다
++    type Token = { group: number } | { folder: number }
++    const seq: Token[] = [
++      ...ordered.filter((f) => groupOf(f.id) == null).map((f) => ({ folder: f.id })),
++      ...groups.flatMap((g) => [
++        { group: g.id },
++        ...ordered.filter((f) => groupOf(f.id) === g.id).map((f) => ({ folder: f.id }))
++      ])
++    ]
++    const from = seq.findIndex((t) => 'folder' in t && t.folder === activeId)
++    if (from < 0) return state
++    seq.splice(from, 1)
++    let to: number
++    if (overKind === 'g') {
++      const at = seq.findIndex((t) => 'group' in t && t.group === overId)
++      if (at < 0) return state
++      to = down ? at + 1 : at
++    } else {
++      const target = folderAt()
++      if (target == null)
++        to = seq.length // 구분선·미분류 카드 위 = 폴더 영역 끝
++      else {
++        const at = seq.findIndex((t) => 'folder' in t && t.folder === target)
++        if (at < 0) return state
++        to = down ? at + 1 : at
++      }
++    }
++    seq.splice(to, 0, { folder: activeId })
++
++    const nextLinks = new Map<number, number>()
++    const order: number[] = []
++    let current: number | null = null
++    for (const token of seq) {
++      if ('group' in token) current = token.group
++      else {
++        order.push(token.folder)
++        if (current != null) nextLinks.set(token.folder, current)
++      }
++    }
++    const byId = new Map(folders.map((f) => [f.id, f]))
++    const nextFolders = order.flatMap((id) => {
++      const folder = byId.get(id)
++      return folder ? [folder] : []
++    })
++    return {
++      ...state,
++      links: nextLinks,
++      folders: nextFolders,
++      items: canonicalize(nextFolders, items)
++    }
++  }
++
++  if (activeKind === 'g') {
++    const order = groups.map((g) => g.id)
++    if (!order.includes(activeId)) return state
++    let target: number | null | 'end'
++    if (overKind === 'g') target = overId
++    else {
++      const folder = folderAt()
++      target = folder == null ? 'end' : groupOf(folder) // 상위 폴더 밖 폴더 위 = 맨 앞
++    }
++    if (target === activeId) return state
++    const rest = order.filter((id) => id !== activeId)
++    let to: number
++    if (target === 'end') to = rest.length
++    else if (target == null) to = 0
++    else {
++      const at = rest.indexOf(target)
++      if (at < 0) return state
++      to = down ? at + 1 : at
++    }
++    rest.splice(to, 0, activeId)
++    const byId = new Map(groups.map((g) => [g.id, g]))
++    const nextGroups = rest.flatMap((id) => {
++      const group = byId.get(id)
++      return group ? [group] : []
++    })
++    const nextFolders = orderFoldersByGroup(nextGroups, links, folders)
++    return {
++      ...state,
++      groups: nextGroups,
++      folders: nextFolders,
++      items: canonicalize(nextFolders, items)
++    }
++  }
++
++  return state
++}
++
++/** 폴더를 상위 폴더에 넣거나(맨 끝으로) 뺀다 (null = 상위 폴더 밖, 그 영역 맨 끝) */
++export function setFolderGroup<T extends FolderListItem>(
++  state: GroupedState<T>,
++  folderId: number,
++  groupId: number | null
++): GroupedState<T> {
++  const folder = state.folders.find((f) => f.id === folderId)
++  if (!folder) return state
++  const links = new Map(state.links)
++  if (groupId == null) links.delete(folderId)
++  else links.set(folderId, groupId)
++  // 옮긴 폴더를 원래 순서의 맨 뒤로 보내면 새 자리(상위 폴더 안 / 밖)에서 마지막이 된다
++  const ordered = orderFoldersByGroup(state.groups, state.links, state.folders)
++  const nextFolders = orderFoldersByGroup(state.groups, links, [
++    ...ordered.filter((f) => f.id !== folderId),
++    folder
++  ])
++  return { ...state, links, folders: nextFolders, items: canonicalize(nextFolders, state.items) }
++}
++
++/** [custom] 상위 폴더 행 동작 */
++export interface GroupActions {
++  rename: (id: number, name: string) => void
++  toggleCollapse: (id: number) => void
++  setColor: (id: number, color: string | null) => void
++  remove: (id: number) => void
++  addFolder: (id: number) => void
++}
++
++export const NO_GROUP_ACTIONS: GroupActions = {
++  rename: () => {},
++  toggleCollapse: () => {},
++  setColor: () => {},
++  remove: () => {},
++  addFolder: () => {}
++}
+diff --git a/src/renderer/src/stores/custom-folder-groups-store.ts b/src/renderer/src/stores/custom-folder-groups-store.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..9f8a1cb6563c259e799442a1b2a8c0d3e1dea72a
+--- /dev/null
++++ b/src/renderer/src/stores/custom-folder-groups-store.ts
+@@ -0,0 +1,135 @@
++import { create } from 'zustand'
++import type { CharacterCard, FolderGroup, ListFolder } from '@shared/types'
++import {
++  linksFrom,
++  linksTo,
++  moveGroupedRow,
++  orderFoldersByGroup,
++  setFolderGroup,
++  type GroupedState,
++  type GroupLinks
++} from '../lib/custom-folder-groups'
++import { canonicalize, toOrderEntries } from '../lib/folder-list'
++import { t } from '../lib/i18n'
++import { useCharactersStore } from './characters-store'
++
++/**
++ * [custom] 캐릭터 프롬프트 상위 폴더 — 상위 폴더 목록과 폴더 소속을 들고 있고,
++ * 끌어 놓기를 상위 폴더까지 알고 처리한다. 폴더·카드 자체는 원본 캐릭터 스토어에 있다
++ * (여기서는 그 순서만 같이 바꿔 저장한다).
++ */
++interface FolderGroupsState {
++  groups: FolderGroup[]
++  links: GroupLinks
++  load: () => Promise<void>
++  /** 새 상위 폴더 — folderId를 주면 그 폴더를 바로 넣는다 */
++  createGroup: (folderId?: number) => Promise<void>
++  renameGroup: (id: number, name: string) => void
++  toggleGroup: (id: number) => void
++  setGroupColor: (id: number, color: string | null) => void
++  /** 상위 폴더만 지운다 — 안의 폴더는 상위 폴더 밖으로 나온다 */
++  removeGroup: (id: number) => void
++  setFolderGroup: (folderId: number, groupId: number | null) => void
++  /** 상위 폴더 안에 새 폴더 */
++  addFolderToGroup: (groupId: number) => Promise<void>
++  move: (activeKey: string, overKey: string) => void
++}
++
++function current(groups: FolderGroup[], links: GroupLinks): GroupedState<CharacterCard> {
++  const { folders, items } = useCharactersStore.getState()
++  return { groups, links, folders, items }
++}
++
++/** 바뀐 순서·소속을 두 스토어에 반영하고 저장한다 */
++function apply(
++  next: GroupedState<CharacterCard>,
++  set: (s: Partial<FolderGroupsState>) => void
++): void {
++  useCharactersStore.setState({ folders: next.folders, items: next.items })
++  set({ groups: next.groups, links: next.links })
++  void window.nais.invoke('chars:reorder', { order: toOrderEntries(next.folders, next.items) })
++  void window.nais.invoke('custom:folderGroups:arrange', {
++    kind: 'chars',
++    groupIds: next.groups.map((g) => g.id),
++    links: linksTo(next.links, next.folders)
++  })
++}
++
++export const useFolderGroupsStore = create<FolderGroupsState>((set, get) => ({
++  groups: [],
++  links: new Map(),
++
++  load: async () => {
++    const { groups, links } = await window.nais.invoke('custom:folderGroups:list', {
++      kind: 'chars'
++    })
++    set({ groups, links: linksFrom(links) })
++  },
++
++  createGroup: async (folderId) => {
++    const name = t('ui.customNewFolderGroup')
++    const { id } = await window.nais.invoke('custom:folderGroups:create', { kind: 'chars', name })
++    set({ groups: [...get().groups, { id, name, collapsed: false, color: null }] })
++    if (folderId != null) get().setFolderGroup(folderId, id)
++  },
++
++  renameGroup: (id, name) => {
++    set({ groups: get().groups.map((g) => (g.id === id ? { ...g, name } : g)) })
++    void window.nais.invoke('custom:folderGroups:update', { id, patch: { name } })
++  },
++
++  toggleGroup: (id) => {
++    const group = get().groups.find((g) => g.id === id)
++    if (!group) return
++    const collapsed = !group.collapsed
++    set({ groups: get().groups.map((g) => (g.id === id ? { ...g, collapsed } : g)) })
++    void window.nais.invoke('custom:folderGroups:update', { id, patch: { collapsed } })
++  },
++
++  setGroupColor: (id, color) => {
++    set({ groups: get().groups.map((g) => (g.id === id ? { ...g, color } : g)) })
++    void window.nais.invoke('custom:folderGroups:update', { id, patch: { color } })
++  },
++
++  removeGroup: (id) => {
++    const groups = get().groups.filter((g) => g.id !== id)
++    const links = new Map([...get().links].filter(([, groupId]) => groupId !== id))
++    const { folders, items } = useCharactersStore.getState()
++    // 안에 있던 폴더는 상위 폴더 밖 영역 끝으로 (화면 순서 = 저장 순서 유지)
++    const nextFolders = orderFoldersByGroup(
++      groups,
++      links,
++      orderFoldersByGroup(get().groups, get().links, folders)
++    )
++    useCharactersStore.setState({ folders: nextFolders, items: canonicalize(nextFolders, items) })
++    set({ groups, links })
++    void window.nais.invoke('custom:folderGroups:delete', { id })
++    void window.nais.invoke('chars:reorder', {
++      order: toOrderEntries(nextFolders, useCharactersStore.getState().items)
++    })
++  },
++
++  setFolderGroup: (folderId, groupId) => {
++    const { groups, links } = get()
++    const next = setFolderGroup(current(groups, links), folderId, groupId)
++    // 접힌 상위 폴더에 넣었으면 펼쳐서 어디로 갔는지 보이게
++    if (groupId != null && groups.find((g) => g.id === groupId)?.collapsed)
++      get().toggleGroup(groupId)
++    apply({ ...next, groups: get().groups }, set)
++  },
++
++  addFolderToGroup: async (groupId) => {
++    const name = t('ui.newFolder')
++    const { id } = await window.nais.invoke('chars:folderCreate', { name })
++    const folder: ListFolder = { id, name, collapsed: false, color: null }
++    useCharactersStore.setState({ folders: [...useCharactersStore.getState().folders, folder] })
++    get().setFolderGroup(id, groupId)
++  },
++
++  move: (activeKey, overKey) => {
++    const { groups, links } = get()
++    const state = current(groups, links)
++    const next = moveGroupedRow(state, activeKey, overKey)
++    if (next !== state) apply(next, set)
++  }
++}))
+diff --git a/src/renderer/src/stores/scenes-store.ts b/src/renderer/src/stores/scenes-store.ts
+index 17a481e818478987a4b76f4c1a60959e9d26f961..1227af397315b49d440e2784c7b9459274be4eee 100644
+--- a/src/renderer/src/stores/scenes-store.ts
++++ b/src/renderer/src/stores/scenes-store.ts
+@@ -15,6 +15,7 @@ import type {
+ } from '@shared/types'
+ import { enabledCharacters, useCharactersStore } from './characters-store'
+ import { randomSeed, useGenerationStore } from './generation-store'
++import { useLayoutStore } from './layout-store'
+ 
+ export { appendPrompt } from '@shared/scene-request'
+ 
+@@ -53,6 +54,16 @@ interface ScenesState {
+ 
+   loadPresets: () => Promise<void>
+   setActivePreset: (id: number) => Promise<void>
++  /** [custom] 씬 목록에서 찾아가 강조할 씬 (히스토리 '씬 위치로 이동') — 목록이 스크롤한 뒤 비운다 */
++  focusSceneId: number | null
++  goToScene: (presetId: number, sceneId: number) => Promise<void>
++  clearFocusScene: () => void
++  /** [custom] 변경 후 미생성 씬만 보기 (씬 위치로 이동이 가려진 씬을 보여 주려고 끌 수 있게 스토어에 둔다) */
++  pendingOnly: boolean
++  setPendingOnly: (on: boolean) => void
++  /** [custom] 검수 모드에서 보고 있는 씬 (null = 꺼짐) — 대표 이미지를 한 장씩 넘겨 본다 */
++  reviewSceneId: number | null
++  setReviewScene: (id: number | null) => void
+   createPreset: (name: string) => Promise<void>
+   renamePreset: (id: number, name: string) => Promise<void>
+   deletePreset: (id: number) => Promise<void>
+@@ -193,9 +204,29 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
+     }
+     await get().load()
+   },
++  focusSceneId: null,
++  goToScene: async (presetId, sceneId) => {
++    useLayoutStore.getState().setCenterMode('scene')
++    if (get().activePresetId !== presetId) await get().setActivePreset(presetId)
++    else if (get().selectedId != null) get().select(null) // 씬 상세를 닫고 목록으로
++    // 히스토리를 연 뒤에 씬이 지워졌을 수 있다
++    const target = get().scenes.find((s) => s.id === sceneId)
++    if (!target) {
++      toast(t('ui.customSceneNotFound'), 'error')
++      return
++    }
++    // 미생성만 보는 중이라 안 보이는 씬이면 필터를 끈다
++    if (get().pendingOnly && !target.pending) set({ pendingOnly: false })
++    set({ focusSceneId: sceneId })
++  },
++  pendingOnly: false,
++  setPendingOnly: (on) => set({ pendingOnly: on }),
++  clearFocusScene: () => set({ focusSceneId: null }),
++  reviewSceneId: null,
++  setReviewScene: (id) => set({ reviewSceneId: id }),
+   setActivePreset: async (id) => {
+     selectionAnchor = null
+-    set({ activePresetId: id, selectedId: null, selection: new Set() })
++    set({ activePresetId: id, selectedId: null, selection: new Set(), reviewSceneId: null })
+     await get().load()
+   },
+   createPreset: async (name) => {
+diff --git a/src/shared/i18n/catalog-en.ts b/src/shared/i18n/catalog-en.ts
+index 7eabed31cf7ca5e23c52b43f414eee8883ceb5ab..cda05808e93e2904108f6e95e8949c5019497304 100644
+--- a/src/shared/i18n/catalog-en.ts
++++ b/src/shared/i18n/catalog-en.ts
+@@ -140,6 +140,22 @@ export const EN = {
+   'ui.notGenerated': 'Not generated',
+   'ui.showOnlyNotGeneratedValue': 'Show only changed, not yet generated ({0})',
+   'ui.markAsChecked': 'Mark as checked',
++  'ui.customGoToScene': 'Go to this scene',
++  'ui.customAddFolderGroup': 'Add folder group',
++  'ui.customNewFolderGroup': 'New folder group',
++  'ui.customMoveToFolderGroup': 'Move to folder group',
++  'ui.customNewFolderGroupWithFolder': 'New folder group with this folder',
++  'ui.customRemoveFromFolderGroup': 'Take out of folder group',
++  'ui.customAddFolderToGroup': 'Add a folder to this group',
++  'ui.customDeleteFolderGroup': 'Delete folder group (folders stay)',
++  'ui.customSceneNotFound': 'Scene not found. It may have been deleted.',
++  'ui.customSaveTopImage': 'Save cover image',
++  'ui.customReviewFromHere': 'Review mode (from here)',
++  'ui.customReviewQueue': 'Queue again',
++  'ui.customReviewQueuedValue': 'Queued {0} again (+1)',
++  'ui.customReviewHint': '←/→, wheel or swipe to browse · R queue again · Esc close',
++  'ui.customPrevious': 'Previous',
++  'ui.customNext': 'Next',
+   'ui.customQueue1ForPendingValue': 'Queue 1 for the {0} not-yet-generated scene(s) only',
+   'ui.customShowScrollbars': 'Touch / remote mode',
+   'ui.customShowScrollbarsHint':
+diff --git a/src/shared/i18n/catalog-ko.ts b/src/shared/i18n/catalog-ko.ts
+index 1f114593b9665538f276ee0b4b4141f9783f0ae6..0173048250ba594f90bcb4b173dd00a8885e5f80 100644
+--- a/src/shared/i18n/catalog-ko.ts
++++ b/src/shared/i18n/catalog-ko.ts
+@@ -139,6 +139,22 @@ export const KO = {
+   'ui.notGenerated': '미생성',
+   'ui.showOnlyNotGeneratedValue': '변경 후 미생성 씬만 보기 ({0})',
+   'ui.markAsChecked': '확인함 (미생성 표시 끄기)',
++  'ui.customGoToScene': '씬 위치로 이동',
++  'ui.customAddFolderGroup': '상위 폴더 추가',
++  'ui.customNewFolderGroup': '새 상위 폴더',
++  'ui.customMoveToFolderGroup': '상위 폴더로 이동',
++  'ui.customNewFolderGroupWithFolder': '새 상위 폴더 만들어 넣기',
++  'ui.customRemoveFromFolderGroup': '상위 폴더에서 빼기',
++  'ui.customAddFolderToGroup': '이 상위 폴더에 폴더 추가',
++  'ui.customDeleteFolderGroup': '상위 폴더 삭제 (안의 폴더는 그대로)',
++  'ui.customSceneNotFound': '씬을 찾을 수 없습니다. 지워졌을 수 있습니다.',
++  'ui.customSaveTopImage': '대표 이미지 저장',
++  'ui.customReviewFromHere': '검수 모드 (여기부터)',
++  'ui.customReviewQueue': '다시 뽑기 예약',
++  'ui.customReviewQueuedValue': '{0} 다시 뽑기 예약 +1',
++  'ui.customReviewHint': '←/→·휠·좌우로 끌어서 넘기기 · R 다시 뽑기 예약 · Esc 닫기',
++  'ui.customPrevious': '이전',
++  'ui.customNext': '다음',
+   'ui.customQueue1ForPendingValue': '미생성 씬 {0}개에만 1장씩 예약',
+   'ui.customShowScrollbars': '터치·원격 모드',
+   'ui.customShowScrollbarsHint':
+diff --git a/src/shared/i18n/catalog-zh-CN.ts b/src/shared/i18n/catalog-zh-CN.ts
+index eff5b7680194879f2035089c0ef694882489e9e7..6aa3a98d121d6d3918de91dc895c47ff671972cb 100644
+--- a/src/shared/i18n/catalog-zh-CN.ts
++++ b/src/shared/i18n/catalog-zh-CN.ts
+@@ -139,6 +139,22 @@ export const ZH_CN = {
+   'ui.notGenerated': '未生成',
+   'ui.showOnlyNotGeneratedValue': '仅显示修改后未生成的场景（{0}）',
+   'ui.markAsChecked': '标记为已确认',
++  'ui.customGoToScene': '跳转到该场景',
++  'ui.customAddFolderGroup': '添加上级文件夹',
++  'ui.customNewFolderGroup': '新上级文件夹',
++  'ui.customMoveToFolderGroup': '移到上级文件夹',
++  'ui.customNewFolderGroupWithFolder': '新建上级文件夹并放入',
++  'ui.customRemoveFromFolderGroup': '移出上级文件夹',
++  'ui.customAddFolderToGroup': '在此上级文件夹中添加文件夹',
++  'ui.customDeleteFolderGroup': '删除上级文件夹（其中的文件夹保留）',
++  'ui.customSceneNotFound': '找不到该场景，可能已被删除。',
++  'ui.customSaveTopImage': '保存封面图片',
++  'ui.customReviewFromHere': '审阅模式（从这里开始）',
++  'ui.customReviewQueue': '重新生成预约',
++  'ui.customReviewQueuedValue': '已为 {0} 预约重新生成 +1',
++  'ui.customReviewHint': '←/→、滚轮或左右拖动翻看 · R 预约重新生成 · Esc 关闭',
++  'ui.customPrevious': '上一张',
++  'ui.customNext': '下一张',
+   'ui.customQueue1ForPendingValue': '仅为 {0} 个未生成的场景各预约 1 张',
+   'ui.customShowScrollbars': '触屏/远程模式',
+   'ui.customShowScrollbarsHint':
+diff --git a/src/shared/types.ts b/src/shared/types.ts
+index c8b50fd1dd9e4858592ece72cc76f64a38b97536..10719e7319656680fe1b02742bbff520ae0a2452 100644
+--- a/src/shared/types.ts
++++ b/src/shared/types.ts
+@@ -186,6 +186,22 @@ export interface ListFolder {
+ }
+ export type CharacterFolder = ListFolder
+ 
++/** [custom] 상위 폴더 — 폴더 여러 개를 묶는다 (지금은 캐릭터 프롬프트만) */
++export type FolderGroupKind = 'chars'
++export interface FolderGroup {
++  id: number
++  name: string
++  collapsed: boolean
++  /** 구분용 색 (hex). null = 기본 */
++  color: string | null
++}
++export type FolderGroupPatch = Partial<Pick<FolderGroup, 'name' | 'collapsed' | 'color'>>
++/** 폴더가 어느 상위 폴더에 들어 있는지 (없으면 상위 폴더 밖) */
++export interface FolderGroupLink {
++  folderId: number
++  groupId: number
++}
++
+ /** 무채색 테마에 어울리는 채도 낮은 폴더 색 프리셋 */
+ export const FOLDER_COLORS = [
+   '#c47a72', // red
+@@ -224,6 +240,8 @@ export interface HistoryItem {
+   /** [custom] 씬 모드로 만든 이미지면 그 씬·프리셋 이름 (씬이 지워졌거나 씬 이미지가 아니면 없음) */
+   sceneName?: string | null
+   presetName?: string | null
++  sceneId?: number | null
++  presetId?: number | null
+ }
+ 
+ /** 디렉터 툴 (augment-image req_type) */
+@@ -514,6 +532,21 @@ export interface IpcInvokeMap {
+   'chars:clearThumbnail': { req: { id: number }; res: void }
+   'chars:reorder': { req: { order: CharacterOrderEntry[] }; res: void }
+   'chars:folderCreate': { req: { name: string }; res: { id: number } }
++  /** [custom] 상위 폴더 */
++  'custom:folderGroups:list': {
++    req: { kind: FolderGroupKind }
++    res: { groups: FolderGroup[]; links: FolderGroupLink[] }
++  }
++  'custom:folderGroups:create': {
++    req: { kind: FolderGroupKind; name: string }
++    res: { id: number }
++  }
++  'custom:folderGroups:update': { req: { id: number; patch: FolderGroupPatch }; res: void }
++  'custom:folderGroups:delete': { req: { id: number }; res: void }
++  'custom:folderGroups:arrange': {
++    req: { kind: FolderGroupKind; groupIds: number[]; links: FolderGroupLink[] }
++    res: void
++  }
+   'chars:folderRename': { req: { id: number; name: string }; res: void }
+   'chars:folderCollapse': { req: { id: number; collapsed: boolean }; res: void }
+   'chars:folderColor': { req: { id: number; color: string | null }; res: void }
+@@ -553,7 +586,8 @@ export interface IpcInvokeMap {
+   /** 파일 탐색기에서 해당 파일 위치 열기 (파일 선택 상태로) */
+   'images:showInFolder': { req: { filePath: string }; res: void }
+   /** 다른 이름으로 저장 — 파일 저장 다이얼로그로 복사 */
+-  'images:saveAs': { req: { filePath: string }; res: { saved: boolean } }
++  /** [custom] defaultName — 저장 창의 파일 이름 기본값 (씬 대표 이미지 저장: 씬 이름) */
++  'images:saveAs': { req: { filePath: string; defaultName?: string }; res: { saved: boolean } }
+   /** 편집기(모자이크 등)의 결과 base64 PNG를 곧바로 원하는 위치에 저장 — 적용/저장 단계 없이 바로 내려받기 */
+   'images:saveBase64As': { req: { base64: string; defaultName?: string }; res: { saved: boolean } }
+   /** 이미지를 클립보드로 복사 */
+diff --git a/tests/custom-folder-groups.integration.ts b/tests/custom-folder-groups.integration.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..93f54f48c6ebf5e9fbf8dc7648eb76db7b4d7008
+--- /dev/null
++++ b/tests/custom-folder-groups.integration.ts
+@@ -0,0 +1,126 @@
++import { mkdtempSync, rmSync } from 'fs'
++import { tmpdir } from 'os'
++import { join } from 'path'
++import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
++import { closeDb, initDb } from '../src/main/db'
++import {
++  createCharacter,
++  createFolder,
++  deleteFolder,
++  listCharacters,
++  reorderCharacters
++} from '../src/main/characters/repo'
++import {
++  arrangeFolderGroups,
++  createFolderGroup,
++  deleteFolderGroup,
++  listFolderGroups,
++  updateFolderGroup
++} from '../src/main/custom/folder-groups'
++import type { FolderGroupKind } from '../src/shared/types'
++
++// [custom] 상위 폴더 저장: 순서·소속·정리, 원본 폴더·카드는 건드리지 않음
++const environment = vi.hoisted(() => ({ directory: '' }))
++vi.mock('electron', () => ({
++  app: { getPath: () => environment.directory, getLocale: () => 'ko' },
++  BrowserWindow: { getFocusedWindow: () => null, getAllWindows: () => [] },
++  dialog: {}
++}))
++
++beforeEach(() => {
++  environment.directory = mkdtempSync(join(tmpdir(), 'nais3-custom-groups-'))
++  initDb()
++})
++afterEach(() => {
++  closeDb()
++  rmSync(environment.directory, { recursive: true, force: true })
++})
++
++describe('custom: folder groups storage', () => {
++  it('starts empty, then keeps group order, state and folder links', () => {
++    expect(listFolderGroups('chars')).toEqual({ groups: [], links: [] })
++    const a = createFolder('윤초아')
++    const b = createFolder('Lover_C')
++    const c = createFolder('레비')
++    const g1 = createFolderGroup('chars', '옆집 뒷계')
++    const g2 = createFolderGroup('chars', '악마 하렘')
++    updateFolderGroup(g2, { collapsed: true, color: '#c47a72' })
++    updateFolderGroup(g1, { name: '옆집 뒷계 ①' })
++    arrangeFolderGroups(
++      'chars',
++      [g2, g1],
++      [
++        { folderId: a, groupId: g1 },
++        { folderId: b, groupId: g1 },
++        { folderId: c, groupId: g2 }
++      ]
++    )
++    const { groups, links } = listFolderGroups('chars')
++    expect(groups).toEqual([
++      { id: g2, name: '악마 하렘', collapsed: true, color: '#c47a72' },
++      { id: g1, name: '옆집 뒷계 ①', collapsed: false, color: null }
++    ])
++    expect(links.sort((x, y) => x.folderId - y.folderId)).toEqual([
++      { folderId: a, groupId: g1 },
++      { folderId: b, groupId: g1 },
++      { folderId: c, groupId: g2 }
++    ])
++  })
++
++  it('replaces links on arrange and ignores folders or groups that do not exist', () => {
++    const a = createFolder('A')
++    const b = createFolder('B')
++    const g = createFolderGroup('chars', 'G')
++    arrangeFolderGroups('chars', [g], [{ folderId: a, groupId: g }])
++    arrangeFolderGroups(
++      'chars',
++      [g],
++      [
++        { folderId: b, groupId: g },
++        { folderId: 999, groupId: g },
++        { folderId: a, groupId: 999 }
++      ]
++    )
++    expect(listFolderGroups('chars').links).toEqual([{ folderId: b, groupId: g }])
++  })
++
++  it('drops links of deleted folders, and deleting a group keeps its folders and cards', () => {
++    const a = createFolder('A')
++    const b = createFolder('B')
++    const card = createCharacter('카드', b)
++    const g = createFolderGroup('chars', 'G')
++    arrangeFolderGroups(
++      'chars',
++      [g],
++      [
++        { folderId: a, groupId: g },
++        { folderId: b, groupId: g }
++      ]
++    )
++    deleteFolder(a)
++    expect(listFolderGroups('chars').links).toEqual([{ folderId: b, groupId: g }])
++    deleteFolderGroup(g)
++    expect(listFolderGroups('chars')).toEqual({ groups: [], links: [] })
++    const { folders, items } = listCharacters()
++    expect(folders.map((f) => f.id)).toEqual([b])
++    expect(items.find((i) => i.id === card)?.folderId).toBe(b)
++  })
++
++  it('leaves the original folder order to the original reorder', () => {
++    const a = createFolder('A')
++    const b = createFolder('B')
++    const g = createFolderGroup('chars', 'G')
++    arrangeFolderGroups('chars', [g], [{ folderId: a, groupId: g }])
++    reorderCharacters([
++      { type: 'folder', id: b },
++      { type: 'folder', id: a }
++    ])
++    expect(listCharacters().folders.map((f) => f.id)).toEqual([b, a])
++    expect(listFolderGroups('chars').links).toEqual([{ folderId: a, groupId: g }])
++  })
++
++  it('refuses unknown kinds', () => {
++    expect(() => listFolderGroups('frags' as FolderGroupKind)).toThrow()
++    expect(() => createFolderGroup('x' as FolderGroupKind, 'G')).toThrow()
++  })
++})
+diff --git a/tests/custom-folder-groups.test.ts b/tests/custom-folder-groups.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..8f994177d8795d7c464d17b5f7aad254dc574a7c
+--- /dev/null
++++ b/tests/custom-folder-groups.test.ts
+@@ -0,0 +1,213 @@
++import { describe, expect, it } from 'vitest'
++import {
++  buildDisplayRows,
++  canonicalize,
++  rowKey,
++  toOrderEntries
++} from '../src/renderer/src/lib/folder-list'
++import {
++  buildGroupedRows,
++  groupedRowKey,
++  moveGroupedRow,
++  orderFoldersByGroup,
++  setFolderGroup,
++  type GroupedState
++} from '../src/renderer/src/lib/custom-folder-groups'
++import type { FolderGroup, ListFolder } from '../src/shared/types'
++
++// [custom] 상위 폴더: 행 구성, 끌어 놓기, 메뉴로 넣고 빼기
++const folder = (id: number, name: string, collapsed = false): ListFolder => ({
++  id,
++  name,
++  collapsed,
++  color: null
++})
++const group = (id: number, name: string, collapsed = false): FolderGroup => ({
++  id,
++  name,
++  collapsed,
++  color: null
++})
++type Item = { id: number; folderId: number | null }
++
++/** 화면 순서를 짧게: 상위 폴더 'G1', 폴더 'F1', 카드 '11', 구분선 '--' (숨은 행은 괄호) */
++function view(state: GroupedState<Item>): string {
++  return buildGroupedRows(state.groups, state.links, state.folders, state.items)
++    .map((r) => {
++      const label =
++        r.type === 'group'
++          ? `G${r.group.id}`
++          : r.type === 'folder'
++            ? `F${r.folder.id}`
++            : r.type === 'item'
++              ? String(r.item.id)
++              : '--'
++      return (r.type === 'folder' && r.hidden) || (r.type === 'item' && r.hidden)
++        ? `(${label})`
++        : label
++    })
++    .join(' ')
++}
++
++// 폴더 F1·F2·F3·F4, 상위 폴더 G1(F2·F3)·G2(F4), F1은 상위 폴더 밖
++function sample(): GroupedState<Item> {
++  const folders = [folder(1, 'A'), folder(2, 'B'), folder(3, 'C'), folder(4, 'D')]
++  const items: Item[] = [
++    { id: 11, folderId: 1 },
++    { id: 21, folderId: 2 },
++    { id: 22, folderId: 2 },
++    { id: 31, folderId: 3 },
++    { id: 41, folderId: 4 },
++    { id: 90, folderId: null }
++  ]
++  return {
++    groups: [group(1, 'G1'), group(2, 'G2')],
++    links: new Map([
++      [2, 1],
++      [3, 1],
++      [4, 2]
++    ]),
++    folders,
++    items: canonicalize(folders, items)
++  }
++}
++
++describe('custom: grouped folder rows', () => {
++  it('matches the original rows exactly when there are no groups', () => {
++    const folders = [folder(1, 'A'), folder(2, 'B', true)]
++    const items: Item[] = [
++      { id: 10, folderId: null },
++      { id: 11, folderId: 1 },
++      { id: 21, folderId: 2 },
++      { id: 99, folderId: 7 } // 사라진 폴더 → 미분류
++    ]
++    const grouped = buildGroupedRows([], new Map(), folders, items).map((r) =>
++      r.type === 'group' ? 'group' : [groupedRowKey(r), r.type === 'item' ? r.hidden : null]
++    )
++    const original = buildDisplayRows(folders, items).map((r) => [
++      rowKey(r),
++      r.type === 'item' ? r.hidden : null
++    ])
++    expect(grouped).toEqual(original)
++  })
++
++  it('shows loose folders first, then each group with its folders, then uncategorized', () => {
++    expect(view(sample())).toBe('F1 11 G1 F2 21 22 F3 31 G2 F4 41 -- 90')
++  })
++
++  it('hides everything inside a collapsed group but keeps the group row', () => {
++    const state = sample()
++    state.groups = [group(1, 'G1', true), group(2, 'G2')]
++    expect(view(state)).toBe('F1 11 G1 (F2) (21) (22) (F3) (31) G2 F4 41 -- 90')
++  })
++
++  it('treats links to missing groups as loose and shows empty groups', () => {
++    const state = sample()
++    state.groups = [group(2, 'G2'), group(5, 'empty')]
++    expect(view(state)).toBe('F1 11 F2 21 22 F3 31 G2 F4 41 G5 -- 90')
++  })
++
++  it('orders folders for saving in display order', () => {
++    const s = sample()
++    s.folders = [folder(4, 'D'), folder(3, 'C'), folder(1, 'A'), folder(2, 'B')]
++    expect(orderFoldersByGroup(s.groups, s.links, s.folders).map((f) => f.id)).toEqual([1, 3, 2, 4])
++  })
++})
++
++describe('custom: moving rows with groups', () => {
++  it('moves a folder down into another group (below its header)', () => {
++    const next = moveGroupedRow(sample(), 'f-1', 'g-2')
++    expect(view(next)).toBe('G1 F2 21 22 F3 31 G2 F1 11 F4 41 -- 90')
++    expect(next.links.get(1)).toBe(2)
++  })
++
++  it('moves a folder up above a group header into the previous section', () => {
++    const next = moveGroupedRow(sample(), 'f-4', 'g-2')
++    expect(view(next)).toBe('F1 11 G1 F2 21 22 F3 31 F4 41 G2 -- 90')
++    expect(next.links.get(4)).toBe(1)
++  })
++
++  it('takes a folder out of every group when dropped above the first group', () => {
++    const next = moveGroupedRow(sample(), 'f-3', 'g-1')
++    expect(view(next)).toBe('F1 11 F3 31 G1 F2 21 22 G2 F4 41 -- 90')
++    expect(next.links.has(3)).toBe(false)
++  })
++
++  it('joins the group of the folder it is dropped on', () => {
++    const next = moveGroupedRow(sample(), 'f-1', 'f-3')
++    expect(view(next)).toBe('G1 F2 21 22 F3 31 F1 11 G2 F4 41 -- 90')
++    expect(next.links.get(1)).toBe(1)
++  })
++
++  it('drops a folder at the end of the folder area on the divider or an uncategorized card', () => {
++    for (const over of ['divider', 'i-90']) {
++      const next = moveGroupedRow(sample(), 'f-2', over)
++      expect(view(next)).toBe('F1 11 G1 F3 31 G2 F4 41 F2 21 22 -- 90')
++      expect(next.links.get(2)).toBe(2)
++    }
++  })
++
++  it('moves a whole group with its folders and cards', () => {
++    const down = moveGroupedRow(sample(), 'g-1', 'g-2')
++    expect(view(down)).toBe('F1 11 G2 F4 41 G1 F2 21 22 F3 31 -- 90')
++    const up = moveGroupedRow(down, 'g-1', 'f-4')
++    expect(view(up)).toBe('F1 11 G1 F2 21 22 F3 31 G2 F4 41 -- 90')
++    expect(up.links).toEqual(sample().links)
++  })
++
++  it('keeps groups after loose folders when a group is dropped on one', () => {
++    const next = moveGroupedRow(sample(), 'g-2', 'f-1')
++    expect(view(next)).toBe('F1 11 G2 F4 41 G1 F2 21 22 F3 31 -- 90')
++  })
++
++  it('puts a card dropped on a group header into that group', () => {
++    const down = moveGroupedRow(sample(), 'i-11', 'g-1')
++    expect(view(down)).toBe('F1 G1 F2 11 21 22 F3 31 G2 F4 41 -- 90')
++    expect(down.items.find((i) => i.id === 11)?.folderId).toBe(2)
++    const up = moveGroupedRow(sample(), 'i-41', 'g-2')
++    expect(view(up)).toBe('F1 11 G1 F2 21 22 F3 31 41 G2 F4 -- 90')
++    expect(up.items.find((i) => i.id === 41)?.folderId).toBe(3)
++  })
++
++  it('ignores a card dropped on an empty group', () => {
++    const state = sample()
++    state.groups = [...state.groups, group(5, 'empty')]
++    expect(moveGroupedRow(state, 'i-11', 'g-5')).toBe(state)
++  })
++
++  it('moves cards between folders in different groups like the original list', () => {
++    const next = moveGroupedRow(sample(), 'i-90', 'i-31')
++    expect(view(next)).toBe('F1 11 G1 F2 21 22 F3 90 31 G2 F4 41 --')
++    expect(next.items.find((i) => i.id === 90)?.folderId).toBe(3)
++  })
++
++  it('saves an order that the main process reads back to the same folders', () => {
++    const next = moveGroupedRow(sample(), 'f-1', 'g-2')
++    // 원본 저장 규약: 미분류 먼저, 그다음 폴더 순서대로 [폴더, 그 카드들...]
++    expect(toOrderEntries(next.folders, next.items)).toEqual([
++      { type: 'char', id: 90 },
++      { type: 'folder', id: 2 },
++      { type: 'char', id: 21 },
++      { type: 'char', id: 22 },
++      { type: 'folder', id: 3 },
++      { type: 'char', id: 31 },
++      { type: 'folder', id: 1 },
++      { type: 'char', id: 11 },
++      { type: 'folder', id: 4 },
++      { type: 'char', id: 41 }
++    ])
++  })
++})
++
++describe('custom: putting folders into groups from the menu', () => {
++  it('appends the folder at the end of the group', () => {
++    const next = setFolderGroup(sample(), 1, 1)
++    expect(view(next)).toBe('G1 F2 21 22 F3 31 F1 11 G2 F4 41 -- 90')
++  })
++
++  it('takes the folder out to the end of the loose folders', () => {
++    const next = setFolderGroup(sample(), 2, null)
++    expect(view(next)).toBe('F1 11 F2 21 22 G1 F3 31 G2 F4 41 -- 90')
++    expect(next.links.has(2)).toBe(false)
++  })
++})
+diff --git a/tests/custom-history-scene.integration.ts b/tests/custom-history-scene.integration.ts
+index 46b8ca759df2a9a0a3803387b560daf2bd019011..c94c12598df1fd17a9004633ebbfe3c1f46d1b88 100644
+--- a/tests/custom-history-scene.integration.ts
++++ b/tests/custom-history-scene.integration.ts
+@@ -37,9 +37,9 @@ describe('custom: history shows where a scene image came from', () => {
+     addImage('scene.png', scene)
+     const { items, total } = listImages(10, 0)
+     expect(total).toBe(2)
+-    expect(items.map((i) => [i.kind, i.presetName, i.sceneName])).toEqual([
+-      ['scene', '윤초아 D3 v16', '42'],
+-      ['t2i', null, null]
++    expect(items.map((i) => [i.kind, i.presetName, i.sceneName, i.presetId, i.sceneId])).toEqual([
++      ['scene', '윤초아 D3 v16', '42', preset, scene],
++      ['t2i', null, null, null, null]
+     ])
+   })
+ 

@@ -33,11 +33,19 @@ const sent = vi.hoisted(() => [] as [string, unknown][])
 vi.mock('../src/main/ipc', () => ({
   broadcast: (channel: string, payload: unknown) => sent.push([channel, payload])
 }))
-const logged = vi.hoisted(() => [] as number[])
-vi.mock('../src/main/nai/anlas-log', () => ({ logBalance: (n: number) => logged.push(n) }))
+const logged = vi.hoisted(() => [] as [number, string | undefined][])
+vi.mock('../src/main/nai/anlas-log', () => ({
+  logBalance: (n: number, accountId?: string) => logged.push([n, accountId])
+}))
 
-const { laneSelection, parallelLanes, parallelTarget, getParallelConfig, setParallelConfig } =
-  await import('../src/main/custom/parallel')
+const {
+  laneSelection,
+  parallelLanes,
+  parallelTarget,
+  getParallelConfig,
+  setParallelConfig,
+  refreshLaneBalance
+} = await import('../src/main/custom/parallel')
 const { LanePauseError } = await import('../src/main/queue/generation-queue')
 
 const V5 = { model: 'nai-diffusion-5-curated' } as GenerationRequest
@@ -108,6 +116,36 @@ describe('custom: lane account check', () => {
     net.balances['token-a'] = opus(50)
     await laneSelection('a', V5)
     expect(sent.map(([c]) => c)).toEqual(['custom:laneBalance', 'anlas:balance'])
+  })
+})
+
+describe('custom: lane balance log after an image', () => {
+  beforeEach(() => {
+    net.balances = {}
+    sent.length = 0
+    logged.length = 0
+  })
+
+  const refresh = async (accountId: string, token: string): Promise<void> => {
+    refreshLaneBalance(accountId, token)
+    await vi.waitFor(() => expect(sent.length).toBeGreaterThan(0))
+    sent.length = 0
+  }
+
+  it('logs per account, skipping balances that did not change', async () => {
+    net.balances['token-a'] = opus(50)
+    net.balances['token-b'] = { ...opus(50), anlas: 900 }
+    await refresh('a', 'token-a')
+    await refresh('b', 'token-b')
+    await refresh('a', 'token-a') // 그대로 → 기록 안 함 (계정 경계가 쌓이지 않게)
+    await refresh('b', 'token-b')
+    expect(logged).toEqual([
+      [500, 'a'],
+      [900, 'b']
+    ])
+    net.balances['token-a'] = { ...opus(50), anlas: 498 } // 바이브 인코딩 등으로 줄면 기록
+    await refresh('a', 'token-a')
+    expect(logged.at(-1)).toEqual([498, 'a'])
   })
 })
 

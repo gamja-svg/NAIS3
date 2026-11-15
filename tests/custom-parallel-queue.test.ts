@@ -167,6 +167,34 @@ describe('custom: parallel generation queue', () => {
     expect(states(q.status())).toBe('done')
   })
 
+  it('stops everything left when the Anlas guard blocks an account', async () => {
+    const { generate, calls } = controlledGenerator()
+    const q = new GenerationQueue(generate)
+    q.setParallel(
+      () => ['a', 'b'],
+      () => null
+    )
+    q.setDelayMs(0)
+    const halted: unknown[] = []
+    const cancelled: string[] = []
+    q.on('halted', (h) => halted.push(h))
+    q.on('cancelled', (items: { id: string }[]) => cancelled.push(...items.map((i) => i.id)))
+    const ids = q.enqueue(REQ, 4)
+    await vi.advanceTimersByTimeAsync(0)
+    const guard = Object.assign(new Error('blocked'), { haltQueue: true })
+    calls[0].fail(guard)
+    await vi.advanceTimersByTimeAsync(0)
+    // 막힌 장과 남은 대기 2장은 취소, 이미 보낸 b의 장은 그대로 끝까지
+    expect(states(q.status())).toBe('cancelled,generating,cancelled,cancelled')
+    expect(q.status().items[0].error).toBe('blocked')
+    expect(cancelled).toEqual([ids[0], ids[2], ids[3]])
+    expect(halted).toEqual([{ reason: 'blocked', stopped: 2 }])
+    calls[1].finish()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(states(q.status())).toBe('cancelled,done,cancelled,cancelled')
+    expect(calls).toHaveLength(2)
+  })
+
   it('cancels an item one account is generating without touching the other', async () => {
     const { generate, calls } = controlledGenerator()
     const q = new GenerationQueue(generate)

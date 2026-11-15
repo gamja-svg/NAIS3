@@ -32,8 +32,8 @@ jobs:
       upstream_tag: ${{ steps.plan.outputs.upstream_tag }}
       hash: ${{ steps.plan.outputs.hash }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       - id: plan
@@ -54,11 +54,11 @@ jobs:
     steps:
       # 수정 파일(patch)은 줄바꿈이 LF 기준이라 원본도 LF 그대로 받는다.
       - run: git config --global core.autocrlf false
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           path: builder
           persist-credentials: false
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: ${{ env.UPSTREAM }}
           ref: ${{ needs.plan.outputs.upstream_tag }}
@@ -70,10 +70,10 @@ jobs:
         run: |
           git apply --3way --whitespace=nowarn ../builder/custom/patches/*.patch
           node ../builder/custom/assemble.mjs "$VERSION" "$GITHUB_REPOSITORY"
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           package_json_file: app/package.json
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -88,7 +88,7 @@ jobs:
         run: node scripts/verify-packaged-app.mjs win32 x64
       - working-directory: app
         run: node scripts/verify-release.mjs assets win32-x64
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dist-windows
           path: |
@@ -107,11 +107,11 @@ jobs:
       VERSION: ${{ needs.plan.outputs.version }}
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: dist-windows
           path: dist

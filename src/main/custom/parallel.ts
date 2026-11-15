@@ -85,12 +85,27 @@ export async function laneSelection(
   return { account, balance, rotated: false }
 }
 
+/** 계정별로 마지막에 기록한 잔액 — 그대로면 다시 기록하지 않는다 */
+const lastLogged = new Map<string, { anlas: number; day: string }>()
+
+/**
+ * 사용량 기록은 계정별로 남긴다 (원본 기록은 계정이 바뀐 행을 경계로 나눠 센다).
+ * 동시 생성은 계정이 번갈아 끝나서 매번 기록하면 경계가 계속 쌓이므로, 잔액이 그대로면 건너뛴다.
+ * 그날 첫 잔액은 오늘의 기준점이라 남긴다.
+ */
+function logLaneBalance(accountId: string, anlas: number): void {
+  const day = new Date().toDateString()
+  const previous = lastLogged.get(accountId)
+  if (previous && previous.anlas === anlas && previous.day === day) return
+  lastLogged.set(accountId, { anlas, day })
+  logBalance(anlas, accountId)
+}
+
 /** 생성이 끝난 뒤 잔액 갱신 (실패해도 생성 흐름엔 영향 없음) */
 export function refreshLaneBalance(accountId: string, token: string): void {
   void fetchAnlasBalance(token).then((balance) => {
     if (balance.tier == null) return
     announce(accountId, balance)
-    // 사용량 기록은 활성 계정 것만 (여러 계정 잔액이 섞이면 '오늘 쓴 Anlas' 계산이 어긋난다)
-    if (balance.anlas !== null && getActiveNaiAccount()?.id === accountId) logBalance(balance.anlas)
+    if (balance.anlas !== null) logLaneBalance(accountId, balance.anlas)
   })
 }

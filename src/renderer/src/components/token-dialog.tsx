@@ -9,7 +9,9 @@ import {
   Keyboard,
   KeyRound,
   Image as ImageIcon,
+  Minus,
   Palette,
+  Plus,
   RotateCcw,
   Trash2,
   Upload
@@ -21,8 +23,9 @@ import {
   opusUsagePercentSegments,
   opusUsagePurchasedPercent
 } from '@shared/anlas'
+import { normalizeDailyAnlasCap } from '@shared/anlas-guard'
 import { isLang, LANGUAGES, SUPPORTED_LANGUAGES, type MessageId } from '@shared/i18n'
-import type { NaiAccountInfo, WatchFolderConfig } from '@shared/types'
+import type { NaiAccountInfo, NaiTokenStoreLockReason, WatchFolderConfig } from '@shared/types'
 import discordSvg from '../assets/discord.svg'
 import nais3Logo from '../assets/nais3-logo.svg'
 import { importBackup } from '../lib/backup-import'
@@ -45,6 +48,7 @@ import {
   useShortcutsStore,
   type ShortcutAction
 } from '../stores/shortcuts-store'
+import { NaiTokenStoreLockNotice } from './nai-token-store-lock-notice'
 import { ThemeToggle } from './theme-toggle'
 import { Button } from './ui/button'
 import { Dialog, DialogContent, DialogTitle } from './ui/dialog'
@@ -148,6 +152,7 @@ function AppearanceSection(): React.JSX.Element {
           onChange={(e) => setUiFont(e.target.value)}
         />
       </Row>
+      {window.nais.runtime !== 'browser' && <AppZoomRow />}
       <Row label={t('ui.uiSizeValuePx', uiSize)}>
         <Slider
           className="w-44"
@@ -187,6 +192,64 @@ function AppearanceSection(): React.JSX.Element {
         <PageToggles />
       </Row>
     </div>
+  )
+}
+
+/** 앱 화면 배율 — 단축키(Cmd/Ctrl + = · - · 0)를 몰라도 되돌릴 수 있게 */
+function AppZoomRow(): React.JSX.Element {
+  const t = useT()
+  const [factor, setFactor] = useState(1)
+
+  useEffect(() => {
+    let active = true
+    void window.nais.invoke('window:getZoom', undefined).then((res) => {
+      if (active) setFactor(res.factor)
+    })
+    const off = window.nais.on('window:zoomChanged', (res) => setFactor(res.factor))
+    return () => {
+      active = false
+      off()
+    }
+  }, [])
+
+  const zoom = (command: 'in' | 'out' | 'reset'): void => {
+    void window.nais.invoke('window:zoom', { command }).then((res) => setFactor(res.factor))
+  }
+  const percent = Math.round(factor * 100)
+  const shortcut = formatCombo('Mod')
+
+  return (
+    <Row label={t('ui.appZoomValuePercent', percent)} hint={t('ui.appZoomShortcutsHint', shortcut)}>
+      <div className="flex items-center gap-1">
+        <Button
+          size="icon"
+          variant="ghost"
+          aria-label={t('ui.zoomOut')}
+          title={t('ui.zoomOut')}
+          onClick={() => zoom('out')}
+        >
+          <Minus size={14} />
+        </Button>
+        <Button
+          size="icon"
+          variant="ghost"
+          aria-label={t('ui.zoomIn')}
+          title={t('ui.zoomIn')}
+          onClick={() => zoom('in')}
+        >
+          <Plus size={14} />
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="gap-1"
+          disabled={percent === 100}
+          onClick={() => zoom('reset')}
+        >
+          <RotateCcw size={12} /> {t('ui.resetTo100')}
+        </Button>
+      </div>
+    </Row>
   )
 }
 
@@ -303,6 +366,7 @@ function GenerationSection(): React.JSX.Element {
           onCheckedChange={setDirectorInstantRun}
         />
       </Row>
+      {window.nais.runtime !== 'browser' && <AnlasGuardRows />}
       <Row
         label={t('ui.generationDelayValueS', (delay / 1000).toFixed(1))}
         hint={t('ui.intervalBetweenConsecutiveGenerations')}
@@ -394,6 +458,77 @@ function GenerationSection(): React.JSX.Element {
         />
       </Row>
     </div>
+  )
+}
+
+/** 무료 범위 지킴이 — 메인 프로세스 큐에서만 지켜지므로 브라우저 버전에선 숨긴다 */
+function AnlasGuardRows(): React.JSX.Element {
+  const t = useT()
+  const guard = useGenerationStore((s) => s.anlasGuard)
+  const setGuard = useGenerationStore((s) => s.setAnlasGuard)
+  const [capText, setCapText] = useState(String(guard.dailyCap))
+  const [shownCap, setShownCap] = useState(guard.dailyCap)
+  const [spentToday, setSpentToday] = useState<number | null>(null)
+
+  // 저장된 상한이 바뀌면 입력란도 맞춘다 (렌더 중 동기화 — effect에서 setState하지 않게)
+  if (shownCap !== guard.dailyCap) {
+    setShownCap(guard.dailyCap)
+    setCapText(String(guard.dailyCap))
+  }
+  // 생성 후 잔액이 갱신되면(메인이 로그를 먼저 남김) 오늘 사용량도 다시 읽는다
+  useEffect(() => {
+    const refresh = (): void => {
+      void window.nais.invoke('nai:anlasUsage', undefined).then(({ today }) => setSpentToday(today))
+    }
+    refresh()
+    return window.nais.on('anlas:balance', refresh)
+  }, [])
+
+  const commitCap = (): void => {
+    const dailyCap = normalizeDailyAnlasCap(capText)
+    setCapText(String(dailyCap))
+    if (dailyCap !== guard.dailyCap) setGuard({ dailyCap })
+  }
+  const overCap = guard.dailyCapEnabled && spentToday !== null && spentToday >= guard.dailyCap
+
+  return (
+    <>
+      <Row label={t('ui.anlasGuardBlockPaid')} hint={t('ui.anlasGuardBlockPaidHint')}>
+        <Switch
+          aria-label={t('ui.anlasGuardBlockPaid')}
+          checked={guard.blockPaid}
+          onCheckedChange={(blockPaid) => setGuard({ blockPaid })}
+        />
+      </Row>
+      <Row label={t('ui.anlasGuardDailyCap')} hint={t('ui.anlasGuardDailyCapHint')}>
+        <div className="flex items-center gap-2">
+          <span
+            className={cn('text-[11.5px] tabular-nums', overCap ? 'text-danger-ink' : 'text-muted')}
+          >
+            {t('ui.anlasGuardTodayValueOfValue', spentToday ?? '-', guard.dailyCap)}
+          </span>
+          <Input
+            className="h-8 w-20 text-right font-mono"
+            aria-label={t('ui.anlasGuardDailyCapAmount')}
+            type="number"
+            min={0}
+            step={10}
+            inputMode="numeric"
+            value={capText}
+            onChange={(e) => setCapText(e.target.value)}
+            onBlur={commitCap}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') e.currentTarget.blur()
+            }}
+          />
+          <Switch
+            aria-label={t('ui.anlasGuardDailyCap')}
+            checked={guard.dailyCapEnabled}
+            onCheckedChange={(dailyCapEnabled) => setGuard({ dailyCapEnabled })}
+          />
+        </div>
+      </Row>
+    </>
   )
 }
 
@@ -728,6 +863,11 @@ function AccountSection(): React.JSX.Element {
   const [status, setStatus] = useState<'idle' | 'checking' | 'ok' | 'fail'>('idle')
   const [message, setMessage] = useState('')
   const [accounts, setAccounts] = useState<NaiAccountInfo[]>([])
+  // 저장된 토큰이 있지만 지금은 읽을 수 없는 이유 (키체인 잠김 / 값 손상)
+  const [lockReason, setLockReason] = useState<NaiTokenStoreLockReason | null>(null)
+  const locked = lockReason !== null
+  // OS 키체인을 쓸 수 없어 새로 저장하는 토큰이 평문(base64)으로 저장되는 실행
+  const [plaintextStorage, setPlaintextStorage] = useState(false)
   const [busyId, setBusyId] = useState<string | null>(null)
   const [revealed, setRevealed] = useState<Record<string, string>>({})
   const [usage, setUsage] = useState<{ today: number; week: number } | null>(null)
@@ -744,9 +884,13 @@ function AccountSection(): React.JSX.Element {
 
   const refresh = useCallback(
     (includeBalance = true): void => {
-      void window.nais.invoke('nai:listAccounts', undefined).then(({ accounts: next }) => {
-        setAccounts(next)
-      })
+      void window.nais
+        .invoke('nai:listAccounts', undefined)
+        .then(({ accounts: next, lockReason: nextLockReason, plaintextStorage: plaintext }) => {
+          setAccounts(next)
+          setLockReason(nextLockReason)
+          setPlaintextStorage(plaintext)
+        })
       void window.nais.invoke('nai:anlasUsage', undefined).then(setUsage)
       if (includeBalance) void refreshAnlas().catch(() => undefined)
     },
@@ -823,7 +967,14 @@ function AccountSection(): React.JSX.Element {
     if (!ok) return
     setBusyId(account.id)
     try {
-      const { activeId } = await window.nais.invoke('nai:deleteAccount', { id: account.id })
+      const { activeId, locked: storeLocked } = await window.nais.invoke('nai:deleteAccount', {
+        id: account.id
+      })
+      // 저장소를 읽을 수 없어 지우지 못했다 — 잔액을 비우지 말고 잠김 안내를 다시 읽어 보여 준다
+      if (storeLocked) {
+        refresh(false)
+        return
+      }
       setRevealed((current) => {
         const next = { ...current }
         delete next[account.id]
@@ -859,12 +1010,21 @@ function AccountSection(): React.JSX.Element {
         </p>
       </div>
 
+      {lockReason && (
+        <NaiTokenStoreLockNotice
+          reason={lockReason}
+          plaintextStorage={plaintextStorage}
+          onCleared={() => refresh(false)}
+        />
+      )}
+
       <div className="grid min-w-0 grid-cols-[7rem_minmax(0,1fr)_auto] gap-1.5">
         <Input
           className="w-28 shrink-0"
           value={label}
           placeholder={t('ui.accountValue', accounts.length + 1)}
           maxLength={60}
+          disabled={locked}
           onChange={(e) => setLabel(e.target.value)}
         />
         <Input
@@ -873,21 +1033,29 @@ function AccountSection(): React.JSX.Element {
           placeholder="pst-..."
           autoComplete="off"
           spellCheck={false}
+          disabled={locked}
           onChange={(e) => {
             setDraft(e.target.value)
             setStatus('idle')
           }}
           onKeyDown={(e) => e.key === 'Enter' && void addAccount()}
         />
-        <Button variant="accent" disabled={status === 'checking'} onClick={() => void addAccount()}>
+        <Button
+          variant="accent"
+          disabled={status === 'checking' || locked}
+          onClick={() => void addAccount()}
+        >
           {status === 'checking' ? t('ui.checking') : t('ui.add')}
         </Button>
       </div>
+      {plaintextStorage && !locked && (
+        <p className="text-[11.5px] text-danger-ink">{t('ui.naiTokenPlaintextStorageWarning')}</p>
+      )}
       {status === 'ok' && <span className="text-[12px] text-accent-ink">{message}</span>}
       {status === 'fail' && <span className="text-[12px] text-danger-ink">{message}</span>}
 
       <div className="min-w-0 space-y-1.5">
-        {accounts.length === 0 ? (
+        {accounts.length === 0 && !locked ? (
           <div className="rounded-lg border border-dashed border-line p-4 text-center text-[11.5px] text-faint">
             {t('ui.noAccountsRegistered')}
           </div>

@@ -148,6 +148,12 @@ export interface QueueStatus {
   lanes?: QueueLane[]
 }
 
+/** Anlas 가드가 요청을 막아 큐를 멈춤 — reason은 사용자에게 보일 이유, stopped는 함께 멈춘 대기 항목 수 */
+export interface QueueHalt {
+  reason: string
+  stopped: number
+}
+
 export interface GenerationDelayRandomization {
   enabled: boolean
   minusMs: number
@@ -176,6 +182,13 @@ export interface SubscriptionInfo {
   /** 유료 구독이 만료됨 — tier는 paper로 내려가고 V5 게이지도 쓸 수 없다 */
   expired?: boolean
 }
+
+/**
+ * 저장된 NAI 토큰을 지금 쓸 수 없는 이유.
+ * keychain = OS 키체인이 잠겨 해독할 수 없음 (잠금을 풀고 재시작하면 돌아온다),
+ * corrupt = 해독은 되지만 내용이 손상됨 (삭제 후 다시 등록해야 한다).
+ */
+export type NaiTokenStoreLockReason = 'keychain' | 'corrupt'
 
 /** 렌더러에 노출되는 NAI 계정 메타. 실제 토큰은 명시적으로 공개할 때만 전달한다. */
 export interface NaiAccountInfo {
@@ -487,11 +500,36 @@ export interface IpcInvokeMap {
     req: { token: string }
     res: { valid: boolean; subscription?: SubscriptionInfo; error?: string }
   }
-  'nai:tokenStatus': { req: void; res: { hasToken: boolean; prefix: string; length: number } }
+  /**
+   * locked = 저장된 토큰이 있지만 지금은 읽을 수 없어 변경을 거부함, lockReason = 그 이유
+   * (locked가 false면 null)
+   */
+  'nai:tokenStatus': {
+    req: void
+    res: {
+      hasToken: boolean
+      prefix: string
+      length: number
+      locked: boolean
+      lockReason: NaiTokenStoreLockReason | null
+      /** OS 키체인 암호화를 쓸 수 없어 새로 저장하는 토큰이 base64 평문으로 저장됨 */
+      plaintextStorage: boolean
+    }
+  }
   'nai:revealToken': { req: void; res: { token: string | null } }
   'nai:deleteToken': { req: void; res: void }
   /** 암호화 저장된 NAI 계정 목록과 각 계정의 현재 구독 상태 */
-  'nai:listAccounts': { req: void; res: { accounts: NaiAccountInfo[]; activeId: string | null } }
+  'nai:listAccounts': {
+    req: void
+    res: {
+      accounts: NaiAccountInfo[]
+      activeId: string | null
+      locked: boolean
+      lockReason: NaiTokenStoreLockReason | null
+      /** OS 키체인 암호화를 쓸 수 없어 새로 저장하는 토큰이 base64 평문으로 저장됨 */
+      plaintextStorage: boolean
+    }
+  }
   'nai:addAccount': {
     req: { token: string; label?: string }
     res: {
@@ -513,7 +551,18 @@ export interface IpcInvokeMap {
     }
   }
   'nai:revealAccountToken': { req: { id: string }; res: { token: string | null } }
-  'nai:deleteAccount': { req: { id: string }; res: { activeId: string | null } }
+  /**
+   * locked = 저장된 토큰을 읽을 수 없어 지우지 않음 (activeId: null이 "활성 계정 없음"과 구분되도록).
+   * 잠긴 값은 nai:deleteToken으로만 지운다
+   */
+  'nai:deleteAccount': {
+    req: { id: string }
+    res: {
+      activeId: string | null
+      locked: boolean
+      lockReason: NaiTokenStoreLockReason | null
+    }
+  }
   /** 잔액 조회 (스냅샷 로그에도 기록) */
   'nai:balance': {
     req: void
@@ -526,7 +575,8 @@ export interface IpcInvokeMap {
   'nai:anlasUsage': { req: void; res: { today: number; week: number } }
   'scenes:enqueueReserved': {
     req: { casts: { castId: string; request: GenerationRequest }[]; seedLocked: boolean }
-    res: { ids: string[] }
+    /** blocked: Anlas 가드가 예약 전에 막은 이유 (ids는 빈 배열) */
+    res: { ids: string[]; blocked?: string }
   }
   'queue:enqueue': {
     req: {
@@ -535,7 +585,8 @@ export interface IpcInvokeMap {
       /** When provided, each queue item independently samples one candidate. */
       randomCharacterPrompts?: CharacterPromptInput[]
     }
-    res: { ids: string[] }
+    /** blocked: Anlas 가드가 예약 전에 막은 이유 (ids는 빈 배열) */
+    res: { ids: string[]; blocked?: string }
   }
   'queue:cancel': { req: { ids: string[] }; res: void }
   'queue:status': { req: void; res: QueueStatus }
@@ -549,6 +600,10 @@ export interface IpcInvokeMap {
   'window:control': { req: { action: 'minimize' | 'maximize' | 'close' }; res: void }
   /** 리사이즈 시 노출되는 네이티브 창 배경색 (테마 전환 시 갱신) */
   'window:setBackground': { req: { color: string }; res: void }
+  /** 앱 화면 배율 (1 = 100%) */
+  'window:getZoom': { req: void; res: { factor: number } }
+  /** 단축키와 같은 단계로 확대·축소하거나 100%로 되돌린다 */
+  'window:zoom': { req: { command: 'in' | 'out' | 'reset' }; res: { factor: number } }
   'chars:list': { req: void; res: { folders: CharacterFolder[]; items: CharacterCard[] } }
   'chars:create': { req: { name: string; folderId: number | null }; res: { id: number } }
   'chars:update': { req: { id: number; patch: CharacterCardPatch }; res: void }
@@ -633,7 +688,11 @@ export interface IpcInvokeMap {
   /** 생성 지연 시간(ms)과 랜덤 범위 설정 — 큐에 즉시 반영 + 영속 */
   'gen:setDelay': { req: { ms: number; randomization?: GenerationDelayRandomization }; res: void }
   /** 큐 완료 네이티브 알림 (창이 포커스 없을 때만 표시) */
-  'notify:done': { req: { done: number; failed: number }; res: void }
+  'notify:done': {
+    /** stopped: 큐가 Anlas 가드로 멈춘 이유 */
+    req: { done: number; failed: number; stopped?: string }
+    res: void
+  }
   /** 디렉터 툴 실행 — 결과를 히스토리에 저장하고 파일 경로 + 결과 base64 반환 */
   'director:run': {
     req: { method: DirectorMethod; imageBase64: string; prompt?: string; defry?: number }
@@ -846,6 +905,7 @@ export interface IpcInvokeMap {
 /** 메인 → 렌더러 이벤트 채널 */
 export interface IpcEventMap {
   'queue:changed': QueueStatus
+  'queue:halted': QueueHalt
   /** 생성 완료 등으로 잔액이 갱신될 때 */
   'anlas:balance': {
     anlas: number
@@ -877,6 +937,8 @@ export interface IpcEventMap {
   'scenes:reservationsChanged': Record<string, never>
   /** [custom] 감시 폴더가 파일 하나를 처리함 */
   'custom:watchImported': WatchFolderEvent
+  /** 단축키로 앱 화면 배율이 바뀜 */
+  'window:zoomChanged': { factor: number }
   /** 바이브 인코딩 완료 — 카드의 인코딩 표시 갱신용 */
   'vibes:encoded': Record<string, never>
   /** 자동 업데이트 상태 (GitHub release) */

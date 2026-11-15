@@ -1,4 +1,5 @@
-import { BrowserWindow, dialog } from 'electron'
+import { BrowserWindow } from 'electron'
+import { showOpenDialog, showSaveDialog } from '../dialogs'
 import { readFileSync, unlinkSync, writeFileSync } from 'fs'
 import { extname, isAbsolute, relative } from 'path'
 import JSZip from 'jszip'
@@ -377,13 +378,12 @@ export function setReserveAll(presetId: number, count: number): void {
     .run(count, presetId)
 }
 
-/** No asynchronous boundary may separate the reservation snapshot and queue commit. */
-export function enqueueReservedScenes(
-  queue: GenerationQueue,
-  { casts, seedLocked }: IpcInvokeMap['scenes:enqueueReserved']['req']
-): string[] {
-  const db = getDb()
-  const rows = db
+/** 예약된 씬을 큐 요청으로 펼친다 — DB는 바꾸지 않는다 (예약 전 Anlas 가드 확인에도 쓴다) */
+export function planReservedScenes({
+  casts,
+  seedLocked
+}: IpcInvokeMap['scenes:enqueueReserved']['req']): ReturnType<typeof planSceneReservations> {
+  const rows = getDb()
     .prepare(
       `
     SELECT s.* FROM gen_scenes s
@@ -394,12 +394,18 @@ export function enqueueReservedScenes(
     )
     .all() as Row[]
   const scenes = rows.map((row) => toScene({ ...row, image_count: 0 }))
-  const { requests, reservations, remaining } = planSceneReservations(
-    scenes,
-    casts,
-    seedLocked,
-    () => Math.floor(Math.random() * 4294967295)
+  return planSceneReservations(scenes, casts, seedLocked, () =>
+    Math.floor(Math.random() * 4294967295)
   )
+}
+
+/** No asynchronous boundary may separate the reservation snapshot and queue commit. */
+export function enqueueReservedScenes(
+  queue: GenerationQueue,
+  request: IpcInvokeMap['scenes:enqueueReserved']['req']
+): string[] {
+  const db = getDb()
+  const { requests, reservations, remaining } = planReservedScenes(request)
   return queue.enqueueRequests(
     requests,
     db.transaction(() => {
@@ -449,7 +455,7 @@ export function bindSceneReservationRecovery(
     if (restored) onRestored()
   }
   queue.on('cancelled', restore)
-  const forget = (ids: number[]): void => queue.forgetSceneReservations(ids)
+  const forget = (ids: number[]): void => queue.detachDeletedScenes(ids)
   sceneEvents.on('deleted', forget)
   return () => {
     queue.off('cancelled', restore)
@@ -665,7 +671,7 @@ export async function exportScenesJson(presetId: number): Promise<boolean> {
     )
     .all(presetId) as Row[]
   const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
-  const result = await dialog.showSaveDialog(win, {
+  const result = await showSaveDialog(win, {
     title: t('ui.exportScenes'),
     defaultPath: 'nais3-scenes.json',
     filters: [{ name: 'JSON', extensions: ['json'] }]
@@ -692,7 +698,7 @@ export async function importScenesJson(
   presetId: number
 ): Promise<IpcInvokeMap['scenes:importJson']['res']> {
   const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
-  const result = await dialog.showOpenDialog(win, {
+  const result = await showOpenDialog(win, {
     title: t('ui.importScenes'),
     properties: ['openFile'],
     filters: [{ name: 'JSON', extensions: ['json'] }]
@@ -785,7 +791,7 @@ type ZipEntry = { file_path: string; name: string }
 async function zipFiles(entries: ZipEntry[], defaultName: string): Promise<number> {
   if (entries.length === 0) return 0
   const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
-  const result = await dialog.showSaveDialog(win, {
+  const result = await showSaveDialog(win, {
     title: t('ui.exportZip'),
     defaultPath: defaultName,
     filters: [{ name: 'ZIP', extensions: ['zip'] }]

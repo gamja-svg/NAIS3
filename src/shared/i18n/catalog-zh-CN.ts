@@ -226,6 +226,8 @@ export const ZH_CN = {
   'ui.themePreset': '主题预设',
   'ui.uiFont': 'UI 字体',
   'ui.leaveEmptyForDefaultFont': '留空则使用默认字体',
+  'ui.appZoomValuePercent': '界面缩放 — {0}%',
+  'ui.appZoomShortcutsHint': '{0} + = 放大 · {0} + - 缩小 · {0} + 0 恢复',
   'ui.uiSizeValuePx': 'UI 大小 — {0}px',
   'ui.promptFontSizeValuePx': '提示词字体大小 — {0}px',
   'ui.baseCharacterPromptInputBoxes': '基础/角色提示词输入框',
@@ -295,6 +297,15 @@ export const ZH_CN = {
   'ui.accountValue': '账户 {0}',
   'ui.checking': '正在验证…',
   'ui.add': '添加',
+  'ui.naiTokenStoreLocked':
+    '无法解密已保存的 NAI 令牌：系统钥匙串（密钥环）已锁定或不可用。请解锁钥匙串后重新启动应用，无需重新输入令牌。',
+  'ui.naiTokenStoreCorrupt':
+    '已保存的 NAI 令牌数据已损坏，无法读取。解锁钥匙串或重启应用无法解决此问题，请删除已保存的令牌后重新添加。',
+  'ui.naiTokenPlaintextStorageWarning':
+    '当前无法使用系统钥匙串，添加的令牌将不加密（仅 base64 编码）保存在此设备上。',
+  'ui.clearLockedNaiTokens': '删除锁定的令牌',
+  'ui.clearLockedNaiTokensConfirm':
+    '这将删除所有当前无法读取的已保存 NAI 令牌。如果只是钥匙串被锁定，请改为解锁后重新启动应用；删除后需要重新添加令牌。',
   'ui.noAccountsRegistered': '尚未添加账户。',
   'ui.active': '当前使用',
   'ui.v5GaugeUnavailable': '无法获取 V5 额度',
@@ -307,6 +318,33 @@ export const ZH_CN = {
   'ui.autoSwitchNaiAccounts': '自动切换账户',
   'ui.autoSwitchNaiAccountsHint':
     'V5 额度耗尽时，在下一次 V5 生成前切换到仍有额度的其他账户。关闭后将继续使用当前账户（消耗 Anlas）。',
+  'ui.anlasGuardBlockPaid': '非免费时不生成',
+  'ui.anlasGuardBlockPaidHint':
+    '消耗 Anlas 的请求（生成、氛围编码、放大、导演工具）不会发送，并显示原因。',
+  'ui.anlasGuardDailyCap': '每日 Anlas 上限',
+  'ui.anlasGuardDailyCapHint':
+    '今天（从零点起）已用的 Anlas 加上本次请求超过上限时，不会发送，并停止剩余队列。',
+  'ui.anlasGuardDailyCapAmount': '每日 Anlas 上限数值',
+  'ui.anlasGuardTodayValueOfValue': '今天 {0} / {1} Anlas',
+  'ui.anlasGuardWillBlockValue': '非免费，不会生成：{0}',
+  'ui.anlasGuardBlockedPaid':
+    '超出免费范围，未发送：{0}（约 {1} Anlas）。在 设置 > 生成 中关闭“非免费时不生成”即可发送。',
+  'ui.anlasGuardBlockedPaidBatch':
+    '{0} 张中有 {1} 张超出免费范围，未加入队列：{2}（约 {3} Anlas）。在 设置 > 生成 中关闭“非免费时不生成”即可发送。',
+  'ui.anlasGuardBlockedDailyCap':
+    '会超过每日 Anlas 上限，未发送：今天 {0} + 本次 {1} > 上限 {2} Anlas。可在 设置 > 生成 中修改上限。',
+  'ui.anlasGuardQueueStopped': '其余 {0} 张预约也已停止。',
+  'ui.nais3GenerationStopped': 'NAIS3 生成已停止',
+  'ui.anlasPaidReasonNotOpus': '非 Opus 订阅',
+  'ui.anlasPaidReasonSubscriptionUnknown': '无法确认订阅信息',
+  'ui.anlasPaidReasonOpusUsage': 'V5 额度耗尽或无法确认',
+  'ui.anlasPaidReasonResolution': '分辨率超过 1024²',
+  'ui.anlasPaidReasonSteps': '步数超过 28',
+  'ui.anlasPaidReasonCharacterReference': '角色参考',
+  'ui.anlasPaidReasonVibeEncoding': '新的氛围编码',
+  'ui.anlasPaidReasonMultiVibe': '5 组以上氛围',
+  'ui.anlasPaidReasonBackgroundRemoval': '去除背景（始终收费）',
+  'ui.anlasPaidReasonUpscale': '放大（始终 1 Anlas）',
   'ui.depletedWillSwitchToAnAvailableAccountBeforeTheNextV5Generation':
     '已耗尽 · 下一次 V5 生成前将切换到可用账户。',
   'ui.depletedV5GenerationsWillUseAnlasUntilItRecharges':

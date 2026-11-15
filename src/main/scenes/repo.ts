@@ -133,12 +133,19 @@ function markSceneChanged(id: number): void {
 
 /** '변경 후 미생성' 표시를 수동으로 끈다. 다음 내용 변경 때 다시 켜진다. */
 export function clearScenePending(id: number): void {
-  marksDb()
-    .prepare(
-      `INSERT INTO custom_scene_marks (scene_id, acked) VALUES (?, 1)
-       ON CONFLICT(scene_id) DO UPDATE SET acked = 1`
-    )
-    .run(id)
+  clearScenesPending([id])
+}
+
+/** [custom] 일괄 확인 — 여러 씬의 '변경 후 미생성' 표시를 한 번에 끈다 */
+export function clearScenesPending(ids: number[]): void {
+  const db = marksDb()
+  const ack = db.prepare(
+    `INSERT INTO custom_scene_marks (scene_id, acked) VALUES (?, 1)
+     ON CONFLICT(scene_id) DO UPDATE SET acked = 1`
+  )
+  db.transaction(() => {
+    for (const id of ids) ack.run(id)
+  })()
 }
 
 // ── 프리셋 ──────────────────────────────────────────────

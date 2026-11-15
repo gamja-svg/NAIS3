@@ -137,6 +137,8 @@ interface ScenesState {
   generateOne: (sceneId: number) => Promise<void>
   /** [custom] 검수 모드의 바로 다시 뽑기 — 이 씬 1장, 시드 고정이어도 새 시드 */
   regenerateScene: (sceneId: number) => Promise<void>
+  /** [custom] 일괄 확인 — 이 씬들의 미생성 표시를 한 번에 끈다 (남은 게 없으면 미생성만 보기도 끈다) */
+  ackPendingScenes: (ids: number[]) => Promise<void>
 }
 
 /**
@@ -602,6 +604,19 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
     await window.nais.invoke('queue:enqueue', {
       request: { ...applySceneRequest(buildCastRequest(cast), scene), seed: randomSeed() },
       count: 1
+    })
+  },
+
+  ackPendingScenes: async (ids) => {
+    if (ids.length === 0) return
+    await window.nais.invoke('scenes:clearPendingMany', { ids })
+    const done = new Set(ids)
+    set((st) => {
+      const scenes = st.scenes.map((s) => (done.has(s.id) ? { ...s, pending: false } : s))
+      return {
+        scenes,
+        pendingOnly: st.pendingOnly && scenes.some((s) => s.pending)
+      }
     })
   },
 

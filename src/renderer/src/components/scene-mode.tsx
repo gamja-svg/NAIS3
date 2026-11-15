@@ -1,4 +1,5 @@
 import {
+  CheckCheck,
   CircleDashed,
   CalendarPlus,
   CalendarX,
@@ -438,6 +439,27 @@ function SceneGrid(): React.JSX.Element {
     [generatingSceneKey]
   )
 
+  // [custom] 일괄 확인 — 이 프리셋의 미생성 표시를 모두 끈다 (그림은 그대로, 다음 변경 때 다시 켜짐)
+  const ackPendingScenes = useScenesStore((s) => s.ackPendingScenes)
+  async function ackAllPending(): Promise<void> {
+    const ids = scenes.filter((s) => s.pending).map((s) => s.id)
+    if (ids.length === 0) {
+      toast(t('ui.customAckAllPendingNone'), 'info')
+      return
+    }
+    const ok = await askConfirm(t('ui.customAckAllPendingTitleValue', ids.length), {
+      message: t('ui.customAckAllPendingMessage'),
+      confirmLabel: t('ui.customAckAllPendingConfirm')
+    })
+    if (!ok) return
+    try {
+      await ackPendingScenes(ids)
+      toast(t('ui.customAckAllPendingDoneValue', ids.length), 'success')
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e), 'error')
+    }
+  }
+
   async function exportJson(): Promise<void> {
     await window.nais.invoke('scenes:exportJson', { presetId: activePresetId })
   }
@@ -485,6 +507,12 @@ function SceneGrid(): React.JSX.Element {
           tip={t('ui.showOnlyNotGeneratedValue', pendingCount)}
           active={pendingOnly}
           onClick={() => setPendingOnly(!pendingOnly)}
+        />
+        {/* [custom] 일괄 확인 — 미생성 표시를 한 번에 끈다 (씬마다 우클릭하기 어려운 원격·터치용) */}
+        <IconBtn
+          icon={<CheckCheck size={16} />}
+          tip={t('ui.customAckAllPendingValue', pendingCount)}
+          onClick={() => void ackAllPending()}
         />
 
         <div className="flex-1" />

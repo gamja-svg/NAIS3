@@ -724,6 +724,7 @@ export interface IpcInvokeMap {
   'scenes:delete': { req: { id: number }; res: void }
   /** [custom] '변경 후 미생성' 표시를 수동으로 끈다 (다음 내용 변경 때 다시 켜짐) */
   'scenes:clearPending': { req: { id: number }; res: void }
+  'scenes:clearPendingMany': { req: { ids: number[] }; res: void }
   'scenes:reorder': { req: { ids: number[] }; res: void }
   /** 예약: 전체 취소(count=0 등 절대값 설정 — 출연 내역도 함께 초기화) */
   'scenes:setReserveAll': { req: { presetId: number; count: number }; res: void }

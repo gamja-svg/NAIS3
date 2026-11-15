@@ -86,6 +86,7 @@ import {
   updateScene,
   duplicateScene,
   clearScenePending,
+  clearScenesPending,
   deleteScene,
   reorderScenes,
   setReserveAll,
@@ -437,6 +438,9 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
   })
   handle('scenes:clearPending', ({ id }) => {
     clearScenePending(id)
+  })
+  handle('scenes:clearPendingMany', ({ ids }) => {
+    clearScenesPending(ids) // [custom] 일괄 확인
   })
   handle('scenes:reorder', ({ ids }) => {
     reorderScenes(ids)

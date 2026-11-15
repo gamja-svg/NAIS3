@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { closeDb, getDb, initDb } from '../src/main/db'
 import {
   clearScenePending,
+  clearScenesPending,
   createPreset,
   createScene,
   deleteScene,
@@ -111,6 +112,17 @@ describe('custom: pending marker', () => {
     expect(pending(id)).toBe(true)
     clearScenePending(id)
     expect(pending(id)).toBe(false)
+  })
+
+  it('clears many marks at once and they come back on the next change', () => {
+    const preset = createPreset('p')
+    const a = createScene(preset, 'a')
+    const b = createScene(preset, 'b')
+    const c = createScene(preset, 'c')
+    clearScenesPending([a, b])
+    expect([pending(a), pending(b), pending(c)]).toEqual([false, false, true])
+    updateScene(b, { prompt: 'changed' })
+    expect(pending(b)).toBe(true)
   })
 
   it('survives deleting a marked scene', () => {

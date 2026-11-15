@@ -154,13 +154,20 @@ export const KO = {
   'ui.customReviewQueuedValue': '{0} 다시 뽑기 예약 +1',
   'ui.customReviewRegen': '바로 다시 뽑기',
   'ui.customReviewRegenHint':
-    '이 씬을 지금 바로 1장 더 뽑습니다 (G). 시드 고정이어도 새 시드로 뽑습니다.',
+    '이 씬을 지금 바로 1장 더 뽑습니다 (G 또는 그림 더블탭). 시드 고정이어도 새 시드로 뽑습니다.',
   'ui.customReviewRegenValue': '{0} 다시 뽑는 중',
   'ui.customReviewRegenFavoriteValue':
     '{0} 다시 뽑는 중 · 즐겨찾기가 대표 이미지라 여기 그림은 그대로입니다',
   'ui.customReviewWaitingValue': '대기 {0}장',
+  'ui.customAckAllPendingValue': '일괄 확인 · 미생성 표시 모두 끄기 ({0}개)',
+  'ui.customAckAllPendingTitleValue': '미생성 표시 {0}개를 모두 끌까요?',
+  'ui.customAckAllPendingMessage':
+    '그림은 그대로 두고 표시만 끕니다. 씬 내용이 다시 바뀌면 그 씬은 다시 미생성으로 표시됩니다.',
+  'ui.customAckAllPendingConfirm': '모두 확인함',
+  'ui.customAckAllPendingDoneValue': '미생성 표시 {0}개를 껐습니다',
+  'ui.customAckAllPendingNone': '미생성으로 표시된 씬이 없습니다',
   'ui.customReviewHint':
-    '←/→·휠·좌우로 끌어서 넘기기 · G 바로 다시 뽑기 · R 다시 뽑기 예약 · Esc 닫기',
+    '←/→·휠·좌우로 끌어서 넘기기 · 그림 더블탭·G 바로 다시 뽑기 · R 다시 뽑기 예약 · Esc 닫기',
   'ui.customPrevious': '이전',
   'ui.customNext': '다음',
   'ui.customLaneTabs': '계정별 진행',

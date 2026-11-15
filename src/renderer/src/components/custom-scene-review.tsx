@@ -1,5 +1,5 @@
 import { ChevronLeft, ChevronRight, Download, Plus, RefreshCw, X } from 'lucide-react'
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { Scene } from '@shared/types'
 import { imageUrl } from '../lib/constants'
@@ -13,12 +13,19 @@ import { ImageContextMenu } from './image-context-menu'
 
 /** 이만큼 가로로 끌면 넘긴 것으로 본다 (원격 접속의 터치는 마우스 드래그로 들어온다) */
 const SWIPE_PX = 60
+/** 탭: 이 안에서 떼면 (원격 접속의 지연을 생각해 넉넉하게) */
+const TAP_MOVE_PX = 12
+const TAP_MS = 450
+/** 더블탭: 앞 탭을 뗀 뒤 이 시간·거리 안에 다시 탭 */
+const DOUBLE_TAP_MS = 450
+const DOUBLE_TAP_PX = 40
 
 /**
  * [custom] 검수 모드 — 프리셋의 씬 대표 이미지(카드에 보이는 그림)를 크게 한 장씩 넘겨 본다.
- * ←/→·휠·스와이프·화면 버튼으로 넘기고, G로 그 씬을 바로 다시 뽑기(1장), R로 다시 뽑기 예약(+1),
- * Esc로 닫는다. 다시 뽑는 동안은 진행 화면을 보여 주고, 다 되면 새 그림이 대표 이미지가 된다
- * (즐겨찾기가 있는 씬은 즐겨찾기가 대표라 그대로). 이미지가 없는 씬은 건너뛴다.
+ * ←/→·휠·스와이프·화면 버튼으로 넘기고, G·그림 더블탭으로 그 씬을 바로 다시 뽑기(1장),
+ * R로 다시 뽑기 예약(+1), Esc로 닫는다. 다시 뽑는 동안은 진행 화면을 보여 주고, 다 되면 새 그림이
+ * 대표 이미지가 된다 (즐겨찾기가 있는 씬은 즐겨찾기가 대표라 그대로). 이미지가 없는 씬은 건너뛴다.
+ * 넘겨 보는 씬 목록은 열 때 정해 둔다 — 미생성만 보기에서 다시 뽑아 미생성이 풀려도 빠지지 않게.
  * 닫으면 마지막으로 본 씬 카드로 목록을 데려간다.
  */
 export function SceneReview({ scenes }: { scenes: Scene[] }): React.JSX.Element | null {
@@ -31,7 +38,13 @@ export function SceneReview({ scenes }: { scenes: Scene[] }): React.JSX.Element 
     (s) => s.presets.find((p) => p.id === s.activePresetId)?.name ?? ''
   )
 
-  const list = scenes.filter((s) => s.thumbnailPath)
+  // 열 때의 씬 순서를 고정하고, 내용(대표 이미지·미생성 등)은 최신 값으로 본다
+  const [reviewIds] = useState(() => scenes.map((s) => s.id))
+  const allScenes = useScenesStore((s) => s.scenes)
+  const byId = new Map(allScenes.map((s) => [s.id, s]))
+  const list = reviewIds
+    .map((id) => byId.get(id))
+    .filter((s): s is Scene => s != null && !!s.thumbnailPath)
   const index = list.findIndex((s) => s.id === reviewSceneId)
   const scene = index >= 0 ? list[index] : undefined
 
@@ -133,8 +146,28 @@ export function SceneReview({ scenes }: { scenes: Scene[] }): React.JSX.Element 
     }
   }, [prevPath, nextPath])
 
-  // 스와이프 (가로로 충분히, 세로보다 확실히 많이 움직였을 때만)
-  const swipe = useRef<{ x: number; y: number; id: number } | null>(null)
+  // 스와이프 (가로로 충분히, 세로보다 확실히 많이 움직였을 때만) · 그림 더블탭 = 바로 다시 뽑기
+  const swipe = useRef<{ x: number; y: number; id: number; at: number; stage: boolean } | null>(
+    null
+  )
+  const lastTap = useRef<{ x: number; y: number; at: number; sceneId: number } | null>(null)
+  // 더블탭한 자리에 잠깐 띄우는 표시 (눌렸다는 걸 바로 알 수 있게)
+  const [flash, setFlash] = useState<{ x: number; y: number; key: number; fading: boolean } | null>(
+    null
+  )
+  const showFlash = (x: number, y: number): void => {
+    const key = performance.now()
+    setFlash({ x, y, key, fading: false })
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => setFlash((f) => (f?.key === key ? { ...f, fading: true } : f)))
+    )
+    setTimeout(() => setFlash((f) => (f?.key === key ? null : f)), 800)
+  }
+  /** 그림 자리(버튼 제외)를 눌렀는지 */
+  const onStage = (target: EventTarget | null): boolean =>
+    target instanceof Element &&
+    !!target.closest('[data-review-stage]') &&
+    !target.closest('button')
 
   if (!scene) return null
   const hasPrev = index > 0
@@ -147,7 +180,14 @@ export function SceneReview({ scenes }: { scenes: Scene[] }): React.JSX.Element 
       ref={overlayRef}
       className="fixed inset-0 z-50 flex select-none flex-col bg-black/90 text-white backdrop-blur-sm"
       onPointerDown={(e) => {
-        if (e.button === 0) swipe.current = { x: e.clientX, y: e.clientY, id: e.pointerId }
+        if (e.button !== 0) return
+        swipe.current = {
+          x: e.clientX,
+          y: e.clientY,
+          id: e.pointerId,
+          at: performance.now(),
+          stage: onStage(e.target)
+        }
       }}
       onPointerUp={(e) => {
         const start = swipe.current
@@ -156,7 +196,28 @@ export function SceneReview({ scenes }: { scenes: Scene[] }): React.JSX.Element 
         const dx = e.clientX - start.x
         const dy = e.clientY - start.y
         if (Math.abs(dx) >= SWIPE_PX && Math.abs(dx) > Math.abs(dy) * 1.5) {
+          lastTap.current = null
           go(index + (dx < 0 ? 1 : -1))
+          return
+        }
+        const now = performance.now()
+        const tapped = start.stage && Math.hypot(dx, dy) <= TAP_MOVE_PX && now - start.at <= TAP_MS
+        if (!tapped) {
+          lastTap.current = null
+          return
+        }
+        const prev = lastTap.current
+        if (
+          prev &&
+          prev.sceneId === scene.id &&
+          now - prev.at <= DOUBLE_TAP_MS &&
+          Math.hypot(e.clientX - prev.x, e.clientY - prev.y) <= DOUBLE_TAP_PX
+        ) {
+          lastTap.current = null
+          showFlash(e.clientX, e.clientY)
+          regenerate()
+        } else {
+          lastTap.current = { x: e.clientX, y: e.clientY, at: now, sceneId: scene.id }
         }
       }}
       onPointerCancel={() => {
@@ -225,7 +286,10 @@ export function SceneReview({ scenes }: { scenes: Scene[] }): React.JSX.Element 
         </button>
       </header>
 
-      <main className="relative flex min-h-0 flex-1 items-center justify-center px-20 pb-2">
+      <main
+        data-review-stage
+        className="relative flex min-h-0 flex-1 items-center justify-center px-20 pb-2"
+      >
         <button
           className={cn(navButton, 'left-4')}
           disabled={!hasPrev}
@@ -273,6 +337,20 @@ export function SceneReview({ scenes }: { scenes: Scene[] }): React.JSX.Element 
       <footer className="shrink-0 pb-3 text-center text-[11.5px] opacity-60">
         {t('ui.customReviewHint')}
       </footer>
+
+      {flash && (
+        <div
+          key={flash.key}
+          aria-hidden
+          className={cn(
+            'pointer-events-none absolute grid size-20 -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full bg-accent/85 text-on-accent shadow-lg transition-all duration-700 ease-out',
+            flash.fading ? 'scale-150 opacity-0' : 'scale-100 opacity-100'
+          )}
+          style={{ left: flash.x, top: flash.y }}
+        >
+          <RefreshCw size={30} />
+        </div>
+      )}
     </div>,
     document.body
   )

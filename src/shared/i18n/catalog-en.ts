@@ -155,12 +155,19 @@ export const EN = {
   'ui.customReviewQueuedValue': 'Queued {0} again (+1)',
   'ui.customReviewRegen': 'Regenerate now',
   'ui.customReviewRegenHint':
-    'Generate one more image of this scene right away (G). Uses a new seed even when the seed is locked.',
+    'Generate one more image of this scene right away (G or double-tap the picture). Uses a new seed even when the seed is locked.',
   'ui.customReviewRegenValue': 'Regenerating {0}',
   'ui.customReviewRegenFavoriteValue': 'Regenerating {0} · its favorite stays as the cover here',
   'ui.customReviewWaitingValue': '{0} waiting',
+  'ui.customAckAllPendingValue': 'Mark all as checked · clear every not-generated mark ({0})',
+  'ui.customAckAllPendingTitleValue': 'Clear all {0} not-generated marks?',
+  'ui.customAckAllPendingMessage':
+    'Images stay as they are; only the marks are cleared. A scene is marked again when its content changes.',
+  'ui.customAckAllPendingConfirm': 'Mark all as checked',
+  'ui.customAckAllPendingDoneValue': 'Cleared {0} not-generated marks',
+  'ui.customAckAllPendingNone': 'No scenes are marked as not generated',
   'ui.customReviewHint':
-    '←/→, wheel or swipe to browse · G regenerate now · R queue again · Esc close',
+    '←/→, wheel or swipe to browse · double-tap the picture or G to regenerate now · R queue again · Esc close',
   'ui.customPrevious': 'Previous',
   'ui.customNext': 'Next',
   'ui.customLaneTabs': 'Progress by account',

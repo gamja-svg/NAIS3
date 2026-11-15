@@ -137,3 +137,140 @@ describe('custom: scene review regenerate now', () => {
     expect(document.body.textContent).not.toContain('대기 1장')
   })
 })
+
+describe('custom: scene review double tap and fixed list', () => {
+  let root: Root
+  let container: HTMLDivElement
+  let enqueued: number[]
+  let now = 0
+  const pending = (id: number): Scene => scene(id, { pending: true })
+
+  beforeEach(() => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
+    vi.spyOn(performance, 'now').mockImplementation(() => now)
+    enqueued = []
+    window.nais = {
+      invoke: vi.fn(async (channel: string, payload: unknown) => {
+        if (channel === 'queue:enqueue') {
+          enqueued.push((payload as { request: GenerationRequest }).request.sceneId ?? -1)
+          return { ids: ['q1'] }
+        }
+        return {}
+      }),
+      on: () => () => {}
+    } as unknown as NaisApi
+    useLanguageStore.setState({ lang: 'ko' })
+    useToastStore.setState({ toasts: [] })
+    useGenerationStore.setState({ request: { ...DEFAULT_REQUEST }, queue: null, previewPng: null })
+    useScenesStore.setState({
+      scenes: [pending(1), pending(2), scene(3)],
+      presets: [],
+      activePresetId: 1,
+      reviewSceneId: 1,
+      casts: [],
+      activeCastId: ''
+    })
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+  })
+
+  afterEach(async () => {
+    await act(async () => root.unmount())
+    container.remove()
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+  })
+
+  const pointer = (type: string, x: number, y: number): PointerEvent =>
+    new PointerEvent(type, {
+      bubbles: true,
+      pointerId: 1,
+      isPrimary: true,
+      button: 0,
+      clientX: x,
+      clientY: y
+    })
+
+  /** 누르고 (hold ms 뒤) 떼기 — 떼는 자리를 바꾸면 끌기. 실제 브라우저처럼 안 끌었으면 click도 보낸다 */
+  const tap = async (target: Element, x = 200, y = 300, hold = 60, toX = x): Promise<void> => {
+    await act(async () => {
+      target.dispatchEvent(pointer('pointerdown', x, y))
+      now += hold
+      target.dispatchEvent(pointer('pointerup', toX, y))
+      if (toX === x)
+        target.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: x, clientY: y }))
+    })
+  }
+  const picture = (): Element => document.body.querySelector('main[data-review-stage] img')!
+  const title = (): string | null | undefined =>
+    document.body.querySelector('header span.truncate.font-semibold')?.textContent
+
+  it('regenerates the scene on a double tap on the picture, not on a single tap', async () => {
+    await act(async () => root.render(h(SceneReview, { scenes: [pending(1), pending(2)] })))
+    await tap(picture())
+    expect(enqueued).toEqual([])
+    now += 200
+    await tap(picture(), 210, 305)
+    expect(enqueued).toEqual([1])
+    // 세 번째 탭은 새 더블탭의 첫 탭
+    now += 200
+    await tap(picture())
+    expect(enqueued).toEqual([1])
+  })
+
+  it('ignores taps too far apart in time or place, on buttons, and swipes', async () => {
+    await act(async () => root.render(h(SceneReview, { scenes: [pending(1), pending(2)] })))
+    await tap(picture())
+    now += 900
+    await tap(picture())
+    await tap(picture(), 600, 300)
+    const next = document.body.querySelector('button[aria-label="다음"]')!
+    await tap(next, 900, 400)
+    now += 100
+    await tap(next, 900, 400)
+    expect(enqueued).toEqual([])
+    expect(title()).toBe('씬 2') // 다음 버튼 두 번 = 두 장 넘김 (마지막에서 멈춤)
+    await tap(picture(), 150, 300, 60, 300) // 오른쪽으로 끌기 = 이전 장
+    expect(title()).toBe('씬 1')
+    expect(enqueued).toEqual([])
+  })
+
+  it('keeps a scene in the review after it stops being pending', async () => {
+    await act(async () => root.render(h(SceneReview, { scenes: [pending(1), pending(2)] })))
+    // 다시 뽑기가 끝나 미생성이 풀림 → 미생성만 보기 목록에서는 빠진다
+    await act(async () => {
+      useScenesStore.setState({ scenes: [scene(1), pending(2), scene(3)] })
+      root.render(h(SceneReview, { scenes: [pending(2)] }))
+    })
+    expect(useScenesStore.getState().reviewSceneId).toBe(1)
+    expect(title()).toBe('씬 1')
+    expect(document.body.textContent).toContain('1 / 2')
+  })
+})
+
+describe('custom: mark all pending scenes as checked', () => {
+  beforeEach(() => {
+    window.nais = { invoke: vi.fn(async () => undefined), on: () => () => {} } as unknown as NaisApi
+  })
+
+  it('clears the marks and turns off the pending-only view when none are left', async () => {
+    useScenesStore.setState({
+      scenes: [scene(1, { pending: true }), scene(2, { pending: true }), scene(3)],
+      pendingOnly: true
+    })
+    await useScenesStore.getState().ackPendingScenes([1, 2])
+    expect(window.nais.invoke).toHaveBeenCalledWith('scenes:clearPendingMany', { ids: [1, 2] })
+    expect(useScenesStore.getState().scenes.map((s) => s.pending)).toEqual([false, false, false])
+    expect(useScenesStore.getState().pendingOnly).toBe(false)
+  })
+
+  it('keeps the pending-only view while other scenes are still pending', async () => {
+    useScenesStore.setState({
+      scenes: [scene(1, { pending: true }), scene(2, { pending: true })],
+      pendingOnly: true
+    })
+    await useScenesStore.getState().ackPendingScenes([1])
+    expect(useScenesStore.getState().pendingOnly).toBe(true)
+  })
+})

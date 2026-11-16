@@ -64,7 +64,7 @@ const streamSrcs = (container: HTMLElement): string[] =>
 
 function resetParallel(): void {
   useParallelStore.setState({
-    config: { enabled: true, target: null },
+    config: { enabled: true, target: null, anlasFallback: false },
     accounts: ACCOUNTS,
     balances: {},
     live: {},
@@ -229,6 +229,19 @@ describe('custom: parallel screens', () => {
     await act(async () => root.render(h(PreviewPane)))
     const tabs = [...container.querySelectorAll('[role="tab"]')]
     expect(tabs[0].textContent).toContain('쉬는 중 · 게이지 소진')
+    // Anlas로 계속을 켰는데 이 장 값이 없을 때
+    await act(async () =>
+      useGenerationStore.setState({
+        queue: status(
+          [item('y', 'generating')],
+          [
+            lane('a', null, { pauseReason: 'noAnlas', pausedUntil: Date.now() + 60_000 }),
+            lane('b', 'y')
+          ]
+        )
+      })
+    )
+    expect(container.querySelector('[role="tab"]')?.textContent).toContain('쉬는 중 · Anlas 부족')
     // 보고 있는 계정이 쉬는 중이면 가운데에 다른 계정의 진행을 끌어오지 않는다
     expect(streamSrcs(container)).toEqual([])
   })

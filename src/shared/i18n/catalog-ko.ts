@@ -174,13 +174,17 @@ export const KO = {
   'ui.customLaneGenerating': '생성 중',
   'ui.customLaneIdle': '대기',
   'ui.customLanePausedExhausted': '쉬는 중 · 게이지 소진',
+  'ui.customLanePausedNoAnlas': '쉬는 중 · Anlas 부족',
   'ui.customLanePausedNotOpus': '쉬는 중 · Opus 아님',
   'ui.customLanePausedUnknown': '쉬는 중 · 확인 실패',
   'ui.customLaneDoneValue': '이번에 {0}장',
   'ui.customLaneGaugeValue': '게이지 {0}%',
   'ui.customParallelAccounts': '여러 계정으로 동시에 생성',
   'ui.customParallelAccountsHint':
-    '계정마다 한 장씩 동시에 뽑습니다. Opus 계정만 뽑고, V5 게이지가 바닥난 계정은 Anlas를 쓰지 않고 다시 찰 때까지 쉽니다. 켜 두면 계정 자동 전환 대신 이 방식으로 뽑습니다.',
+    '계정마다 한 장씩 동시에 뽑습니다. Opus 계정만 뽑고, V5 게이지가 바닥난 계정은 Anlas를 쓰지 않고 다시 찰 때까지 쉽니다(아래 "Anlas로 계속"을 켜면 이어서 뽑음). 켜 두면 계정 자동 전환 대신 이 방식으로 뽑습니다.',
+  'ui.customParallelAnlasFallback': '게이지가 바닥나면 Anlas로 계속',
+  'ui.customParallelAnlasFallbackHint':
+    '켜면 V5 게이지가 바닥난 계정도 쉬지 않고 그 계정의 Anlas로 이어서 뽑습니다(V5 832×1216은 장당 약 30 Anlas). 그 장 값만큼 Anlas가 없는 계정은 쉽니다. 끄면 Anlas를 쓰지 않습니다.',
   'ui.customSendTo': '보낼 곳',
   'ui.customSendToAuto': '자동 (비어 있는 계정)',
   'ui.customSendToHint': '새로 넣는 생성을 맡을 계정입니다. 자동이면 비어 있는 계정이 가져갑니다.',

@@ -172,13 +172,17 @@ export const ZH_CN = {
   'ui.customLaneGenerating': '生成中',
   'ui.customLaneIdle': '空闲',
   'ui.customLanePausedExhausted': '休息中 · 额度耗尽',
+  'ui.customLanePausedNoAnlas': '休息中 · Anlas 不足',
   'ui.customLanePausedNotOpus': '休息中 · 非 Opus',
   'ui.customLanePausedUnknown': '休息中 · 检查失败',
   'ui.customLaneDoneValue': '本次 {0} 张',
   'ui.customLaneGaugeValue': '额度 {0}%',
   'ui.customParallelAccounts': '多个账户同时生成',
   'ui.customParallelAccountsHint':
-    '每个账户一次生成一张，同时进行。只有 Opus 账户参与；V5 额度耗尽的账户不消耗 Anlas，而是休息到额度恢复。开启后将代替自动切换账户。',
+    '每个账户一次生成一张，同时进行。只有 Opus 账户参与；V5 额度耗尽的账户不消耗 Anlas，而是休息到额度恢复（开启下方“用 Anlas 继续”时继续生成）。开启后将代替自动切换账户。',
+  'ui.customParallelAnlasFallback': '额度耗尽时用 Anlas 继续',
+  'ui.customParallelAnlasFallbackHint':
+    '开启后，V5 额度耗尽的账户不再休息，而是用该账户的 Anlas 继续生成（V5 832×1216 每张约 30 Anlas）。Anlas 不足以生成下一张的账户会休息。关闭时不消耗 Anlas。',
   'ui.customSendTo': '发送到',
   'ui.customSendToAuto': '自动（空闲账户）',
   'ui.customSendToHint': '负责新加入生成的账户。选择自动时由空闲账户接手。',

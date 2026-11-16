@@ -877,6 +877,8 @@ function AccountSection(): React.JSX.Element {
   // [custom] 여러 계정으로 동시에 생성
   const parallelEnabled = useParallelStore((s) => s.config.enabled)
   const setParallelEnabled = useParallelStore((s) => s.setEnabled)
+  const parallelAnlas = useParallelStore((s) => s.config.anlasFallback)
+  const setParallelAnlas = useParallelStore((s) => s.setAnlasFallback)
   const anlasBalance = useGenerationStore((s) => s.anlasBalance)
   const opusUsage = useGenerationStore((s) => s.opusUsage)
   const subscriptionTier = useGenerationStore((s) => s.subscriptionTier)
@@ -1155,6 +1157,18 @@ function AccountSection(): React.JSX.Element {
             aria-label={t('ui.customParallelAccounts')}
             checked={parallelEnabled}
             onCheckedChange={(v) => void setParallelEnabled(v)}
+          />
+        </Row>
+      )}
+      {canAutoSwitch && parallelEnabled && (
+        <Row
+          label={t('ui.customParallelAnlasFallback')}
+          hint={t('ui.customParallelAnlasFallbackHint')}
+        >
+          <Switch
+            aria-label={t('ui.customParallelAnlasFallback')}
+            checked={parallelAnlas}
+            onCheckedChange={(v) => void setParallelAnlas(v)}
           />
         </Row>
       )}

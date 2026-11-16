@@ -5,6 +5,7 @@ import {
   requestUsesV5Usage,
   type NaiAccountSelection
 } from '../nai/account-router'
+import { requestCharge } from '../nai/anlas-guard'
 import { logBalance } from '../nai/anlas-log'
 import { fetchAnlasBalance } from '../nai/client'
 import { LanePauseError } from '../queue/generation-queue'
@@ -14,20 +15,33 @@ import { broadcast } from '../ipc'
  * [custom] 여러 계정으로 동시 생성 — 계정(레인)마다 한 장씩.
  * 켜는 스위치와 '보낼 곳'은 설정에 두고, 큐는 여기 함수로 계정 목록과 보낼 곳을 읽는다.
  * 원칙: 동시 생성은 Opus 계정만, 게이지가 바닥난 계정은 Anlas를 쓰지 않고 쉰다.
+ * 'Anlas로 계속'을 켜면 게이지가 바닥난 계정도 그 계정의 Anlas로 이어서 뽑는다 (모자라면 쉰다).
  */
 const ENABLED_KEY = 'custom_parallel_accounts'
 const TARGET_KEY = 'custom_parallel_target'
+const ANLAS_FALLBACK_KEY = 'custom_parallel_anlas_fallback'
 
 /** 쉬는 시간 — 게이지는 몇 분 안에 다시 차오르고, Opus 아닌 계정은 구독이 바뀔 때까지 */
-const PAUSE_MS = { exhausted: 60_000, notOpus: 5 * 60_000, unknown: 30_000 } as const
+const PAUSE_MS = {
+  exhausted: 60_000,
+  noAnlas: 60_000,
+  notOpus: 5 * 60_000,
+  unknown: 30_000
+} as const
 
 export function getParallelConfig(): ParallelConfig {
-  return { enabled: getSetting(ENABLED_KEY) === '1', target: getSetting(TARGET_KEY) || null }
+  return {
+    enabled: getSetting(ENABLED_KEY) === '1',
+    target: getSetting(TARGET_KEY) || null,
+    anlasFallback: getSetting(ANLAS_FALLBACK_KEY) === '1'
+  }
 }
 
 export function setParallelConfig(patch: Partial<ParallelConfig>): ParallelConfig {
   if (patch.enabled !== undefined) setSetting(ENABLED_KEY, patch.enabled ? '1' : '0')
   if (patch.target !== undefined) setSetting(TARGET_KEY, patch.target ?? '')
+  if (patch.anlasFallback !== undefined)
+    setSetting(ANLAS_FALLBACK_KEY, patch.anlasFallback ? '1' : '0')
   return getParallelConfig()
 }
 
@@ -80,7 +94,14 @@ export async function laneSelection(
   if (requestUsesV5Usage(request)) {
     // 게이지를 모르면 뽑지 않는다 (원본 자동 전환도 게이지를 모르는 계정은 고르지 않는다)
     if (!balance.usage) throw new LanePauseError('unknown', PAUSE_MS.unknown)
-    if (isOpusUsageExhausted(balance)) throw new LanePauseError('exhausted', PAUSE_MS.exhausted)
+    if (isOpusUsageExhausted(balance)) {
+      if (getSetting(ANLAS_FALLBACK_KEY) !== '1')
+        throw new LanePauseError('exhausted', PAUSE_MS.exhausted)
+      // Anlas로 계속: 이 장 값이 남아 있을 때만 (모자라면 게이지가 찰 때까지 쉰다)
+      const { cost } = requestCharge(request, balance)
+      if (balance.anlas == null || balance.anlas < cost)
+        throw new LanePauseError('noAnlas', PAUSE_MS.noAnlas)
+    }
   }
   return { account, balance, rotated: false }
 }

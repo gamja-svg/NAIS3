@@ -123,10 +123,15 @@ export interface QueueItem {
 export interface ParallelConfig {
   enabled: boolean
   target: string | null
+  /** 게이지가 바닥난 계정도 그 계정의 Anlas로 이어서 뽑는다 (기본 꺼짐 = Anlas를 쓰지 않고 쉰다) */
+  anlasFallback: boolean
 }
 
-/** [custom] 동시 생성에서 계정이 쉬는 이유 — 게이지 소진 / Opus 아님 / 계정 상태 조회 실패 */
-export type LanePauseReason = 'exhausted' | 'notOpus' | 'unknown'
+/**
+ * [custom] 동시 생성에서 계정이 쉬는 이유 — 게이지 소진 / 게이지 소진에 Anlas도 모자람 /
+ * Opus 아님 / 계정 상태 조회 실패
+ */
+export type LanePauseReason = 'exhausted' | 'noAnlas' | 'notOpus' | 'unknown'
 
 /** [custom] 동시 생성 계정(레인) 하나의 상태 */
 export interface QueueLane {

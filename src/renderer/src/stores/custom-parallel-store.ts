@@ -39,13 +39,14 @@ interface ParallelState {
   loadAccounts: () => Promise<void>
   setEnabled: (enabled: boolean) => Promise<void>
   setTarget: (target: string | null) => Promise<void>
+  setAnlasFallback: (anlasFallback: boolean) => Promise<void>
   setViewLane: (accountId: string) => void
 }
 
 const canUse = (): boolean => window.nais.runtime !== 'browser'
 
 export const useParallelStore = create<ParallelState>((set, get) => ({
-  config: { enabled: false, target: null },
+  config: { enabled: false, target: null, anlasFallback: false },
   accounts: [],
   balances: {},
   live: {},
@@ -82,6 +83,11 @@ export const useParallelStore = create<ParallelState>((set, get) => ({
 
   setTarget: async (target) => {
     const config = await window.nais.invoke('custom:parallelSet', { target })
+    set({ config })
+  },
+
+  setAnlasFallback: async (anlasFallback) => {
+    const config = await window.nais.invoke('custom:parallelSet', { anlasFallback })
     set({ config })
   },
 

@@ -174,13 +174,17 @@ export const EN = {
   'ui.customLaneGenerating': 'Generating',
   'ui.customLaneIdle': 'Idle',
   'ui.customLanePausedExhausted': 'Resting · gauge empty',
+  'ui.customLanePausedNoAnlas': 'Resting · not enough Anlas',
   'ui.customLanePausedNotOpus': 'Resting · not Opus',
   'ui.customLanePausedUnknown': 'Resting · check failed',
   'ui.customLaneDoneValue': '{0} this session',
   'ui.customLaneGaugeValue': 'Gauge {0}%',
   'ui.customParallelAccounts': 'Generate with several accounts at once',
   'ui.customParallelAccountsHint':
-    'Each account generates one image at a time, side by side. Only Opus accounts take part, and an account whose V5 gauge runs out rests until it recharges instead of spending Anlas. While on, this replaces automatic account switching.',
+    'Each account generates one image at a time, side by side. Only Opus accounts take part, and an account whose V5 gauge runs out rests until it recharges instead of spending Anlas (unless "Keep going with Anlas" below is on). While on, this replaces automatic account switching.',
+  'ui.customParallelAnlasFallback': 'Keep going with Anlas when the gauge runs out',
+  'ui.customParallelAnlasFallbackHint':
+    'When on, an account whose V5 gauge runs out keeps generating with its own Anlas instead of resting (V5 at 832×1216 costs about 30 Anlas per image). An account without enough Anlas for the next image rests. When off, no Anlas is spent.',
   'ui.customSendTo': 'Send to',
   'ui.customSendToAuto': 'Auto (any free account)',
   'ui.customSendToHint':

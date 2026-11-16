@@ -37,6 +37,11 @@ const logged = vi.hoisted(() => [] as [number, string | undefined][])
 vi.mock('../src/main/nai/anlas-log', () => ({
   logBalance: (n: number, accountId?: string) => logged.push([n, accountId])
 }))
+// 이 장 값 (실제 계산은 바이브·캐릭레퍼 DB를 읽는다)
+const charge = vi.hoisted(() => ({ cost: 30 }))
+vi.mock('../src/main/nai/anlas-guard', () => ({
+  requestCharge: () => ({ cost: charge.cost, reasons: [] })
+}))
 
 const {
   laneSelection,
@@ -112,6 +117,27 @@ describe('custom: lane account check', () => {
     expect(await pauseReason(laneSelection('gone', V5))).toBe('unknown')
   })
 
+  it('keeps an exhausted account going with its own Anlas when that is allowed', async () => {
+    db.settings.set('custom_parallel_anlas_fallback', '1')
+    net.balances['token-a'] = { ...opus(0, true), anlas: 500 }
+    expect(await pauseReason(laneSelection('a', V5))).toBeNull()
+    net.balances['token-a'] = { ...opus(0, true), anlas: 30 }
+    expect(await pauseReason(laneSelection('a', V5))).toBeNull() // 딱 한 장 값
+  })
+
+  it('rests an exhausted account that cannot pay for the next image', async () => {
+    db.settings.set('custom_parallel_anlas_fallback', '1')
+    net.balances['token-a'] = { ...opus(0, true), anlas: 29 }
+    expect(await pauseReason(laneSelection('a', V5))).toBe('noAnlas')
+    net.balances['token-a'] = { ...opus(0, true), anlas: null }
+    expect(await pauseReason(laneSelection('a', V5))).toBe('noAnlas') // 잔액을 모르면 쓰지 않는다
+    // 다른 이유로 쉬는 계정은 그대로 (Opus 아님·게이지 모름)
+    net.balances['token-a'] = { anlas: 5000, tier: 'scroll' }
+    expect(await pauseReason(laneSelection('a', V5))).toBe('notOpus')
+    net.balances['token-a'] = { anlas: 5000, tier: 'opus' }
+    expect(await pauseReason(laneSelection('a', V5))).toBe('unknown')
+  })
+
   it('updates the title bar balance only for the active account', async () => {
     net.balances['token-a'] = opus(50)
     await laneSelection('a', V5)
@@ -153,16 +179,30 @@ describe('custom: parallel settings', () => {
   beforeEach(() => db.settings.clear())
 
   it('is off by default and lists every account when on', () => {
-    expect(getParallelConfig()).toEqual({ enabled: false, target: null })
+    expect(getParallelConfig()).toEqual({ enabled: false, target: null, anlasFallback: false })
     expect(parallelLanes()).toBeNull()
-    expect(setParallelConfig({ enabled: true })).toEqual({ enabled: true, target: null })
+    expect(setParallelConfig({ enabled: true })).toEqual({
+      enabled: true,
+      target: null,
+      anlasFallback: false
+    })
     expect(parallelLanes()).toEqual(['a', 'b'])
   })
 
   it('saves and clears the send-to account', () => {
     setParallelConfig({ target: 'b' })
     expect(parallelTarget()).toBe('b')
-    expect(setParallelConfig({ target: null })).toEqual({ enabled: false, target: null })
+    expect(setParallelConfig({ target: null })).toEqual({
+      enabled: false,
+      target: null,
+      anlasFallback: false
+    })
     expect(parallelTarget()).toBeNull()
+  })
+
+  it('saves the keep-going-with-Anlas switch', () => {
+    expect(setParallelConfig({ anlasFallback: true }).anlasFallback).toBe(true)
+    expect(db.settings.get('custom_parallel_anlas_fallback')).toBe('1')
+    expect(setParallelConfig({ anlasFallback: false }).anlasFallback).toBe(false)
   })
 })

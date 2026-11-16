@@ -1,0 +1,763 @@
+diff --git a/src/main/ipc.ts b/src/main/ipc.ts
+index 6c9fd8055231439cd28fe78caef8e4dbd8dfa7e1..7a0baabec974bb3d6181bcef79fc9b71eae2f43e 100644
+--- a/src/main/ipc.ts
++++ b/src/main/ipc.ts
+@@ -101,6 +101,7 @@ import {
+   duplicateScene,
+   clearScenePending,
+   clearScenesPending,
++  getSceneBase,
+   deleteScene,
+   reorderScenes,
+   setReserveAll,
+@@ -634,6 +635,7 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
+     return dir
+   }
+   handle('custom:topSetGetDir', () => ({ dir: getTopSetDir() }))
++  handle('custom:sceneBase', ({ id }) => getSceneBase(id))
+   handle('custom:topSetPickDir', async () => {
+     const dir = await pickTopSetDir()
+     return dir ? { dir } : { dir: getTopSetDir(), canceled: true }
+diff --git a/src/main/scenes/repo.ts b/src/main/scenes/repo.ts
+index ec29f2b5d308aa65233109976d6df4a9a5827306..a3e43a4084827e619d324cf41db369cc5bf8fa8d 100644
+--- a/src/main/scenes/repo.ts
++++ b/src/main/scenes/repo.ts
+@@ -93,6 +93,7 @@ function toScene(
+ // ── [custom] 변경 후 미생성 표시 ────────────────────────────
+ // 원본의 마이그레이션 번호와 겹치지 않도록 gen_scenes에 칸을 추가하지 않고 전용 표를 따로 둔다.
+ // changed_at = 씬 내용(프롬프트·네거티브·크기)이 마지막으로 실제로 달라진 시각, acked = 수동 확인 여부.
++// base_prompt·base_negative = 미생성이 되기 직전(마지막으로 뽑았거나 확인한 때)의 내용 — 바뀐 태그 표시용.
+ const marksReady = new WeakSet<object>()
+ function marksDb(): ReturnType<typeof getDb> {
+   const db = getDb()
+@@ -101,9 +102,16 @@ function marksDb(): ReturnType<typeof getDb> {
+       `CREATE TABLE IF NOT EXISTS custom_scene_marks (
+          scene_id INTEGER PRIMARY KEY,
+          changed_at TEXT NOT NULL DEFAULT (datetime('now')),
+-         acked INTEGER NOT NULL DEFAULT 0
++         acked INTEGER NOT NULL DEFAULT 0,
++         base_prompt TEXT,
++         base_negative TEXT
+        )`
+     )
++    // 기준 칸이 없던 때 만든 표에 더한다
++    const cols = db.prepare('PRAGMA table_info(custom_scene_marks)').all() as { name: string }[]
++    for (const col of ['base_prompt', 'base_negative'])
++      if (!cols.some((c) => c.name === col))
++        db.exec(`ALTER TABLE custom_scene_marks ADD COLUMN ${col} TEXT`)
+     marksReady.add(db)
+   }
+   return db
+@@ -123,13 +131,44 @@ function pendingSql(ref: string): string {
+   END)`
+ }
+ 
+-function markSceneChanged(id: number): void {
+-  marksDb()
++/**
++ * 씬 내용이 달라졌음을 기록한다. before = 바뀌기 직전 내용.
++ * 미생성이 아니던 씬(뽑은 그림·확인이 지금 내용과 맞던 씬)이면 그 내용을 기준으로 남기고,
++ * 이미 미생성이면 기준을 그대로 둔다 — 다시 뽑기 전까지 바뀐 태그가 모두 쌓여 보이게.
++ * 한 번도 뽑지 않은 씬은 기준이 없다 (전부 새 태그).
++ */
++function markSceneChanged(id: number, before: { prompt: string; negative: string }): void {
++  const db = marksDb()
++  const state = db
++    .prepare(`SELECT ${pendingSql('s')} AS pending FROM gen_scenes s WHERE s.id = ?`)
++    .get(id) as { pending: number } | undefined
++  const fresh = state?.pending === 0
++  db.prepare(
++    `INSERT INTO custom_scene_marks (scene_id, changed_at, acked, base_prompt, base_negative)
++     VALUES (@id, datetime('now'), 0, @prompt, @negative)
++     ON CONFLICT(scene_id) DO UPDATE SET
++       changed_at = excluded.changed_at,
++       acked = 0,
++       base_prompt = CASE WHEN @fresh = 1 THEN excluded.base_prompt ELSE base_prompt END,
++       base_negative = CASE WHEN @fresh = 1 THEN excluded.base_negative ELSE base_negative END`
++  ).run({
++    id,
++    prompt: fresh ? before.prompt : null,
++    negative: fresh ? before.negative : null,
++    fresh: fresh ? 1 : 0
++  })
++}
++
++/** [custom] 미생성인 씬의 기준 내용 (바뀐 태그 표시용). 미생성이 아니거나 기준이 없으면 null */
++export function getSceneBase(id: number): { prompt: string; negativePrompt: string } | null {
++  const row = marksDb()
+     .prepare(
+-      `INSERT INTO custom_scene_marks (scene_id, changed_at, acked) VALUES (?, datetime('now'), 0)
+-       ON CONFLICT(scene_id) DO UPDATE SET changed_at = excluded.changed_at, acked = 0`
++      `SELECT m.base_prompt AS prompt, m.base_negative AS negative, ${pendingSql('s')} AS pending
++       FROM gen_scenes s JOIN custom_scene_marks m ON m.scene_id = s.id WHERE s.id = ?`
+     )
+-    .run(id)
++    .get(id) as { prompt: string | null; negative: string | null; pending: number } | undefined
++  if (!row || row.pending !== 1 || row.prompt === null) return null
++  return { prompt: row.prompt, negativePrompt: row.negative ?? '' }
+ }
+ 
+ /** '변경 후 미생성' 표시를 수동으로 끈다. 다음 내용 변경 때 다시 켜진다. */
+@@ -350,7 +389,7 @@ export function updateScene(id: number, patch: Record<string, unknown>): void {
+         (patch.width !== undefined && patch.width !== cur.width) ||
+         (patch.height !== undefined && patch.height !== cur.height))
+     )
+-      markSceneChanged(id)
++      markSceneChanged(id, { prompt: cur.prompt, negative: cur.negative_prompt })
+   }
+   sets.push(`updated_at = datetime('now')`)
+   getDb()
+@@ -763,8 +802,11 @@ export function applyImportedScenes(presetId: number, scenes: ImportedScene[]):
+           existing.width !== next.width ||
+           existing.height !== next.height
+         ) {
++          markSceneChanged(existing.id, {
++            prompt: existing.prompt,
++            negative: existing.negative_prompt
++          })
+           update.run(next.prompt, next.negative, next.width, next.height, existing.id)
+-          markSceneChanged(existing.id)
+           outcome.updated++
+           outcome.sceneIds.push(existing.id)
+         } else outcome.unchanged++
+diff --git a/src/renderer/src/components/custom-changed-tags.tsx b/src/renderer/src/components/custom-changed-tags.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..ba9269aa1d0791c25804c80fa463603de7c2e1df
+--- /dev/null
++++ b/src/renderer/src/components/custom-changed-tags.tsx
+@@ -0,0 +1,42 @@
++import { useMemo } from 'react'
++import { CHANGED_TAG_STYLE, changedTagRanges, removedTags } from '../lib/custom-prompt-diff'
++import { useT } from '../lib/i18n'
++
++/**
++ * [custom] 미생성 씬의 프롬프트 아래 한 줄 — 노란색이 무엇인지와, 마지막으로 뽑은 뒤 빠진 태그.
++ * 바뀐 것이 없으면 그리지 않는다.
++ */
++export function ChangedTagsNote({
++  current,
++  base
++}: {
++  current: string
++  base: string
++}): React.JSX.Element | null {
++  const t = useT()
++  const changed = useMemo(() => changedTagRanges(current, base).length, [current, base])
++  const removed = useMemo(() => removedTags(current, base), [current, base])
++  if (changed === 0 && removed.length === 0) return null
++  return (
++    <p className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[11.5px] leading-snug text-muted">
++      {changed > 0 && (
++        <span>
++          <span className="px-0.5 text-ink" style={CHANGED_TAG_STYLE}>
++            {t('ui.customChangedTagsYellow')}
++          </span>{' '}
++          {t('ui.customChangedTagsLegend')}
++        </span>
++      )}
++      {removed.length > 0 && (
++        <>
++          <span className={changed > 0 ? 'ml-1' : undefined}>{t('ui.customRemovedTags')}</span>
++          {removed.map((tag, i) => (
++            <s key={i} className="rounded bg-surface-2 px-1 font-mono text-[11px] text-faint">
++              {tag}
++            </s>
++          ))}
++        </>
++      )}
++    </p>
++  )
++}
+diff --git a/src/renderer/src/components/prompt-editor.tsx b/src/renderer/src/components/prompt-editor.tsx
+index f0ccfe458fae74f2687ffb782900d951ca7af992..2c175d33f35f848fe5a141b1e28f89416c8e04aa 100644
+--- a/src/renderer/src/components/prompt-editor.tsx
++++ b/src/renderer/src/components/prompt-editor.tsx
+@@ -5,6 +5,7 @@ import { cn } from '../lib/utils'
+ import { useT } from '../lib/i18n'
+ import { caretCoords } from '../lib/caret'
+ import { highlightRanges } from '../lib/prompt-weights'
++import { CHANGED_TAG_STYLE, markedSegments, type TextRange } from '../lib/custom-prompt-diff'
+ import { fragmentAtSelection, fragmentPaths, useFragmentsStore } from '../stores/fragments-store'
+ 
+ /**
+@@ -72,7 +73,8 @@ export function PromptEditor({
+   negative = false,
+   tokensOverride,
+   tokenModel,
+-  tokenLimit = 512
++  tokenLimit = 512,
++  marks
+ }: {
+   value: string
+   onValueChange: (value: string) => void
+@@ -85,6 +87,8 @@ export function PromptEditor({
+   /** 자체 카운트에 사용할 모델. 생략하면 자체 카운트를 숨김 */
+   tokenModel?: string
+   tokenLimit?: number
++  /** [custom] 노랗게 칠할 구간 — 미생성 씬에서 마지막으로 뽑은 뒤 바뀐 태그 */
++  marks?: TextRange[]
+ }): React.JSX.Element {
+   const t = useT()
+   const textareaRef = useRef<HTMLTextAreaElement>(null)
+@@ -134,13 +138,16 @@ export function PromptEditor({
+   const syncScroll = (): void => {
+     const ta = textareaRef.current
+     if (!ta) return
+-    for (const mirror of [mirrorRef.current, findMirrorRef.current]) {
++    for (const mirror of [mirrorRef.current, findMirrorRef.current, marksMirrorRef.current]) {
+       if (!mirror) continue
+       mirror.scrollTop = ta.scrollTop
+       mirror.scrollLeft = ta.scrollLeft
+     }
+   }
+   useEffect(syncScroll, [value])
++  const marksMirrorRef = useRef<HTMLDivElement>(null) // [custom] 바뀐 태그
++  const hasMarks = (marks?.length ?? 0) > 0
++  useEffect(syncScroll, [hasMarks])
+   useEffect(() => {
+     const ta = textareaRef.current
+     if (!ta) return
+@@ -324,6 +331,25 @@ export function PromptEditor({
+         {value.endsWith('\n') && '​'}
+       </div>
+ 
++      {/* [custom] 바뀐 태그 — 가중치 미러 위에 노란 칠 (글자는 투명) */}
++      {hasMarks && marks && (
++        <div
++          ref={marksMirrorRef}
++          aria-hidden
++          className={cn(
++            TYPO,
++            'pointer-events-none absolute inset-0 overflow-hidden text-transparent'
++          )}
++        >
++          {markedSegments(value, marks).map((seg) => (
++            <span key={seg.start} style={seg.marked ? CHANGED_TAG_STYLE : undefined}>
++              {value.slice(seg.start, seg.end)}
++            </span>
++          ))}
++          {value.endsWith('\n') && '​'}
++        </div>
++      )}
++
+       {/* 찾기 하이라이트 — 가중치 미러 위에 한 겹 더 (글자는 투명, 배경만) */}
+       {findOpen && hits.length > 0 && (
+         <div
+diff --git a/src/renderer/src/components/scene-detail.tsx b/src/renderer/src/components/scene-detail.tsx
+index 1f2e4f236dccf71915f55418d0c2eec13821c8fb..c8e0922e3a33e58c9b1c42126bb1af519206d4db 100644
+--- a/src/renderer/src/components/scene-detail.tsx
++++ b/src/renderer/src/components/scene-detail.tsx
+@@ -1,5 +1,5 @@
+ import { ArrowLeft, Loader2, Minus, Play, Plus, Star, Trash2 } from 'lucide-react'
+-import { useEffect, useRef, useState } from 'react'
++import { useEffect, useMemo, useRef, useState } from 'react'
+ import type { Scene } from '@shared/types'
+ import { isMediumEffortModel, promptTokenLimit } from '@shared/nai-models'
+ import { imageUrl } from '../lib/constants'
+@@ -21,6 +21,9 @@ import {
+   useSceneGenerating,
+   useSceneHasFrame
+ } from '../stores/custom-parallel-store'
++import { changedTagRanges } from '../lib/custom-prompt-diff'
++import { useSceneBase } from '../lib/custom-scene-base'
++import { ChangedTagsNote } from './custom-changed-tags'
+ 
+ export function SceneDetail({ scene }: { scene: Scene }): React.JSX.Element {
+   const t = useT()
+@@ -53,6 +56,17 @@ export function SceneDetail({ scene }: { scene: Scene }): React.JSX.Element {
+   // [custom] 동시 생성이면 여러 씬을 함께 뽑으므로 이 씬을 뽑는 항목 기준
+   const streaming = useSceneGenerating(scene.id)
+   const hasPreview = useSceneHasFrame(scene.id, streaming)
++  // [custom] 미생성이면 마지막으로 뽑은 뒤 바뀐 태그를 노랗게
++  const sceneBase = useSceneBase(scene)
++  const promptMarks = useMemo(
++    () => (sceneBase ? changedTagRanges(scene.prompt, sceneBase.prompt) : undefined),
++    [sceneBase, scene.prompt]
++  )
++  const negativeMarks = useMemo(
++    () =>
++      sceneBase ? changedTagRanges(scene.negativePrompt, sceneBase.negativePrompt) : undefined,
++    [sceneBase, scene.negativePrompt]
++  )
+   const sentinelRef = useRef<HTMLDivElement>(null)
+   const [cols, setCols] = useState(3)
+   const [lightboxIdx, setLightboxIdx] = useState(-1)
+@@ -233,7 +247,9 @@ export function SceneDetail({ scene }: { scene: Scene }): React.JSX.Element {
+             tokensOverride={sceneTokens.pos}
+             tokenLimit={tokenLimit}
+             className="h-32 max-h-[520px] min-h-24 resize-y"
++            marks={promptMarks}
+           />
++          {sceneBase && <ChangedTagsNote current={scene.prompt} base={sceneBase.prompt} />}
+           {isMediumEffortModel(model) && (
+             // Medium effort는 씬 네거티브도 보내지 않는다
+             <p className="text-[11.5px] leading-snug text-faint">
+@@ -248,7 +264,11 @@ export function SceneDetail({ scene }: { scene: Scene }): React.JSX.Element {
+             tokensOverride={isMediumEffortModel(model) ? null : sceneTokens.neg}
+             tokenLimit={tokenLimit}
+             className="h-20 max-h-96 min-h-16 resize-y"
++            marks={negativeMarks}
+           />
++          {sceneBase && (
++            <ChangedTagsNote current={scene.negativePrompt} base={sceneBase.negativePrompt} />
++          )}
+         </div>
+ 
+         <div className="mt-4 mb-2 flex items-center gap-2 text-[12px] text-muted">
+diff --git a/src/renderer/src/lib/custom-prompt-diff.ts b/src/renderer/src/lib/custom-prompt-diff.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..5be558f31093c336c95fdd39e2ddcd0c9830f12e
+--- /dev/null
++++ b/src/renderer/src/lib/custom-prompt-diff.ts
+@@ -0,0 +1,87 @@
++/**
++ * [custom] 미생성 씬에서 바뀐 태그 찾기 — 쉼표·줄바꿈으로 나눈 조각 단위로 기준과 비교한다.
++ * 가중치 묶음(`1.2::a, b::`)·괄호 강조는 조각 글자 그대로 비교하므로 숫자·괄호만 바뀌어도 바뀐 조각이 된다.
++ * 앞뒤·사이 공백 차이는 같은 것으로 본다.
++ */
++
++/** 바뀐 태그 칠 — 반투명 노랑 + 밑줄 (가중치 배경 위에 겹쳐도 보이게) */
++export const CHANGED_TAG_STYLE: React.CSSProperties = {
++  background: 'rgb(234 179 8 / 0.3)',
++  boxShadow: 'inset 0 -2px 0 rgb(234 179 8)',
++  borderRadius: 3,
++  boxDecorationBreak: 'clone',
++  WebkitBoxDecorationBreak: 'clone'
++}
++
++export interface TextRange {
++  start: number
++  end: number
++}
++
++interface Piece extends TextRange {
++  text: string
++  key: string
++}
++
++/** 쉼표·줄바꿈으로 나눈 태그 조각 (앞뒤 공백을 뺀 위치) */
++export function tagPieces(text: string): Piece[] {
++  const pieces: Piece[] = []
++  for (const m of text.matchAll(/[^,\n]+/g)) {
++    const trimmed = m[0].trim()
++    if (!trimmed) continue
++    const start = m.index + (m[0].length - m[0].trimStart().length)
++    pieces.push({
++      start,
++      end: start + trimmed.length,
++      text: trimmed,
++      key: trimmed.replace(/\s+/g, ' ')
++    })
++  }
++  return pieces
++}
++
++function countKeys(pieces: Piece[]): Map<string, number> {
++  const counts = new Map<string, number>()
++  for (const p of pieces) counts.set(p.key, (counts.get(p.key) ?? 0) + 1)
++  return counts
++}
++
++/** 기준(base)에 없던 조각의 위치 — 같은 태그가 여러 번이면 기준에 있던 개수만큼은 그대로 본다 */
++export function changedTagRanges(current: string, base: string): TextRange[] {
++  const left = countKeys(tagPieces(base))
++  const ranges: TextRange[] = []
++  for (const p of tagPieces(current)) {
++    const n = left.get(p.key) ?? 0
++    if (n > 0) left.set(p.key, n - 1)
++    else ranges.push({ start: p.start, end: p.end })
++  }
++  return ranges
++}
++
++/** 기준에는 있었는데 지금은 없는 조각 (빠진 태그) */
++export function removedTags(current: string, base: string): string[] {
++  const left = countKeys(tagPieces(current))
++  const removed: string[] = []
++  for (const p of tagPieces(base)) {
++    const n = left.get(p.key) ?? 0
++    if (n > 0) left.set(p.key, n - 1)
++    else removed.push(p.text)
++  }
++  return removed
++}
++
++/** 글을 칠할 구간과 아닌 구간으로 나눈다 (구간은 순서대로이고 겹치지 않는다) */
++export function markedSegments(
++  text: string,
++  ranges: TextRange[]
++): (TextRange & { marked: boolean })[] {
++  const segments: (TextRange & { marked: boolean })[] = []
++  let at = 0
++  for (const r of ranges) {
++    if (r.start > at) segments.push({ start: at, end: r.start, marked: false })
++    segments.push({ start: r.start, end: r.end, marked: true })
++    at = r.end
++  }
++  if (at < text.length) segments.push({ start: at, end: text.length, marked: false })
++  return segments
++}
+diff --git a/src/renderer/src/lib/custom-scene-base.ts b/src/renderer/src/lib/custom-scene-base.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..83c2ad8f5d7897ecfc7d9301d48adc45a3da5e58
+--- /dev/null
++++ b/src/renderer/src/lib/custom-scene-base.ts
+@@ -0,0 +1,31 @@
++import { useEffect, useState } from 'react'
++import type { Scene } from '@shared/types'
++
++type SceneBase = { prompt: string; negativePrompt: string }
++
++/**
++ * [custom] 미생성인 씬이 바뀌기 전 내용 — 바뀐 태그를 노랗게 칠하는 기준. 미생성이 아니면 null.
++ * 내용을 고친 직후에는 메인이 기준을 적어 둔 뒤에 묻도록 조금 기다린다.
++ */
++export function useSceneBase(
++  scene: Pick<Scene, 'id' | 'pending' | 'prompt' | 'negativePrompt'>
++): SceneBase | null {
++  const [base, setBase] = useState<{ id: number; value: SceneBase | null } | null>(null)
++  useEffect(() => {
++    if (!scene.pending || window.nais.runtime === 'browser') return
++    let cancelled = false
++    const timer = setTimeout(() => {
++      window.nais
++        .invoke('custom:sceneBase', { id: scene.id })
++        .then((value) => {
++          if (!cancelled) setBase({ id: scene.id, value })
++        })
++        .catch(() => {})
++    }, 400)
++    return () => {
++      cancelled = true
++      clearTimeout(timer)
++    }
++  }, [scene.id, scene.pending, scene.prompt, scene.negativePrompt])
++  return scene.pending && base?.id === scene.id ? base.value : null
++}
+diff --git a/src/shared/i18n/catalog-en.ts b/src/shared/i18n/catalog-en.ts
+index e9d719d88917d74ba2e223ce6c97b023dd31c05e..a5865eb98310e467444ee224adb35b3e0a13c652 100644
+--- a/src/shared/i18n/catalog-en.ts
++++ b/src/shared/i18n/catalog-en.ts
+@@ -251,6 +251,9 @@ export const EN = {
+   'ui.customRequestPresetNotFoundValue': 'Preset "{0}" not found',
+   'ui.customRequestDoneValue': 'Request {0}: cover set saved — {1}',
+   'ui.customRequestFailedValue': 'Request {0}: failed — {1}',
++  'ui.customChangedTagsYellow': 'Yellow',
++  'ui.customChangedTagsLegend': '= changed since the last image',
++  'ui.customRemovedTags': 'Removed',
+   'ui.queuedForCastValue': 'Queued for cast "{0}"',
+   'ui.queuedWithSidebarSettings': 'Queued with sidebar settings',
+   'ui.deletedCast': 'Deleted cast',
+diff --git a/src/shared/i18n/catalog-ko.ts b/src/shared/i18n/catalog-ko.ts
+index f40a9b42c3f901524883f66da04b3968c8d3b996..7da54343ef56db85ca3ddb24048c5313db368661 100644
+--- a/src/shared/i18n/catalog-ko.ts
++++ b/src/shared/i18n/catalog-ko.ts
+@@ -247,6 +247,9 @@ export const KO = {
+   'ui.customRequestPresetNotFoundValue': '프리셋 "{0}"을(를) 찾을 수 없습니다',
+   'ui.customRequestDoneValue': '요청 파일 {0}: 대표 세트 받음 — {1}',
+   'ui.customRequestFailedValue': '요청 파일 {0}: 처리하지 못함 — {1}',
++  'ui.customChangedTagsYellow': '노란색',
++  'ui.customChangedTagsLegend': '= 마지막으로 뽑은 뒤 바뀐 태그',
++  'ui.customRemovedTags': '빠진 태그',
+   'ui.queuedForCastValue': '"{0}" 출연 예약',
+   'ui.queuedWithSidebarSettings': '사이드바 설정 예약',
+   'ui.deletedCast': '삭제된 출연',
+diff --git a/src/shared/i18n/catalog-zh-CN.ts b/src/shared/i18n/catalog-zh-CN.ts
+index 10a9451178a23c8e803ef785c7d984d72453c912..518f44fa108c6cc6c418aa6c00723cf365ccfbbe 100644
+--- a/src/shared/i18n/catalog-zh-CN.ts
++++ b/src/shared/i18n/catalog-zh-CN.ts
+@@ -245,6 +245,9 @@ export const ZH_CN = {
+   'ui.customRequestPresetNotFoundValue': '找不到预设“{0}”',
+   'ui.customRequestDoneValue': '请求文件 {0}：封面集已保存 — {1}',
+   'ui.customRequestFailedValue': '请求文件 {0}：处理失败 — {1}',
++  'ui.customChangedTagsYellow': '黄色',
++  'ui.customChangedTagsLegend': '= 上次生成后改动的标签',
++  'ui.customRemovedTags': '已删除',
+   'ui.queuedForCastValue': '已按角色组合「{0}」预约',
+   'ui.queuedWithSidebarSettings': '已按左侧当前配置预约',
+   'ui.deletedCast': '已删除的角色组合',
+diff --git a/src/shared/types.ts b/src/shared/types.ts
+index 6f176dd8989763ba19b0db18f88d682dc1fa9cfd..f0bd6b4747706f46ba25f01dc06c42ede3f07f61 100644
+--- a/src/shared/types.ts
++++ b/src/shared/types.ts
+@@ -875,6 +875,11 @@ export interface IpcInvokeMap {
+     res: TopSetResult | { canceled: true }
+   }
+   'custom:topSetGetDir': { req: void; res: { dir: string } }
++  /** [custom] 미생성인 씬이 바뀌기 전 내용 — 바뀐 태그를 노랗게 칠하는 기준 (없으면 null) */
++  'custom:sceneBase': {
++    req: { id: number }
++    res: { prompt: string; negativePrompt: string } | null
++  }
+   /** 기본 폴더 고르기 (다이얼로그) */
+   'custom:topSetPickDir': { req: void; res: { dir: string; canceled?: boolean } }
+   /** 이 프리셋의 대표 세트 폴더 열기 (아직 없으면 기본 폴더) */
+diff --git a/tests/custom-changed-tags.test.ts b/tests/custom-changed-tags.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..c42cfd4e5dc7e30e72ae12cf46a09244e5e226a4
+--- /dev/null
++++ b/tests/custom-changed-tags.test.ts
+@@ -0,0 +1,69 @@
++// @vitest-environment happy-dom
++import { act, createElement as h } from 'react'
++import { createRoot, type Root } from 'react-dom/client'
++import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
++import type { NaisApi } from '../src/preload/index'
++import { ChangedTagsNote } from '../src/renderer/src/components/custom-changed-tags'
++import { PromptEditor } from '../src/renderer/src/components/prompt-editor'
++import { changedTagRanges } from '../src/renderer/src/lib/custom-prompt-diff'
++import { useLanguageStore } from '../src/renderer/src/lib/i18n'
++
++// [custom] 미생성 씬 — 바뀐 태그 노란 칠과 빠진 태그 줄
++
++describe('custom: changed tag marks', () => {
++  let root: Root
++  let container: HTMLDivElement
++
++  beforeEach(() => {
++    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
++    window.nais = {
++      invoke: vi.fn(async () => ({ counts: [0] })),
++      on: () => () => {}
++    } as unknown as NaisApi
++    useLanguageStore.setState({ lang: 'ko' })
++    container = document.createElement('div')
++    document.body.append(container)
++    root = createRoot(container)
++  })
++
++  afterEach(async () => {
++    await act(async () => root.unmount())
++    container.remove()
++    vi.unstubAllGlobals()
++  })
++
++  /** 노랗게 칠한 글자들 (가중치·찾기 층은 style에 노란 밑줄이 없다) */
++  const yellow = (): string[] =>
++    [...container.querySelectorAll('span')]
++      .filter((s) => s.getAttribute('style')?.includes('inset 0 -2px 0 rgb(234 179 8)'))
++      .map((s) => s.textContent ?? '')
++
++  it('paints the changed tags in the editor and nothing without marks', async () => {
++    const value = 'girl, grin, outdoors'
++    await act(async () =>
++      root.render(
++        h(PromptEditor, {
++          value,
++          onValueChange: () => {},
++          marks: changedTagRanges(value, 'girl, smile, outdoors')
++        })
++      )
++    )
++    expect(yellow()).toEqual(['grin'])
++    await act(async () => root.render(h(PromptEditor, { value, onValueChange: () => {} })))
++    expect(yellow()).toEqual([])
++  })
++
++  it('explains the yellow and lists removed tags under the editor', async () => {
++    await act(async () =>
++      root.render(h(ChangedTagsNote, { current: 'girl, grin', base: 'girl, smile, blush' }))
++    )
++    expect(container.textContent).toContain('노란색 = 마지막으로 뽑은 뒤 바뀐 태그')
++    expect([...container.querySelectorAll('s')].map((s) => s.textContent)).toEqual([
++      'smile',
++      'blush'
++    ])
++    await act(async () => root.render(h(ChangedTagsNote, { current: 'girl', base: 'girl' })))
++    expect(container.textContent).toBe('')
++  })
++})
+diff --git a/tests/custom-prompt-diff.test.ts b/tests/custom-prompt-diff.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..7bb5239beb20de7920500536ac5edbe2bc3e09e1
+--- /dev/null
++++ b/tests/custom-prompt-diff.test.ts
+@@ -0,0 +1,62 @@
++import { describe, expect, it } from 'vitest'
++import {
++  changedTagRanges,
++  markedSegments,
++  removedTags,
++  tagPieces
++} from '../src/renderer/src/lib/custom-prompt-diff'
++
++// [custom] 미생성 씬에서 마지막으로 뽑은 뒤 바뀐 태그 찾기
++
++const marked = (current: string, base: string): string[] =>
++  changedTagRanges(current, base).map((r) => current.slice(r.start, r.end))
++
++describe('custom: changed tags', () => {
++  it('splits on commas and line breaks, ignoring surrounding spaces', () => {
++    expect(tagPieces(' girl,  smile ,\nblue  eyes,, ').map((p) => p.text)).toEqual([
++      'girl',
++      'smile',
++      'blue  eyes'
++    ])
++  })
++
++  it('marks only tags that were not there before', () => {
++    expect(marked('girl, grin, blush, outdoors', 'girl, smile, outdoors')).toEqual([
++      'grin',
++      'blush'
++    ])
++    expect(marked('girl, smile', 'girl, smile')).toEqual([])
++    expect(marked('girl,smile', 'girl ,  smile')).toEqual([]) // 공백만 다르면 같다
++    expect(marked('blue  eyes', 'blue eyes')).toEqual([])
++  })
++
++  it('treats weight and bracket changes as changes', () => {
++    expect(marked('1.3::smile, happy::, {blush}', '1.2::smile, happy::, blush')).toEqual([
++      '1.3::smile',
++      '{blush}'
++    ])
++  })
++
++  it('counts repeated tags', () => {
++    expect(marked('smile, smile', 'smile')).toEqual(['smile'])
++    expect(removedTags('smile', 'smile, smile')).toEqual(['smile'])
++  })
++
++  it('lists removed tags in their old spelling', () => {
++    expect(removedTags('girl, grin', 'girl, smile, 1.2::blush::')).toEqual([
++      'smile',
++      '1.2::blush::'
++    ])
++  })
++
++  it('cuts the text into marked and plain segments that cover it all', () => {
++    const text = 'girl, grin, outdoors'
++    const segments = markedSegments(text, changedTagRanges(text, 'girl, outdoors'))
++    expect(segments.map((s) => [text.slice(s.start, s.end), s.marked])).toEqual([
++      ['girl, ', false],
++      ['grin', true],
++      [', outdoors', false]
++    ])
++    expect(segments.map((s) => text.slice(s.start, s.end)).join('')).toBe(text)
++  })
++})
+diff --git a/tests/custom-scene-base.integration.ts b/tests/custom-scene-base.integration.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..79b8b0e7e916041dd70185ffae4977053d95357a
+--- /dev/null
++++ b/tests/custom-scene-base.integration.ts
+@@ -0,0 +1,120 @@
++import { mkdtempSync, rmSync, writeFileSync } from 'fs'
++import { tmpdir } from 'os'
++import { join } from 'path'
++import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
++import { closeDb, getDb, initDb } from '../src/main/db'
++import {
++  clearScenePending,
++  createPreset,
++  createScene,
++  getSceneBase,
++  importScenesJson,
++  updateScene
++} from '../src/main/scenes/repo'
++
++// [custom] 미생성 씬의 기준 내용 — 마지막으로 뽑았거나 확인한 때의 프롬프트 (바뀐 태그 표시용)
++const environment = vi.hoisted(() => ({ directory: '', importFile: '' }))
++vi.mock('electron', () => ({
++  app: { getPath: () => environment.directory, getLocale: () => 'ko' },
++  BrowserWindow: { getFocusedWindow: () => null, getAllWindows: () => [] },
++  dialog: {
++    showOpenDialog: async () => ({ canceled: false, filePaths: [environment.importFile] })
++  }
++}))
++
++beforeEach(() => {
++  environment.directory = mkdtempSync(join(tmpdir(), 'nais3-custom-base-'))
++  environment.importFile = join(environment.directory, 'scenes.json')
++  initDb()
++})
++afterEach(() => {
++  closeDb()
++  rmSync(environment.directory, { recursive: true, force: true })
++})
++
++/** 시간 경과 흉내 — 변경 시각과 이미지를 한 시간 과거로 민다 (SQLite 시각은 초 단위) */
++function passTime(): void {
++  const db = getDb()
++  db.exec("UPDATE custom_scene_marks SET changed_at = datetime(changed_at, '-1 hour')")
++  db.exec("UPDATE images SET created_at = datetime(created_at, '-1 hour')")
++}
++function generate(sceneId: number): void {
++  passTime()
++  getDb()
++    .prepare(
++      `INSERT INTO images (file_path, payload_json, kind, scene_id) VALUES (?, '{}', 'scene', ?)`
++    )
++    .run(join(environment.directory, `img-${sceneId}-${Math.random()}.png`), sceneId)
++}
++
++describe('custom: base content of a pending scene', () => {
++  it('keeps the content the last image was made from while the scene stays pending', () => {
++    const id = createScene(createPreset('p'), 'a')
++    updateScene(id, { prompt: 'girl, smile', negativePrompt: 'bad hands' })
++    generate(id)
++    expect(getSceneBase(id)).toBeNull() // 뽑은 그림과 내용이 같다
++
++    updateScene(id, { prompt: 'girl, grin' })
++    expect(getSceneBase(id)).toEqual({ prompt: 'girl, smile', negativePrompt: 'bad hands' })
++    updateScene(id, { prompt: 'girl, grin, blush', negativePrompt: 'bad hands, blurry' })
++    // 미생성인 동안 더 고쳐도 기준은 처음 그대로 — 바뀐 태그가 쌓여 보인다
++    expect(getSceneBase(id)).toEqual({ prompt: 'girl, smile', negativePrompt: 'bad hands' })
++
++    generate(id)
++    expect(getSceneBase(id)).toBeNull() // 다시 뽑으면 표시도 끝
++    updateScene(id, { prompt: 'girl' })
++    expect(getSceneBase(id)?.prompt).toBe('girl, grin, blush') // 새 기준 = 다시 뽑은 때 내용
++  })
++
++  it('has no base for a scene that was never generated', () => {
++    const id = createScene(createPreset('p'), 'a')
++    updateScene(id, { prompt: 'one' })
++    updateScene(id, { prompt: 'two' })
++    expect(getSceneBase(id)).toBeNull()
++  })
++
++  it('starts from the checked content after the mark was turned off by hand', () => {
++    const id = createScene(createPreset('p'), 'a')
++    updateScene(id, { prompt: 'one' })
++    generate(id)
++    updateScene(id, { prompt: 'two' })
++    clearScenePending(id)
++    expect(getSceneBase(id)).toBeNull()
++    updateScene(id, { prompt: 'three' })
++    expect(getSceneBase(id)?.prompt).toBe('two')
++  })
++
++  it('records the base when a scene JSON import changes a generated scene', async () => {
++    const preset = createPreset('p')
++    const id = createScene(preset, 'a')
++    updateScene(id, { prompt: 'old tags', negativePrompt: 'old neg' })
++    generate(id)
++    writeFileSync(
++      environment.importFile,
++      JSON.stringify({
++        version: 1,
++        scenes: [{ name: 'a', prompt: 'new tags', negativePrompt: 'old neg' }]
++      }),
++      'utf-8'
++    )
++    await importScenesJson(preset)
++    expect(getSceneBase(id)).toEqual({ prompt: 'old tags', negativePrompt: 'old neg' })
++  })
++
++  it('adds the base columns to a marks table made by an older version', () => {
++    closeDb()
++    initDb()
++    const db = getDb()
++    db.exec('DROP TABLE IF EXISTS custom_scene_marks')
++    db.exec(`CREATE TABLE custom_scene_marks (
++      scene_id INTEGER PRIMARY KEY, changed_at TEXT NOT NULL DEFAULT (datetime('now')),
++      acked INTEGER NOT NULL DEFAULT 0)`)
++    closeDb()
++    initDb() // 새 연결 → 처음 쓸 때 칸을 더한다
++    const id = createScene(createPreset('p'), 'a')
++    updateScene(id, { prompt: 'one' })
++    generate(id)
++    updateScene(id, { prompt: 'two' })
++    expect(getSceneBase(id)?.prompt).toBe('one')
++  })
++})

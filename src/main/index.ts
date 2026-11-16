@@ -38,6 +38,7 @@ import { localPromptMetadata } from './nai/payload'
 import { prepareCharRefs, prepareVibes } from './refs/prepare'
 import { GenerationQueue } from './queue/generation-queue'
 import { laneSelection, parallelLanes, parallelTarget, refreshLaneBalance } from './custom/parallel'
+import { guardClaudeChatGuest } from './custom/claude-chat'
 import { getPresetName, getScene } from './scenes/repo'
 
 // 앱 이름 (dev 메뉴바·dock에서 'Electron' 대신 표시). 패키징 앱은 productName 사용
@@ -105,6 +106,7 @@ function createWindow(): void {
     webPreferences.contextIsolation = true
   })
   mainWindow.webContents.on('did-attach-webview', (_event, webContents) => {
+    if (guardClaudeChatGuest(webContents)) return // [custom] Claude 창: 새 창 링크는 기본 브라우저로
     webContents.setWindowOpenHandler(({ url }) => {
       // 같은 뷰에서 열 수 있는 링크는 그대로, window.open류는 현재 뷰에서 로드
       if (url.startsWith('http')) void webContents.loadURL(url)

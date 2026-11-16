@@ -3,6 +3,7 @@ import { applySceneRequest } from '@shared/scene-request'
 import { WATCH_AUTOGEN_LIMIT, canAutoGenerate } from '@shared/custom-watch'
 import { toast } from './toast-store'
 import { t } from '../lib/i18n'
+import { topSetSummary } from '../lib/custom-top-set'
 import { recordNav } from '../lib/nav-history'
 import type { MessageId } from '@shared/i18n'
 import type {
@@ -806,10 +807,21 @@ export function bindSceneEvents(): () => void {
     void (event.presetCreated ? st.loadPresets() : Promise.resolve()).then(() => st.load())
     void autoGenerateWatched(event.presetId, event.sceneIds ?? [])
   })
+  // [custom] 감시 폴더의 요청 파일을 처리함 (Claude가 넣은 대표 세트 받기 요청 등)
+  const offRequest = window.nais.on('custom:watchRequestDone', (event) => {
+    for (const result of event.exports)
+      toast(
+        t('ui.customRequestDoneValue', event.file, topSetSummary(result)),
+        result.failed > 0 ? 'error' : 'success'
+      )
+    if (event.errors.length > 0)
+      toast(t('ui.customRequestFailedValue', event.file, event.errors.join(' / ')), 'error')
+  })
   return () => {
     clearTimeout(timer)
     offImages()
     offReservations()
     offWatch()
+    offRequest()
   }
 }

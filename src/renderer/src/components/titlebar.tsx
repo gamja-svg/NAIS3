@@ -5,6 +5,7 @@ import {
   Loader2,
   Minus,
   PanelLeft,
+  MessageCircle,
   PanelRight,
   Settings,
   Square,
@@ -28,6 +29,7 @@ import {
 import { inpaintingModelFor, modelCapabilities } from '@shared/nai-models'
 import { snapNaiResolution } from '@shared/nai-resolution'
 import { PageNav } from './page-nav'
+import { useClaudePanelStore } from '../stores/custom-claude-panel-store'
 import { ThemeToggle } from './theme-toggle'
 
 const isMac = typeof navigator !== 'undefined' && navigator.platform.toLowerCase().includes('mac')
@@ -230,6 +232,18 @@ function PanelToggle({ side }: { side: 'left' | 'right' }): React.JSX.Element {
   )
 }
 
+/** [custom] Claude 창 열기/닫기 — 열림 상태는 여기서만 구독한다 */
+function ClaudeToggle(): React.JSX.Element {
+  const t = useT()
+  const open = useClaudePanelStore((s) => s.open)
+  const toggle = useClaudePanelStore((s) => s.toggle)
+  return (
+    <BarButton onClick={toggle} active={open} title={t('ui.customClaudePanel')}>
+      <MessageCircle size={15} />
+    </BarButton>
+  )
+}
+
 /** 개발 서버로 띄운 창임을 표시 (배포 빌드엔 없음) */
 function DevBadge(): React.JSX.Element | null {
   if (!import.meta.env.DEV) return null
@@ -371,6 +385,7 @@ export function Titlebar(): React.JSX.Element {
       {isMac && <OpusUsageChip />}
       {isMac && <AnlasChips balance={anlasBalance} cost={anlasCost} />}
 
+      <ClaudeToggle />
       <PanelToggle side="right" />
       {isMac && (
         <div className="no-drag mx-0.5">

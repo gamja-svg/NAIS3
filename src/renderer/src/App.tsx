@@ -51,6 +51,8 @@ import { useThemeStore } from './stores/theme-store'
 import { bindDragScroll, hydrateTouchMode } from './lib/custom-touch-mode'
 import { useFolderGroupsStore } from './stores/custom-folder-groups-store'
 import { bindParallelEvents, useParallelStore } from './stores/custom-parallel-store'
+import { ClaudePanel } from './components/custom-claude-panel'
+import { useClaudePanelStore } from './stores/custom-claude-panel-store'
 
 // 좌우 패널 접기/펴기 — 페이지 넘김(SidePageHost)과 같은 연출 (lib/page-turn).
 // 메인 영역이 가장자리 그림자를 달고 넓어지며 패널을 덮고, 패널은 바깥쪽으로 조금 밀리며 작아지고 흐려진다.
@@ -109,6 +111,7 @@ export default function App(): React.JSX.Element {
         useCharactersStore.getState().load(),
         useFolderGroupsStore.getState().load(), // [custom] 상위 폴더
         useParallelStore.getState().load(), // [custom] 여러 계정으로 동시 생성
+        useClaudePanelStore.getState().hydrate(), // [custom] Claude 창
         useFragmentsStore.getState().load(),
         useVibesStore.getState().load(),
         useCharRefsStore.getState().load(),
@@ -153,9 +156,10 @@ export default function App(): React.JSX.Element {
         {/* 새 설치 첫 실행 — 작업 영역 자리에 표시 (타이틀바의 창 컨트롤은 그대로).
             스플래시가 걷힐 때 마운트해야 첫 등장 애니메이션이 가려지지 않는다 */}
         {onboardingOpen && ready && OnboardingView && <OnboardingView />}
-        {/* 온보딩을 마치면 카드가 빠진 뒤 작업 화면이 페이드인 (평소 시작에는 애니메이션 없음) */}
+        {/* 온보딩을 마치면 카드가 빠진 뒤 작업 화면이 페이드인 (평소 시작에는 애니메이션 없음).
+            [custom] 가로로 놓아 오른쪽에 Claude 창을 붙인다 (넘기는 페이지가 열려도 그대로 쓸 수 있게) */}
         <motion.div
-          className={cn('flex min-h-0 flex-1 flex-col', onboardingOpen && 'hidden')}
+          className={cn('flex min-h-0 flex-1', onboardingOpen && 'hidden')}
           initial={false}
           animate={{ opacity: onboardingOpen ? 0 : 1 }}
           transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
@@ -185,6 +189,7 @@ export default function App(): React.JSX.Element {
             </main>
             <RightPanel />
           </SidePageHost>
+          <ClaudePanel />
         </motion.div>
         <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
         <TextPromptHost />

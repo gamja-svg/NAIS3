@@ -148,7 +148,7 @@ export function SceneDetail({ scene }: { scene: Scene }): React.JSX.Element {
   }, [scene.id, images.length, imagesTotal, imagesLoading, loadImages])
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col rounded-xl border border-line bg-surface">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col rounded-xl border border-line bg-surface">
       {/* 헤더 */}
       <div className="flex items-center gap-2 border-b border-line px-3 py-2">
         <Button size="sm" variant="ghost" className="gap-1" onClick={() => select(null)}>

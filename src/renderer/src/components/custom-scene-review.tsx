@@ -5,6 +5,7 @@ import type { Scene } from '@shared/types'
 import { imageUrl } from '../lib/constants'
 import { useT } from '../lib/i18n'
 import { cn } from '../lib/utils'
+import { useClaudePanelStore } from '../stores/custom-claude-panel-store'
 import { useSceneFrame, useSceneGenerating } from '../stores/custom-parallel-store'
 import { useGenerationStore } from '../stores/generation-store'
 import { useScenesStore } from '../stores/scenes-store'
@@ -20,10 +21,25 @@ const TAP_MS = 450
 const DOUBLE_TAP_MS = 450
 const DOUBLE_TAP_PX = 40
 
+/** 그림이 실제로 그려진 칸 안인지 — object-contain의 남는 여백은 그림 밖으로 친다 */
+function insidePicture(img: HTMLImageElement, x: number, y: number): boolean {
+  const box = img.getBoundingClientRect()
+  if (!box.width || !box.height) return true // 크기를 잴 수 없으면(그리기 전) 그림으로 친다
+  let { left, top, width, height } = box
+  if (img.naturalWidth && img.naturalHeight) {
+    const scale = Math.min(box.width / img.naturalWidth, box.height / img.naturalHeight)
+    width = img.naturalWidth * scale
+    height = img.naturalHeight * scale
+    left += (box.width - width) / 2
+    top += (box.height - height) / 2
+  }
+  return x >= left && x <= left + width && y >= top && y <= top + height
+}
+
 /**
  * [custom] 검수 모드 — 프리셋의 씬 대표 이미지(카드에 보이는 그림)를 크게 한 장씩 넘겨 본다.
  * ←/→·휠·스와이프·화면 버튼으로 넘기고, G·그림 더블탭으로 그 씬을 바로 다시 뽑기(1장),
- * R로 다시 뽑기 예약(+1), Esc로 닫는다. 다시 뽑는 동안은 진행 화면을 보여 주고, 다 되면 새 그림이
+ * R로 다시 뽑기 예약(+1), Esc·그림 밖 누르기로 닫는다. 다시 뽑는 동안은 진행 화면을 보여 주고, 다 되면 새 그림이
  * 대표 이미지가 된다 (즐겨찾기가 있는 씬은 즐겨찾기가 대표라 그대로). 이미지가 없는 씬은 건너뛴다.
  * 넘겨 보는 씬 목록은 열 때 정해 둔다 — 미생성만 보기에서 다시 뽑아 미생성이 풀려도 빠지지 않게.
  * 닫으면 마지막으로 본 씬 카드로 목록을 데려간다.
@@ -37,6 +53,8 @@ export function SceneReview({ scenes }: { scenes: Scene[] }): React.JSX.Element 
   const presetName = useScenesStore(
     (s) => s.presets.find((p) => p.id === s.activePresetId)?.name ?? ''
   )
+  // Claude 창이 열려 있으면 그 자리는 비워 둔다 (검수하면서 대화할 수 있게)
+  const claudeWidth = useClaudePanelStore((s) => (s.open ? s.width : 0))
 
   // 열 때의 씬 순서를 고정하고, 내용(대표 이미지·미생성 등)은 최신 값으로 본다
   const [reviewIds] = useState(() => scenes.map((s) => s.id))
@@ -146,11 +164,19 @@ export function SceneReview({ scenes }: { scenes: Scene[] }): React.JSX.Element 
     }
   }, [prevPath, nextPath])
 
-  // 스와이프 (가로로 충분히, 세로보다 확실히 많이 움직였을 때만) · 그림 더블탭 = 바로 다시 뽑기
-  const swipe = useRef<{ x: number; y: number; id: number; at: number; stage: boolean } | null>(
-    null
-  )
+  // 스와이프 (가로로 충분히, 세로보다 확실히 많이 움직였을 때만) · 그림 더블탭 = 바로 다시 뽑기 ·
+  // 그림 밖 탭 = 닫기
+  const swipe = useRef<{
+    x: number
+    y: number
+    id: number
+    at: number
+    picture: boolean
+    outside: boolean
+  } | null>(null)
   const lastTap = useRef<{ x: number; y: number; at: number; sceneId: number } | null>(null)
+  // 그림 밖 탭은 이어지는 click에서 닫는다 — 떼는 순간 닫으면 그 click이 아래 씬 카드로 떨어져 상세가 열린다
+  const closeOnClick = useRef(false)
   // 더블탭한 자리에 잠깐 띄우는 표시 (눌렸다는 걸 바로 알 수 있게)
   const [flash, setFlash] = useState<{ x: number; y: number; key: number; fading: boolean } | null>(
     null
@@ -163,11 +189,17 @@ export function SceneReview({ scenes }: { scenes: Scene[] }): React.JSX.Element 
     )
     setTimeout(() => setFlash((f) => (f?.key === key ? null : f)), 800)
   }
-  /** 그림 자리(버튼 제외)를 눌렀는지 */
-  const onStage = (target: EventTarget | null): boolean =>
+  /** 그림(대표 이미지·진행 화면) 위를 눌렀는지 */
+  const onPicture = (e: React.PointerEvent): boolean =>
+    e.target instanceof HTMLImageElement &&
+    !!e.target.closest('[data-review-stage]') &&
+    insidePicture(e.target, e.clientX, e.clientY)
+  /** 그림 밖 빈 곳을 눌렀는지 — 버튼, 열린 메뉴(우클릭 메뉴는 화면 밖 포털이라 여기 들지 않는다)는 빼고 */
+  const onBackdrop = (target: EventTarget | null): boolean =>
     target instanceof Element &&
-    !!target.closest('[data-review-stage]') &&
-    !target.closest('button')
+    !!overlayRef.current?.contains(target) &&
+    !target.closest('button, a, input, textarea, select') &&
+    !document.querySelector('[role="menu"]')
 
   if (!scene) return null
   const hasPrev = index > 0
@@ -179,14 +211,18 @@ export function SceneReview({ scenes }: { scenes: Scene[] }): React.JSX.Element 
     <div
       ref={overlayRef}
       className="fixed inset-0 z-50 flex select-none flex-col bg-black/90 text-white backdrop-blur-sm"
+      style={{ right: claudeWidth }}
       onPointerDown={(e) => {
+        closeOnClick.current = false
         if (e.button !== 0) return
+        const picture = onPicture(e)
         swipe.current = {
           x: e.clientX,
           y: e.clientY,
           id: e.pointerId,
           at: performance.now(),
-          stage: onStage(e.target)
+          picture,
+          outside: !picture && onBackdrop(e.target)
         }
       }}
       onPointerUp={(e) => {
@@ -201,9 +237,10 @@ export function SceneReview({ scenes }: { scenes: Scene[] }): React.JSX.Element 
           return
         }
         const now = performance.now()
-        const tapped = start.stage && Math.hypot(dx, dy) <= TAP_MOVE_PX && now - start.at <= TAP_MS
-        if (!tapped) {
+        const tapped = Math.hypot(dx, dy) <= TAP_MOVE_PX && now - start.at <= TAP_MS
+        if (!tapped || !start.picture) {
           lastTap.current = null
+          closeOnClick.current = tapped && start.outside
           return
         }
         const prev = lastTap.current
@@ -222,6 +259,12 @@ export function SceneReview({ scenes }: { scenes: Scene[] }): React.JSX.Element 
       }}
       onPointerCancel={() => {
         swipe.current = null
+        closeOnClick.current = false
+      }}
+      onClick={() => {
+        if (!closeOnClick.current) return
+        closeOnClick.current = false
+        close()
       }}
     >
       <header className="flex shrink-0 items-center gap-2 px-4 py-3">

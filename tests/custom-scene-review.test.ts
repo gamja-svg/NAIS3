@@ -236,6 +236,54 @@ describe('custom: scene review double tap and fixed list', () => {
     expect(enqueued).toEqual([])
   })
 
+  it('closes on a tap outside the picture and brings the list back to that scene', async () => {
+    await act(async () => root.render(h(SceneReview, { scenes: [pending(1), pending(2)] })))
+    await tap(document.body.querySelector('main[data-review-stage]')!, 20, 300)
+    expect(useScenesStore.getState().reviewSceneId).toBeNull()
+    expect(useScenesStore.getState().focusSceneId).toBe(1)
+    expect(enqueued).toEqual([])
+  })
+
+  it('stays open for the picture, buttons, long presses, swipes and while a menu is open', async () => {
+    await act(async () => root.render(h(SceneReview, { scenes: [pending(1), pending(2)] })))
+    const stage = document.body.querySelector('main[data-review-stage]')!
+    const header = document.body.querySelector('header')!
+    await tap(picture())
+    now += 600
+    await tap(stage, 20, 300, 800) // 길게 누르기
+    await tap(stage, 20, 300, 60, 200) // 끌기 (첫 장이라 넘어가지 않음)
+    await tap(document.body.querySelector('button[aria-label="다음"]')!, 900, 400)
+    expect(title()).toBe('씬 2')
+    const menu = document.createElement('div')
+    menu.setAttribute('role', 'menu')
+    document.body.append(menu)
+    await tap(header, 300, 20)
+    menu.remove()
+    expect(useScenesStore.getState().reviewSceneId).toBe(2)
+    await tap(header, 300, 20) // 메뉴가 닫힌 뒤 머리줄 빈 곳 = 그림 밖
+    expect(useScenesStore.getState().reviewSceneId).toBeNull()
+  })
+
+  it('treats the empty sides of a letterboxed live frame as outside the picture', async () => {
+    useGenerationStore.setState({
+      previewPng: 'LIVE',
+      queue: { items: [queueItem('a', 'generating', 1)], running: true, delayMs: 0 }
+    })
+    await act(async () => root.render(h(SceneReview, { scenes: [pending(1), pending(2)] })))
+    const live = picture() as HTMLImageElement
+    expect(live.getAttribute('src')).toBe('data:image/png;base64,LIVE')
+    // 400×200 칸에 정사각 그림 → 가운데 200×200만 그림, 좌우 100px씩 빈칸
+    Object.defineProperty(live, 'naturalWidth', { value: 100 })
+    Object.defineProperty(live, 'naturalHeight', { value: 100 })
+    live.getBoundingClientRect = () =>
+      ({ left: 0, top: 0, width: 400, height: 200, right: 400, bottom: 200, x: 0, y: 0 }) as DOMRect
+    await tap(live, 200, 100)
+    expect(useScenesStore.getState().reviewSceneId).toBe(1)
+    now += 600
+    await tap(live, 40, 100)
+    expect(useScenesStore.getState().reviewSceneId).toBeNull()
+  })
+
   it('keeps a scene in the review after it stops being pending', async () => {
     await act(async () => root.render(h(SceneReview, { scenes: [pending(1), pending(2)] })))
     // 다시 뽑기가 끝나 미생성이 풀림 → 미생성만 보기 목록에서는 빠진다

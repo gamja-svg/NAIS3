@@ -58,6 +58,8 @@ import { ReserveCount } from './reserve-count'
 import { SceneCastDialog } from './scene-cast-dialog'
 import { SceneDetail } from './scene-detail'
 import { SceneReview } from './custom-scene-review'
+import { TopSetButton } from './custom-top-set'
+import { noteSceneCardClick, useSceneCardDoubleClick } from '../lib/custom-scene-double-click'
 import { SortableList, SortableRow } from './sortable-list'
 import { Button } from './ui/button'
 import {
@@ -81,6 +83,7 @@ export function SceneMode(): React.JSX.Element {
   const scenes = useScenesStore((s) => s.scenes)
   const selectedId = useScenesStore((s) => s.selectedId)
   const loadPresets = useScenesStore((s) => s.loadPresets)
+  useSceneCardDoubleClick() // [custom] 카드 더블클릭(더블탭) = 그 씬부터 검수 모드
 
   useEffect(() => {
     void loadPresets()
@@ -484,8 +487,8 @@ function SceneGrid(): React.JSX.Element {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col rounded-xl border border-line bg-surface">
-      {/* 툴바 — 한 행: 프리셋 드롭다운 + 아이콘(툴팁) */}
-      <div className="flex items-center gap-1 border-b border-line px-2 py-1.5">
+      {/* 툴바 — 한 행: 프리셋 드롭다운 + 아이콘(툴팁). [custom] 좁으면 두 줄로 (Claude 창을 열어도 잘리지 않게) */}
+      <div className="flex flex-wrap items-center gap-1 border-b border-line px-2 py-1.5">
         <PresetDropdown />
         <CastSelector />
         <div className="mx-1 h-5 w-px bg-line" />
@@ -496,6 +499,8 @@ function SceneGrid(): React.JSX.Element {
           tip={t('ui.exportZip')}
           onClick={() => void exportZip()}
         />
+        {/* [custom] 대표 세트 받기 — 씬마다 대표 이미지 1장씩 폴더로 */}
+        <TopSetButton presetId={activePresetId} />
         <IconBtn
           icon={<Pencil size={16} />}
           tip={t('ui.editMode')}
@@ -979,13 +984,15 @@ const SceneCard = memo(function SceneCard({
             sortable.isDragging && 'shadow-xl'
           )}
           style={{ aspectRatio: CARD_ASPECT[cardOrientation], ...dndStyle(sortable) }}
-          onClick={(e) =>
-            editMode
-              ? e.shiftKey
-                ? rangeSelect(scene.id)
-                : toggleSelected(scene.id)
-              : select(scene.id)
-          }
+          onClick={(e) => {
+            if (editMode) {
+              if (e.shiftKey) rangeSelect(scene.id)
+              else toggleSelected(scene.id)
+              return
+            }
+            noteSceneCardClick(scene, e) // [custom] 곧바로 한 번 더 누르면 검수 모드
+            select(scene.id)
+          }}
         >
           {/* 배경 이미지 (생성 중이면 스트리밍 프리뷰) */}
           {src ? (

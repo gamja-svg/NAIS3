@@ -4,6 +4,7 @@ import type { WatchFolderConfig, WatchFolderEvent, WatchFolderFailure } from '..
 import { getSetting, setSetting } from '../db/settings'
 import { parseSceneImport } from '../scenes/import-formats'
 import { applyImportedScenes, createPreset, listPresets } from '../scenes/repo'
+import { isWatchRequestFile, isWatchResultFile } from './top-set'
 
 /**
  * [custom] 감시 폴더 — 지정한 폴더(하위 폴더 포함)에 씬 JSON이 새로 생기거나 바뀌면 자동으로 불러온다.
@@ -18,6 +19,8 @@ import { applyImportedScenes, createPreset, listPresets } from '../scenes/repo'
  *   파일 이름만으로는 프리셋을 새로 만들지 않는다.
  * - fs.watch 대신 주기 확인: 동기화 폴더에서도 같게 동작하고, 쓰는 도중인 파일을 크기·수정 시각이
  *   두 번 연속 같을 때까지 기다리기 쉽다.
+ * - `*.request.json`은 씬이 아니라 요청(대표 세트 받기 등)으로 넘기고, 그 결과로 남기는
+ *   `*.result.json`은 읽지 않는다.
  */
 
 const ENABLED_KEY = 'custom_watch_enabled'
@@ -233,13 +236,15 @@ export function scanWatchFolder(): WatchFolderEvent[] {
   }
   const events: WatchFolderEvent[] = []
   for (const { file, signature, touched } of found) {
+    if (isWatchResultFile(file)) continue
     if (touched <= since || processed[file] === signature) continue
     if (seen.get(file) !== signature) {
       seen.set(file, signature)
       continue
     }
     seen.delete(file)
-    events.push(importWatchFile(dir, file))
+    if (isWatchRequestFile(file)) requestHandler?.(dir, file)
+    else events.push(importWatchFile(dir, file))
     processed[file] = signature
     dirty = true
   }
@@ -248,6 +253,12 @@ export function scanWatchFolder(): WatchFolderEvent[] {
 }
 
 let timer: ReturnType<typeof setInterval> | undefined
+/** 요청 파일(`*.request.json`)을 받을 곳 — 다 써진 요청마다 한 번 부른다 */
+let requestHandler: ((dir: string, file: string) => void) | undefined
+
+export function setWatchRequestHandler(handler?: (dir: string, file: string) => void): void {
+  requestHandler = handler
+}
 
 export function startWatchFolder(notify: (event: WatchFolderEvent) => void): void {
   stopWatchFolder()

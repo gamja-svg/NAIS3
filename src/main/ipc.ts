@@ -127,8 +127,16 @@ import {
   getWatchFolderConfig,
   setWatchFolderDir,
   setWatchFolderEnabled,
+  setWatchRequestHandler,
   startWatchFolder
 } from './custom/watch-folder'
+import {
+  defaultTopSetDest,
+  exportTopSet,
+  getTopSetDir,
+  runWatchRequest,
+  setTopSetDir
+} from './custom/top-set'
 import {
   arrangeFolderGroups,
   createFolderGroup,
@@ -612,6 +620,45 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
     return first ? setWatchFolderEnabled(true) : getWatchFolderConfig()
   })
   handle('scenes:exportZip', async ({ presetId }) => ({ count: await exportZip(presetId) }))
+  // [custom] 대표 세트 받기 — 한 번 누르면 기본 폴더 안 프리셋 이름 폴더로
+  const pickTopSetDir = async (): Promise<string | null> => {
+    const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
+    const result = await showOpenDialog(win, {
+      title: t('ui.customTopSetChooseDefault'),
+      defaultPath: getTopSetDir() || undefined,
+      properties: ['openDirectory', 'createDirectory']
+    })
+    const dir = result.canceled ? undefined : result.filePaths[0]
+    if (!dir) return null
+    setTopSetDir(dir)
+    return dir
+  }
+  handle('custom:topSetGetDir', () => ({ dir: getTopSetDir() }))
+  handle('custom:topSetPickDir', async () => {
+    const dir = await pickTopSetDir()
+    return dir ? { dir } : { dir: getTopSetDir(), canceled: true }
+  })
+  handle('custom:topSetExport', async ({ presetId, pick }) => {
+    if (pick) {
+      const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
+      const result = await showOpenDialog(win, {
+        title: t('ui.customTopSetChooseOther'),
+        properties: ['openDirectory', 'createDirectory']
+      })
+      const dir = result.canceled ? undefined : result.filePaths[0]
+      return dir ? exportTopSet(presetId, dir) : { canceled: true as const }
+    }
+    if (!getTopSetDir() && !(await pickTopSetDir())) return { canceled: true as const }
+    const dest = defaultTopSetDest(presetId)
+    if (!dest) throw new Error(t('ui.customTopSetPresetMissing'))
+    return exportTopSet(presetId, dest)
+  })
+  handle('custom:topSetOpenDir', async ({ presetId }) => {
+    const dest = defaultTopSetDest(presetId)
+    const target = dest && existsSync(dest) ? dest : getTopSetDir()
+    if (!target || !existsSync(target)) return { ok: false }
+    return { ok: (await shell.openPath(target)) === '' }
+  })
 
   handle('settings:get', ({ key }) => ({ value: getSetting(key) }))
   handle('settings:set', ({ key, value }) => {
@@ -1053,6 +1100,12 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
 
   bindSceneReservationRecovery(ctx.queue, () => broadcast('scenes:reservationsChanged', {}))
   startWatchFolder((event) => broadcast('custom:watchImported', event))
+  // [custom] 감시 폴더의 요청 파일 (Claude가 원하는 폴더로 대표 세트 받기 등)
+  setWatchRequestHandler((dir, file) => {
+    void runWatchRequest(dir, file)
+      .then((event) => broadcast('custom:watchRequestDone', event))
+      .catch((e: unknown) => console.error('[custom] watch request failed', e))
+  })
   ctx.queue.on('changed', (status) => broadcast('queue:changed', status))
   ctx.queue.on('halted', (halt: QueueHalt) => broadcast('queue:halted', halt))
 }

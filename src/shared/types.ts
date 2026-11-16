@@ -488,6 +488,37 @@ export interface WatchFolderEvent {
   sceneIds?: number[]
 }
 
+/** [custom] 대표 세트 받기 결과 — 씬마다 카드에 보이는 대표 이미지(최신 즐겨찾기, 없으면 최신) 한 장씩 */
+export interface TopSetResult {
+  presetId: number
+  presetName: string
+  /** 받은 폴더 */
+  dir: string
+  /** 대표 이미지가 있는 씬 수 (= 받을 그림 수) */
+  total: number
+  /** 새로 넣은 그림 */
+  written: number
+  /** 같은 이름의 다른 그림을 휴지통으로 보내고 바꾼 그림 */
+  replaced: number
+  /** 똑같은 그림이 이미 있어 건너뜀 */
+  same: number
+  /** 복사하지 못함 (원본 없음·쓰기 실패 등) */
+  failed: number
+  /** 그림이 없어 건너뛴 씬 */
+  noImage: number
+  /** 받은 그림 중 미생성 표시된 씬 (예전 그림일 수 있음) */
+  pending: number
+}
+
+/** [custom] 감시 폴더의 요청 파일(*.request.json) 하나를 처리한 결과 */
+export interface WatchRequestEvent {
+  /** 감시 폴더 기준 상대 경로 */
+  file: string
+  ok: boolean
+  exports: TopSetResult[]
+  errors: string[]
+}
+
 export interface IpcInvokeMap {
   'db:status': { req: void; res: { version: number; path: string } }
   /** 앱 버전 */
@@ -830,6 +861,19 @@ export interface IpcInvokeMap {
   /** 즐겨찾기 이미지 또는 각 씬 최상단 이미지를 ZIP으로 (파일 다이얼로그) */
   /** 활성 프리셋 ZIP 내보내기 (NAIS2 방식 — 씬별 즐겨찾기 전부, 없으면 최상단 1장) */
   'scenes:exportZip': { req: { presetId: number }; res: { count: number } }
+  /**
+   * [custom] 대표 세트 받기 — 기본 폴더 안 프리셋 이름 폴더로 (기본 폴더가 없으면 먼저 고른다).
+   * pick = 이번만 다른 폴더를 골라 그 폴더에 바로 받는다
+   */
+  'custom:topSetExport': {
+    req: { presetId: number; pick?: boolean }
+    res: TopSetResult | { canceled: true }
+  }
+  'custom:topSetGetDir': { req: void; res: { dir: string } }
+  /** 기본 폴더 고르기 (다이얼로그) */
+  'custom:topSetPickDir': { req: void; res: { dir: string; canceled?: boolean } }
+  /** 이 프리셋의 대표 세트 폴더 열기 (아직 없으면 기본 폴더) */
+  'custom:topSetOpenDir': { req: { presetId: number }; res: { ok: boolean } }
   'vibes:list': { req: void; res: { folders: ListFolder[]; items: VibeItem[] } }
   /** 파일 다이얼로그(다중)로 추가 */
   'vibes:add': { req: { folderId: number | null }; res: { count: number } }
@@ -937,6 +981,8 @@ export interface IpcEventMap {
   'scenes:reservationsChanged': Record<string, never>
   /** [custom] 감시 폴더가 파일 하나를 처리함 */
   'custom:watchImported': WatchFolderEvent
+  /** [custom] 감시 폴더가 요청 파일 하나를 처리함 (대표 세트 받기 등) */
+  'custom:watchRequestDone': WatchRequestEvent
   /** 단축키로 앱 화면 배율이 바뀜 */
   'window:zoomChanged': { factor: number }
   /** 바이브 인코딩 완료 — 카드의 인코딩 표시 갱신용 */

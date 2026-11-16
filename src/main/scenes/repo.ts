@@ -93,6 +93,7 @@ function toScene(
 // ── [custom] 변경 후 미생성 표시 ────────────────────────────
 // 원본의 마이그레이션 번호와 겹치지 않도록 gen_scenes에 칸을 추가하지 않고 전용 표를 따로 둔다.
 // changed_at = 씬 내용(프롬프트·네거티브·크기)이 마지막으로 실제로 달라진 시각, acked = 수동 확인 여부.
+// base_prompt·base_negative = 미생성이 되기 직전(마지막으로 뽑았거나 확인한 때)의 내용 — 바뀐 태그 표시용.
 const marksReady = new WeakSet<object>()
 function marksDb(): ReturnType<typeof getDb> {
   const db = getDb()
@@ -101,9 +102,16 @@ function marksDb(): ReturnType<typeof getDb> {
       `CREATE TABLE IF NOT EXISTS custom_scene_marks (
          scene_id INTEGER PRIMARY KEY,
          changed_at TEXT NOT NULL DEFAULT (datetime('now')),
-         acked INTEGER NOT NULL DEFAULT 0
+         acked INTEGER NOT NULL DEFAULT 0,
+         base_prompt TEXT,
+         base_negative TEXT
        )`
     )
+    // 기준 칸이 없던 때 만든 표에 더한다
+    const cols = db.prepare('PRAGMA table_info(custom_scene_marks)').all() as { name: string }[]
+    for (const col of ['base_prompt', 'base_negative'])
+      if (!cols.some((c) => c.name === col))
+        db.exec(`ALTER TABLE custom_scene_marks ADD COLUMN ${col} TEXT`)
     marksReady.add(db)
   }
   return db
@@ -123,13 +131,44 @@ function pendingSql(ref: string): string {
   END)`
 }
 
-function markSceneChanged(id: number): void {
-  marksDb()
+/**
+ * 씬 내용이 달라졌음을 기록한다. before = 바뀌기 직전 내용.
+ * 미생성이 아니던 씬(뽑은 그림·확인이 지금 내용과 맞던 씬)이면 그 내용을 기준으로 남기고,
+ * 이미 미생성이면 기준을 그대로 둔다 — 다시 뽑기 전까지 바뀐 태그가 모두 쌓여 보이게.
+ * 한 번도 뽑지 않은 씬은 기준이 없다 (전부 새 태그).
+ */
+function markSceneChanged(id: number, before: { prompt: string; negative: string }): void {
+  const db = marksDb()
+  const state = db
+    .prepare(`SELECT ${pendingSql('s')} AS pending FROM gen_scenes s WHERE s.id = ?`)
+    .get(id) as { pending: number } | undefined
+  const fresh = state?.pending === 0
+  db.prepare(
+    `INSERT INTO custom_scene_marks (scene_id, changed_at, acked, base_prompt, base_negative)
+     VALUES (@id, datetime('now'), 0, @prompt, @negative)
+     ON CONFLICT(scene_id) DO UPDATE SET
+       changed_at = excluded.changed_at,
+       acked = 0,
+       base_prompt = CASE WHEN @fresh = 1 THEN excluded.base_prompt ELSE base_prompt END,
+       base_negative = CASE WHEN @fresh = 1 THEN excluded.base_negative ELSE base_negative END`
+  ).run({
+    id,
+    prompt: fresh ? before.prompt : null,
+    negative: fresh ? before.negative : null,
+    fresh: fresh ? 1 : 0
+  })
+}
+
+/** [custom] 미생성인 씬의 기준 내용 (바뀐 태그 표시용). 미생성이 아니거나 기준이 없으면 null */
+export function getSceneBase(id: number): { prompt: string; negativePrompt: string } | null {
+  const row = marksDb()
     .prepare(
-      `INSERT INTO custom_scene_marks (scene_id, changed_at, acked) VALUES (?, datetime('now'), 0)
-       ON CONFLICT(scene_id) DO UPDATE SET changed_at = excluded.changed_at, acked = 0`
+      `SELECT m.base_prompt AS prompt, m.base_negative AS negative, ${pendingSql('s')} AS pending
+       FROM gen_scenes s JOIN custom_scene_marks m ON m.scene_id = s.id WHERE s.id = ?`
     )
-    .run(id)
+    .get(id) as { prompt: string | null; negative: string | null; pending: number } | undefined
+  if (!row || row.pending !== 1 || row.prompt === null) return null
+  return { prompt: row.prompt, negativePrompt: row.negative ?? '' }
 }
 
 /** '변경 후 미생성' 표시를 수동으로 끈다. 다음 내용 변경 때 다시 켜진다. */
@@ -350,7 +389,7 @@ export function updateScene(id: number, patch: Record<string, unknown>): void {
         (patch.width !== undefined && patch.width !== cur.width) ||
         (patch.height !== undefined && patch.height !== cur.height))
     )
-      markSceneChanged(id)
+      markSceneChanged(id, { prompt: cur.prompt, negative: cur.negative_prompt })
   }
   sets.push(`updated_at = datetime('now')`)
   getDb()
@@ -763,8 +802,11 @@ export function applyImportedScenes(presetId: number, scenes: ImportedScene[]): 
           existing.width !== next.width ||
           existing.height !== next.height
         ) {
+          markSceneChanged(existing.id, {
+            prompt: existing.prompt,
+            negative: existing.negative_prompt
+          })
           update.run(next.prompt, next.negative, next.width, next.height, existing.id)
-          markSceneChanged(existing.id)
           outcome.updated++
           outcome.sceneIds.push(existing.id)
         } else outcome.unchanged++

@@ -5,6 +5,7 @@ import { cn } from '../lib/utils'
 import { useT } from '../lib/i18n'
 import { caretCoords } from '../lib/caret'
 import { highlightRanges } from '../lib/prompt-weights'
+import { CHANGED_TAG_STYLE, markedSegments, type TextRange } from '../lib/custom-prompt-diff'
 import { fragmentAtSelection, fragmentPaths, useFragmentsStore } from '../stores/fragments-store'
 
 /**
@@ -72,7 +73,8 @@ export function PromptEditor({
   negative = false,
   tokensOverride,
   tokenModel,
-  tokenLimit = 512
+  tokenLimit = 512,
+  marks
 }: {
   value: string
   onValueChange: (value: string) => void
@@ -85,6 +87,8 @@ export function PromptEditor({
   /** 자체 카운트에 사용할 모델. 생략하면 자체 카운트를 숨김 */
   tokenModel?: string
   tokenLimit?: number
+  /** [custom] 노랗게 칠할 구간 — 미생성 씬에서 마지막으로 뽑은 뒤 바뀐 태그 */
+  marks?: TextRange[]
 }): React.JSX.Element {
   const t = useT()
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -134,13 +138,16 @@ export function PromptEditor({
   const syncScroll = (): void => {
     const ta = textareaRef.current
     if (!ta) return
-    for (const mirror of [mirrorRef.current, findMirrorRef.current]) {
+    for (const mirror of [mirrorRef.current, findMirrorRef.current, marksMirrorRef.current]) {
       if (!mirror) continue
       mirror.scrollTop = ta.scrollTop
       mirror.scrollLeft = ta.scrollLeft
     }
   }
   useEffect(syncScroll, [value])
+  const marksMirrorRef = useRef<HTMLDivElement>(null) // [custom] 바뀐 태그
+  const hasMarks = (marks?.length ?? 0) > 0
+  useEffect(syncScroll, [hasMarks])
   useEffect(() => {
     const ta = textareaRef.current
     if (!ta) return
@@ -323,6 +330,25 @@ export function PromptEditor({
         )}
         {value.endsWith('\n') && '​'}
       </div>
+
+      {/* [custom] 바뀐 태그 — 가중치 미러 위에 노란 칠 (글자는 투명) */}
+      {hasMarks && marks && (
+        <div
+          ref={marksMirrorRef}
+          aria-hidden
+          className={cn(
+            TYPO,
+            'pointer-events-none absolute inset-0 overflow-hidden text-transparent'
+          )}
+        >
+          {markedSegments(value, marks).map((seg) => (
+            <span key={seg.start} style={seg.marked ? CHANGED_TAG_STYLE : undefined}>
+              {value.slice(seg.start, seg.end)}
+            </span>
+          ))}
+          {value.endsWith('\n') && '​'}
+        </div>
+      )}
 
       {/* 찾기 하이라이트 — 가중치 미러 위에 한 겹 더 (글자는 투명, 배경만) */}
       {findOpen && hits.length > 0 && (

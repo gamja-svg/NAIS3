@@ -875,6 +875,11 @@ export interface IpcInvokeMap {
     res: TopSetResult | { canceled: true }
   }
   'custom:topSetGetDir': { req: void; res: { dir: string } }
+  /** [custom] 미생성인 씬이 바뀌기 전 내용 — 바뀐 태그를 노랗게 칠하는 기준 (없으면 null) */
+  'custom:sceneBase': {
+    req: { id: number }
+    res: { prompt: string; negativePrompt: string } | null
+  }
   /** 기본 폴더 고르기 (다이얼로그) */
   'custom:topSetPickDir': { req: void; res: { dir: string; canceled?: boolean } }
   /** 이 프리셋의 대표 세트 폴더 열기 (아직 없으면 기본 폴더) */

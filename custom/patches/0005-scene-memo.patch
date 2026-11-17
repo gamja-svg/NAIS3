@@ -1,0 +1,577 @@
+diff --git a/src/main/ipc.ts b/src/main/ipc.ts
+index 7a0baabec974bb3d6181bcef79fc9b71eae2f43e..8234885375f285259fa2da760200141e4533e59a 100644
+--- a/src/main/ipc.ts
++++ b/src/main/ipc.ts
+@@ -102,6 +102,7 @@ import {
+   clearScenePending,
+   clearScenesPending,
+   getSceneBase,
++  setSceneMemo,
+   deleteScene,
+   reorderScenes,
+   setReserveAll,
+@@ -636,6 +637,7 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
+   }
+   handle('custom:topSetGetDir', () => ({ dir: getTopSetDir() }))
+   handle('custom:sceneBase', ({ id }) => getSceneBase(id))
++  handle('custom:sceneMemo', ({ id, memo }) => setSceneMemo(id, memo))
+   handle('custom:topSetPickDir', async () => {
+     const dir = await pickTopSetDir()
+     return dir ? { dir } : { dir: getTopSetDir(), canceled: true }
+diff --git a/src/main/scenes/import-formats.ts b/src/main/scenes/import-formats.ts
+index 685712934883de4fc80ec31f65be1587d4b8be3e..64d174278fcd77992aefe9d97f1ef8090c5c3b10 100644
+--- a/src/main/scenes/import-formats.ts
++++ b/src/main/scenes/import-formats.ts
+@@ -5,6 +5,8 @@ export interface ImportedScene {
+   negativePrompt?: string
+   width?: number
+   height?: number
++  /** [custom] 씬 메모(별명) — 있으면 그 씬의 메모를 이 글로 (빈 글자면 지움) */
++  memo?: string
+ }
+ 
+ type Obj = Record<string, unknown>
+@@ -46,7 +48,8 @@ export function parseSceneImport(raw: string): ImportedScene[] | null {
+       prompt: str(s.prompt) ?? str(s.scenePrompt) ?? '', // NAIS2 파일은 scenePrompt
+       negativePrompt: str(s.negativePrompt),
+       width: num(s.width),
+-      height: num(s.height)
++      height: num(s.height),
++      ...(str(s.memo) !== undefined ? { memo: str(s.memo) } : {}) // [custom]
+     }))
+   }
+ 
+diff --git a/src/main/scenes/repo.ts b/src/main/scenes/repo.ts
+index a3e43a4084827e619d324cf41db369cc5bf8fa8d..e933115be18ba7ec9b586768515401d6d828781e 100644
+--- a/src/main/scenes/repo.ts
++++ b/src/main/scenes/repo.ts
+@@ -30,6 +30,7 @@ interface Row {
+   reserve_count: number
+   reserve_json?: string | null
+   pending?: number
++  memo?: string | null
+ }
+ 
+ /** 출연별 예약 내역 파싱 (키 '' = 사이드바) */
+@@ -86,7 +87,8 @@ function toScene(
+     thumbnailPath: r.thumb_path ?? '',
+     imageCount: r.image_count,
+     hasFavorite: r.has_favorite === 1,
+-    pending: r.pending === 1
++    pending: r.pending === 1,
++    ...(r.memo ? { memo: r.memo } : {}) // [custom] 씬 메모
+   }
+ }
+ 
+@@ -107,6 +109,13 @@ function marksDb(): ReturnType<typeof getDb> {
+          base_negative TEXT
+        )`
+     )
++    // 씬 메모(별명) — 카드·검수 화면에 이름과 함께 보인다. 파일 이름에는 쓰지 않는다
++    db.exec(
++      `CREATE TABLE IF NOT EXISTS custom_scene_memos (
++         scene_id INTEGER PRIMARY KEY,
++         memo TEXT NOT NULL
++       )`
++    )
+     // 기준 칸이 없던 때 만든 표에 더한다
+     const cols = db.prepare('PRAGMA table_info(custom_scene_marks)').all() as { name: string }[]
+     for (const col of ['base_prompt', 'base_negative'])
+@@ -171,6 +180,30 @@ export function getSceneBase(id: number): { prompt: string; negativePrompt: stri
+   return { prompt: row.prompt, negativePrompt: row.negative ?? '' }
+ }
+ 
++const MEMO_MAX = 200
++
++/** [custom] 씬 메모(별명) 저장 — 한 줄로 줄이고, 비우면 지운다. 내용 변경이 아니라 미생성 표시는 건드리지 않는다 */
++export function setSceneMemo(id: number, memo: string): void {
++  const text = memo.replace(/\s+/g, ' ').trim().slice(0, MEMO_MAX)
++  const db = marksDb()
++  if (!text) db.prepare('DELETE FROM custom_scene_memos WHERE scene_id = ?').run(id)
++  else
++    db.prepare(
++      `INSERT INTO custom_scene_memos (scene_id, memo) VALUES (?, ?)
++       ON CONFLICT(scene_id) DO UPDATE SET memo = excluded.memo`
++    ).run(id, text)
++}
++
++// [custom] 지운 씬의 메모·미생성 표시를 치운다 — 씬 번호(id)는 새 씬에 다시 쓰일 수 있다.
++// 씬을 지우는 모든 길(하나·여럿·프리셋째·백업 복원)이 이 알림을 낸다.
++sceneEvents.on('deleted', (ids: number[]) => {
++  if (ids.length === 0) return
++  const db = marksDb()
++  const list = placeholders(ids.length)
++  db.prepare(`DELETE FROM custom_scene_memos WHERE scene_id IN (${list})`).run(...ids)
++  db.prepare(`DELETE FROM custom_scene_marks WHERE scene_id IN (${list})`).run(...ids)
++})
++
+ /** '변경 후 미생성' 표시를 수동으로 끈다. 다음 내용 변경 때 다시 켜진다. */
+ export function clearScenePending(id: number): void {
+   clearScenesPending([id])
+@@ -264,6 +297,7 @@ export function listScenes(presetId: number): Scene[] {
+       `SELECT s.id, s.preset_id, s.name, s.prompt, s.negative_prompt, s.width, s.height, s.reserve_count, s.reserve_json,
+               (SELECT COUNT(*) FROM images WHERE scene_id = s.id) AS image_count,
+               ${pendingSql('s')} AS pending,
++              (SELECT memo FROM custom_scene_memos WHERE scene_id = s.id) AS memo,
+               cover.id AS thumb_id,
+               cover.created_at AS thumb_created_at,
+               length(cover.thumbnail) AS thumb_size,
+@@ -307,7 +341,8 @@ export function getScene(id: number): Scene | null {
+     .prepare(
+       `SELECT id, preset_id, name, prompt, negative_prompt, width, height, reserve_count, reserve_json,
+               (SELECT COUNT(*) FROM images WHERE scene_id = ?) AS image_count,
+-              ${pendingSql('gen_scenes')} AS pending
++              ${pendingSql('gen_scenes')} AS pending,
++              (SELECT memo FROM custom_scene_memos WHERE scene_id = gen_scenes.id) AS memo
+        FROM gen_scenes WHERE id = ?`
+     )
+     .get(id, id) as (Row & { image_count: number }) | undefined
+@@ -704,9 +739,11 @@ export function deleteImage(id: number, deleteFile: boolean): void {
+ 
+ // ── JSON / ZIP ──────────────────────────────────────────
+ export async function exportScenesJson(presetId: number): Promise<boolean> {
+-  const scenes = getDb()
++  const scenes = marksDb() // [custom] 메모 표가 있게
+     .prepare(
+-      'SELECT name, prompt, negative_prompt, width, height FROM gen_scenes WHERE preset_id = ? ORDER BY sort_order, id'
++      `SELECT name, prompt, negative_prompt, width, height,
++              (SELECT memo FROM custom_scene_memos WHERE scene_id = gen_scenes.id) AS memo
++       FROM gen_scenes WHERE preset_id = ? ORDER BY sort_order, id`
+     )
+     .all(presetId) as Row[]
+   const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
+@@ -721,7 +758,8 @@ export async function exportScenesJson(presetId: number): Promise<boolean> {
+     prompt: s.prompt,
+     negativePrompt: s.negative_prompt,
+     width: s.width,
+-    height: s.height
++    height: s.height,
++    ...(s.memo ? { memo: s.memo } : {}) // [custom] 씬 메모
+   }))
+   // [custom] 프리셋 이름을 같이 적는다 — 감시 폴더가 이 이름으로 넣을 프리셋을 정한다
+   const preset = getPresetName(presetId)
+@@ -810,6 +848,8 @@ export function applyImportedScenes(presetId: number, scenes: ImportedScene[]):
+           outcome.updated++
+           outcome.sceneIds.push(existing.id)
+         } else outcome.unchanged++
++        // [custom] 메모가 적혀 있으면 바꾼다 (빈 글자면 지움, 칸이 없으면 그대로) — 다시 뽑을 일은 아니다
++        if (s.memo !== undefined) setSceneMemo(existing.id, s.memo)
+         continue
+       }
+       outcome.added++
+@@ -823,6 +863,7 @@ export function applyImportedScenes(presetId: number, scenes: ImportedScene[]):
+         ++order
+       )
+       outcome.sceneIds.push(Number(inserted.lastInsertRowid))
++      if (s.memo) setSceneMemo(Number(inserted.lastInsertRowid), s.memo) // [custom]
+     }
+   })()
+   return outcome
+diff --git a/src/renderer/src/components/custom-scene-review.tsx b/src/renderer/src/components/custom-scene-review.tsx
+index c2a013c64b3f277d62bc04b5583194cacc00d74e..2e759c51727dbd41d8d5fa6aff5d2fe452bd1857 100644
+--- a/src/renderer/src/components/custom-scene-review.tsx
++++ b/src/renderer/src/components/custom-scene-review.tsx
+@@ -272,6 +272,11 @@ export function SceneReview({ scenes }: { scenes: Scene[] }): React.JSX.Element
+           <div className="truncate text-[12px] opacity-70">{presetName}</div>
+           <div className="flex min-w-0 items-baseline gap-2">
+             <span className="truncate text-[19px] font-semibold">{scene.name}</span>
++            {scene.memo && (
++              <span className="min-w-0 truncate text-[14px] opacity-80" title={scene.memo}>
++                {scene.memo}
++              </span>
++            )}
+             {scene.pending && (
+               <span className="shrink-0 rounded-full bg-accent px-1.5 py-0.5 text-[11px] font-bold leading-none text-on-accent">
+                 {t('ui.notGenerated')}
+diff --git a/src/renderer/src/components/scene-detail.tsx b/src/renderer/src/components/scene-detail.tsx
+index c8e0922e3a33e58c9b1c42126bb1af519206d4db..83379b1a8998962ce58e4ec590df8fc9354ffcd4 100644
+--- a/src/renderer/src/components/scene-detail.tsx
++++ b/src/renderer/src/components/scene-detail.tsx
+@@ -1,4 +1,4 @@
+-import { ArrowLeft, Loader2, Minus, Play, Plus, Star, Trash2 } from 'lucide-react'
++import { ArrowLeft, Loader2, Minus, Play, Plus, Star, StickyNote, Trash2 } from 'lucide-react'
+ import { useEffect, useMemo, useRef, useState } from 'react'
+ import type { Scene } from '@shared/types'
+ import { isMediumEffortModel, promptTokenLimit } from '@shared/nai-models'
+@@ -44,6 +44,7 @@ export function SceneDetail({ scene }: { scene: Scene }): React.JSX.Element {
+   const favoritesOnly = useScenesStore((s) => s.favoritesOnly)
+   const setFavoritesOnly = useScenesStore((s) => s.setFavoritesOnly)
+   const deleteNonFavorites = useScenesStore((s) => s.deleteNonFavorites)
++  const setMemo = useScenesStore((s) => s.setMemo) // [custom] 씬 메모
+ 
+   const source = useGenerationStore((s) => s.source)
+   const basePrompt = useGenerationStore((s) => s.request.prompt)
+@@ -225,6 +226,18 @@ export function SceneDetail({ scene }: { scene: Scene }): React.JSX.Element {
+           </button>
+         </div>
+       </div>
++      {/* [custom] 씬 메모(별명) — 카드·검수 화면에 이름과 함께 보인다 (파일 이름은 그대로) */}
++      <label className="flex items-center gap-2 border-b border-line px-3 py-1.5">
++        <StickyNote size={14} className="shrink-0 text-muted" />
++        <input
++          className="min-w-0 flex-1 rounded-md bg-transparent px-2 py-1 text-[13px] outline-none placeholder:text-faint focus:bg-surface-2"
++          value={scene.memo ?? ''}
++          placeholder={t('ui.customSceneMemoPlaceholder')}
++          aria-label={t('ui.customSceneMemo')}
++          maxLength={200}
++          onChange={(e) => void setMemo(scene.id, e.target.value)}
++        />
++      </label>
+ 
+       {source && (
+         <p className="border-b border-line bg-surface-2 px-3 py-1 text-[11px] text-muted">
+diff --git a/src/renderer/src/components/scene-mode.tsx b/src/renderer/src/components/scene-mode.tsx
+index 872e6213f68f1e77ff293c9aceec27f45933c973..590a228aa19f2e537c17d39f6311c74e0d20db0d 100644
+--- a/src/renderer/src/components/scene-mode.tsx
++++ b/src/renderer/src/components/scene-mode.tsx
+@@ -22,7 +22,8 @@ import {
+   SlidersHorizontal,
+   Square,
+   Trash2,
+-  UsersRound
++  UsersRound,
++  StickyNote
+ } from 'lucide-react'
+ import {
+   closestCenter,
+@@ -947,6 +948,16 @@ const SceneCard = memo(function SceneCard({
+     const name = await askText(t('ui.sceneName'), scene.name)
+     if (name) void update(scene.id, { name })
+   }
++  // [custom] 씬 메모(별명)
++  const setMemo = useScenesStore((s) => s.setMemo)
++  const editMemo = async (): Promise<void> => {
++    const memo = await askText(
++      t('ui.customSceneMemoTitleValue', scene.name),
++      scene.memo ?? '',
++      t('ui.customSceneMemoPlaceholder')
++    )
++    if (memo !== null) void setMemo(scene.id, memo)
++  }
+   const openFolder = async (): Promise<void> => {
+     const { ok } = await window.nais.invoke('scenes:openFolder', { sceneId: scene.id })
+     if (!ok) toast(t('ui.noGeneratedImageFolderYet'), 'info')
+@@ -1091,6 +1102,11 @@ const SceneCard = memo(function SceneCard({
+                   label={t('ui.rename')}
+                   onClick={() => void renameScene()}
+                 />
++                <MenuItem
++                  icon={<StickyNote size={13} />}
++                  label={t('ui.customSceneMemoEdit')}
++                  onClick={() => void editMemo()}
++                />
+                 <MenuItem
+                   icon={<Copy size={13} />}
+                   label={t('ui.duplicate')}
+@@ -1129,6 +1145,15 @@ const SceneCard = memo(function SceneCard({
+                     {scene.name}
+                   </div>
+                 )}
++                {/* [custom] 씬 메모 — 어떤 장면인지 한눈에 */}
++                {scene.memo && (
++                  <div
++                    className="truncate text-[11.5px] leading-tight text-white/85 drop-shadow"
++                    title={scene.memo}
++                  >
++                    {scene.memo}
++                  </div>
++                )}
+               </div>
+               {/* 예약 +/- */}
+               <div
+@@ -1176,6 +1201,14 @@ const SceneCard = memo(function SceneCard({
+         <ContextMenuItem onSelect={() => void renameScene()}>
+           <Pencil size={13} /> {t('ui.rename')}
+         </ContextMenuItem>
++        <ContextMenuItem onSelect={() => void editMemo()}>
++          <StickyNote size={13} /> {t('ui.customSceneMemoEdit')}
++        </ContextMenuItem>
++        {scene.memo && (
++          <ContextMenuItem onSelect={() => void setMemo(scene.id, '')}>
++            <StickyNote size={13} className="opacity-50" /> {t('ui.customSceneMemoClear')}
++          </ContextMenuItem>
++        )}
+         <ContextMenuItem onSelect={() => void duplicate(scene.id)}>
+           <Copy size={13} /> {t('ui.duplicate')}
+         </ContextMenuItem>
+diff --git a/src/renderer/src/lib/custom-scene-base.ts b/src/renderer/src/lib/custom-scene-base.ts
+index 83c2ad8f5d7897ecfc7d9301d48adc45a3da5e58..63da172b5d6a27acb661b45d90e926a1d9c1ae40 100644
+--- a/src/renderer/src/lib/custom-scene-base.ts
++++ b/src/renderer/src/lib/custom-scene-base.ts
+@@ -18,7 +18,9 @@ export function useSceneBase(
+       window.nais
+         .invoke('custom:sceneBase', { id: scene.id })
+         .then((value) => {
+-          if (!cancelled) setBase({ id: scene.id, value })
++          if (cancelled) return
++          const ok = typeof value?.prompt === 'string' && typeof value.negativePrompt === 'string'
++          setBase({ id: scene.id, value: ok ? value : null })
+         })
+         .catch(() => {})
+     }, 400)
+diff --git a/src/renderer/src/stores/scenes-store.ts b/src/renderer/src/stores/scenes-store.ts
+index f8a03d8102102727f248cb8fa28d344f365f8517..ac7e3d021ff41a4e89badc30af653be6f45930ae 100644
+--- a/src/renderer/src/stores/scenes-store.ts
++++ b/src/renderer/src/stores/scenes-store.ts
+@@ -140,6 +140,8 @@ interface ScenesState {
+   regenerateScene: (sceneId: number) => Promise<void>
+   /** [custom] 일괄 확인 — 이 씬들의 미생성 표시를 한 번에 끈다 (남은 게 없으면 미생성만 보기도 끈다) */
+   ackPendingScenes: (ids: number[]) => Promise<void>
++  /** [custom] 씬 메모(별명) — 화면은 바로 바꾸고 저장은 뒤따른다. 빈 글자면 지운다 */
++  setMemo: (id: number, memo: string) => Promise<void>
+ }
+ 
+ /**
+@@ -625,6 +627,13 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
+     })
+   },
+ 
++  setMemo: async (id, memo) => {
++    set((st) => ({
++      scenes: st.scenes.map((s) => (s.id === id ? { ...s, memo: memo || undefined } : s))
++    }))
++    await window.nais.invoke('custom:sceneMemo', { id, memo })
++  },
++
+   // ── 출연(Cast) ──────────────────────────────────────────
+   casts: [],
+   activeCastId: localStorage.getItem('scene_active_cast') ?? '',
+diff --git a/src/shared/i18n/catalog-en.ts b/src/shared/i18n/catalog-en.ts
+index a5865eb98310e467444ee224adb35b3e0a13c652..d7010df0b0f6c9d326b2686d7822bebf8b1d7d2c 100644
+--- a/src/shared/i18n/catalog-en.ts
++++ b/src/shared/i18n/catalog-en.ts
+@@ -254,6 +254,11 @@ export const EN = {
+   'ui.customChangedTagsYellow': 'Yellow',
+   'ui.customChangedTagsLegend': '= changed since the last image',
+   'ui.customRemovedTags': 'Removed',
++  'ui.customSceneMemo': 'Scene memo',
++  'ui.customSceneMemoEdit': 'Memo…',
++  'ui.customSceneMemoClear': 'Clear memo',
++  'ui.customSceneMemoTitleValue': 'Memo for {0}',
++  'ui.customSceneMemoPlaceholder': 'Memo — what this scene shows (shown on the card and in review)',
+   'ui.queuedForCastValue': 'Queued for cast "{0}"',
+   'ui.queuedWithSidebarSettings': 'Queued with sidebar settings',
+   'ui.deletedCast': 'Deleted cast',
+diff --git a/src/shared/i18n/catalog-ko.ts b/src/shared/i18n/catalog-ko.ts
+index 7da54343ef56db85ca3ddb24048c5313db368661..d08673ffbaec7fa4c8efde7da75e987e0b9c78b2 100644
+--- a/src/shared/i18n/catalog-ko.ts
++++ b/src/shared/i18n/catalog-ko.ts
+@@ -250,6 +250,11 @@ export const KO = {
+   'ui.customChangedTagsYellow': '노란색',
+   'ui.customChangedTagsLegend': '= 마지막으로 뽑은 뒤 바뀐 태그',
+   'ui.customRemovedTags': '빠진 태그',
++  'ui.customSceneMemo': '씬 메모',
++  'ui.customSceneMemoEdit': '메모…',
++  'ui.customSceneMemoClear': '메모 지우기',
++  'ui.customSceneMemoTitleValue': '{0} 메모',
++  'ui.customSceneMemoPlaceholder': '메모 — 어떤 장면인지 (카드·검수 화면에 보여요)',
+   'ui.queuedForCastValue': '"{0}" 출연 예약',
+   'ui.queuedWithSidebarSettings': '사이드바 설정 예약',
+   'ui.deletedCast': '삭제된 출연',
+diff --git a/src/shared/i18n/catalog-zh-CN.ts b/src/shared/i18n/catalog-zh-CN.ts
+index 518f44fa108c6cc6c418aa6c00723cf365ccfbbe..7036bba95a0d69b9b1f9ed30ce6671c58ca7238d 100644
+--- a/src/shared/i18n/catalog-zh-CN.ts
++++ b/src/shared/i18n/catalog-zh-CN.ts
+@@ -248,6 +248,11 @@ export const ZH_CN = {
+   'ui.customChangedTagsYellow': '黄色',
+   'ui.customChangedTagsLegend': '= 上次生成后改动的标签',
+   'ui.customRemovedTags': '已删除',
++  'ui.customSceneMemo': '场景备注',
++  'ui.customSceneMemoEdit': '备注…',
++  'ui.customSceneMemoClear': '清除备注',
++  'ui.customSceneMemoTitleValue': '{0} 的备注',
++  'ui.customSceneMemoPlaceholder': '备注 — 这是什么场景（显示在卡片和检视画面）',
+   'ui.queuedForCastValue': '已按角色组合「{0}」预约',
+   'ui.queuedWithSidebarSettings': '已按左侧当前配置预约',
+   'ui.deletedCast': '已删除的角色组合',
+diff --git a/src/shared/types.ts b/src/shared/types.ts
+index f0bd6b4747706f46ba25f01dc06c42ede3f07f61..5d57c6c9583c706fdfb55fdc7551b9afe4d1148a 100644
+--- a/src/shared/types.ts
++++ b/src/shared/types.ts
+@@ -434,6 +434,8 @@ export interface Scene {
+   hasFavorite: boolean
+   /** [custom] 내용(프롬프트·네거티브·크기) 변경 뒤 아직 한 장도 생성하지 않았거나, 이미지가 0장인 씬 */
+   pending?: boolean
++  /** [custom] 씬 메모(별명) — 어떤 장면인지 한눈에 보이게. 파일 이름에는 쓰지 않는다 */
++  memo?: string
+ }
+ 
+ /** 씬 상세의 생성 이미지 (페이지네이션 단위) */
+@@ -875,6 +877,8 @@ export interface IpcInvokeMap {
+     res: TopSetResult | { canceled: true }
+   }
+   'custom:topSetGetDir': { req: void; res: { dir: string } }
++  /** [custom] 씬 메모(별명) 저장 — 빈 글자면 지운다 */
++  'custom:sceneMemo': { req: { id: number; memo: string }; res: void }
+   /** [custom] 미생성인 씬이 바뀌기 전 내용 — 바뀐 태그를 노랗게 칠하는 기준 (없으면 null) */
+   'custom:sceneBase': {
+     req: { id: number }
+diff --git a/tests/custom-scene-memo.integration.ts b/tests/custom-scene-memo.integration.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..e3df0ba5572db36fb90bed64615bdf4ba978dcd6
+--- /dev/null
++++ b/tests/custom-scene-memo.integration.ts
+@@ -0,0 +1,140 @@
++import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
++import { tmpdir } from 'os'
++import { join } from 'path'
++import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
++import { closeDb, getDb, initDb } from '../src/main/db'
++import {
++  bulkDelete,
++  createPreset,
++  createScene,
++  deletePreset,
++  deleteScene,
++  exportScenesJson,
++  getScene,
++  importScenesJson,
++  listScenes,
++  setSceneMemo,
++  updateScene
++} from '../src/main/scenes/repo'
++
++// [custom] 씬 메모(별명): 카드에 보이는 한 줄 메모. 내용 변경이 아니고, 지운 씬의 메모는 남지 않는다
++const environment = vi.hoisted(() => ({ directory: '', file: '' }))
++vi.mock('electron', () => ({
++  app: { getPath: () => environment.directory, getLocale: () => 'ko' },
++  BrowserWindow: { getFocusedWindow: () => null, getAllWindows: () => [] },
++  dialog: {
++    showOpenDialog: async () => ({ canceled: false, filePaths: [environment.file] }),
++    showSaveDialog: async () => ({ canceled: false, filePath: environment.file })
++  }
++}))
++
++beforeEach(() => {
++  environment.directory = mkdtempSync(join(tmpdir(), 'nais3-custom-memo-'))
++  environment.file = join(environment.directory, 'scenes.json')
++  initDb()
++})
++afterEach(() => {
++  closeDb()
++  rmSync(environment.directory, { recursive: true, force: true })
++})
++
++const memoOf = (id: number): string | undefined => getScene(id)?.memo
++
++describe('custom: scene memo', () => {
++  it('saves one tidy line, shows it in lists, and clears it when empty', () => {
++    const preset = createPreset('p')
++    const id = createScene(preset, '41')
++    expect(memoOf(id)).toBeUndefined()
++    setSceneMemo(id, '  침대 위\n미소  ')
++    expect(memoOf(id)).toBe('침대 위 미소')
++    expect(listScenes(preset).find((s) => s.id === id)?.memo).toBe('침대 위 미소')
++    setSceneMemo(id, 'x'.repeat(300))
++    expect(memoOf(id)).toHaveLength(200)
++    setSceneMemo(id, '   ')
++    expect(memoOf(id)).toBeUndefined()
++  })
++
++  it('is not a content change — a generated scene stays generated', () => {
++    const id = createScene(createPreset('p'), 'a')
++    updateScene(id, { prompt: 'one' })
++    getDb()
++      .prepare(
++        `INSERT INTO images (file_path, payload_json, kind, scene_id, created_at)
++         VALUES ('x.png', '{}', 'scene', ?, datetime('now', '+1 minute'))`
++      )
++      .run(id)
++    expect(getScene(id)?.pending).toBe(false)
++    setSceneMemo(id, '메모')
++    expect(getScene(id)?.pending).toBe(false)
++  })
++
++  it('drops memos of deleted scenes so a reused number starts clean', () => {
++    const preset = createPreset('p')
++    const keep = createPreset('keep')
++    const a = createScene(preset, 'a')
++    const b = createScene(preset, 'b')
++    const c = createScene(preset, 'c')
++    for (const id of [a, b, c]) setSceneMemo(id, `memo ${id}`)
++    deleteScene(c) // 마지막 번호 → 다음 씬이 같은 번호를 받을 수 있다
++    const reused = createScene(preset, 'new')
++    expect(memoOf(reused)).toBeUndefined()
++    bulkDelete([a])
++    deletePreset(preset)
++    const rows = getDb().prepare('SELECT scene_id FROM custom_scene_memos').all()
++    expect(rows).toEqual([])
++    expect(keep).toBeGreaterThan(0)
++  })
++
++  it('reads memos from scene JSON without marking scenes as changed, and writes them back', async () => {
++    const preset = createPreset('p')
++    const id = createScene(preset, '1')
++    updateScene(id, { prompt: 'girl' })
++    getDb()
++      .prepare(
++        `INSERT INTO images (file_path, payload_json, kind, scene_id, created_at)
++         VALUES ('x.png', '{}', 'scene', ?, datetime('now', '+1 minute'))`
++      )
++      .run(id)
++    writeFileSync(
++      environment.file,
++      JSON.stringify({
++        version: 1,
++        scenes: [
++          { name: '1', prompt: 'girl', memo: '교복 미소' },
++          { name: '2', prompt: 'girl, sitting', memo: '앉은 자세' },
++          { name: '3', prompt: 'girl, lying' }
++        ]
++      }),
++      'utf-8'
++    )
++    await importScenesJson(preset)
++    const scenes = listScenes(preset)
++    expect(scenes.map((s) => [s.name, s.memo])).toEqual([
++      ['1', '교복 미소'],
++      ['2', '앉은 자세'],
++      ['3', undefined]
++    ])
++    expect(getScene(id)?.pending).toBe(false) // 메모만 바뀐 씬은 다시 뽑을 필요 없다
++
++    // 메모 칸이 없으면 그대로, 빈 글자면 지운다
++    writeFileSync(
++      environment.file,
++      JSON.stringify({
++        version: 1,
++        scenes: [
++          { name: '1', prompt: 'girl' },
++          { name: '2', prompt: 'girl, sitting', memo: '' }
++        ]
++      }),
++      'utf-8'
++    )
++    await importScenesJson(preset)
++    expect(listScenes(preset).map((s) => s.memo)).toEqual(['교복 미소', undefined, undefined])
++
++    await exportScenesJson(preset)
++    const saved = JSON.parse(readFileSync(environment.file, 'utf-8')) as {
++      scenes: { name: string; memo?: string }[]
++    }
++    expect(saved.scenes.map((s) => s.memo)).toEqual(['교복 미소', undefined, undefined])
++  })
++})
+diff --git a/tests/custom-scene-review.test.ts b/tests/custom-scene-review.test.ts
+index 140bb1c84539e30383ff89e68bb1a8d7b678baa4..93059c1ed42fa8de25c2758e7d36d3c2364d1dfd 100644
+--- a/tests/custom-scene-review.test.ts
++++ b/tests/custom-scene-review.test.ts
+@@ -284,6 +284,18 @@ describe('custom: scene review double tap and fixed list', () => {
+     expect(useScenesStore.getState().reviewSceneId).toBeNull()
+   })
+ 
++  it('shows the scene memo next to its name', async () => {
++    useScenesStore.setState({ scenes: [pending(1), scene(2, { memo: '침대 위 미소' })] })
++    await act(async () =>
++      root.render(h(SceneReview, { scenes: [pending(1), scene(2, { memo: '침대 위 미소' })] }))
++    )
++    expect(document.body.querySelector('header')?.textContent).not.toContain('침대')
++    await act(async () => {
++      window.dispatchEvent(new KeyboardEvent('keydown', { code: 'ArrowRight', key: 'ArrowRight' }))
++    })
++    expect(document.body.querySelector('header')?.textContent).toContain('침대 위 미소')
++  })
++
+   it('keeps a scene in the review after it stops being pending', async () => {
+     await act(async () => root.render(h(SceneReview, { scenes: [pending(1), pending(2)] })))
+     // 다시 뽑기가 끝나 미생성이 풀림 → 미생성만 보기 목록에서는 빠진다

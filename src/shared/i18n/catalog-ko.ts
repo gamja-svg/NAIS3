@@ -167,7 +167,7 @@ export const KO = {
   'ui.customAckAllPendingDoneValue': '미생성 표시 {0}개를 껐습니다',
   'ui.customAckAllPendingNone': '미생성으로 표시된 씬이 없습니다',
   'ui.customReviewHint':
-    '←/→·휠·좌우로 끌어서 넘기기 · 그림 더블탭·G 바로 다시 뽑기 · R 다시 뽑기 예약 · ~ 검열 · 그림 밖 누르기·Esc 닫기',
+    '←/→·휠·좌우로 끌어서 넘기기 · ↑/↓ 프리셋 · 그림 더블탭·G 바로 다시 뽑기 · R 다시 뽑기 예약 · ~ 검열 · 그림 밖 누르기·Esc 닫기',
   'ui.customPrevious': '이전',
   'ui.customNext': '다음',
   'ui.customLaneTabs': '계정별 진행',
@@ -271,7 +271,7 @@ export const KO = {
   'ui.customCensorHint':
     '검열 (~ 키) — 이 그림에 흰칠을 합니다. 원본은 그대로 두고 칠한 그림이 대표 이미지가 됩니다.',
   'ui.customCensorFooter':
-    '휠 확대·축소 · Ctrl+휠 붓 크기 · 긋기 흰칠 · Shift 지우기 · Alt+누르기 콕 찍기 · Space+끌기 이동 · Ctrl+Z 되돌리기 · ←/→ 넘기기 · ~ 검열 끄기 · 자동 저장',
+    '휠 확대·축소 · Ctrl+휠 붓 크기 · 긋기 흰칠 · Shift 지우기 · Alt+누르기 콕 찍기 · Space+끌기 이동 · Ctrl+Z 되돌리기 · ←/→ 넘기기 · ↑/↓ 프리셋 · ~ 검열 끄기 · 자동 저장',
   'ui.customCensorPaint': '칠하기',
   'ui.customCensorPaintHint': '칠하기 — 그은 자리를 흰색으로 칠합니다',
   'ui.customCensorErase': '지우기',
@@ -298,6 +298,11 @@ export const KO = {
   'ui.customCensorModelFailedValue':
     '콕 찍기 모델을 받지 못했습니다 ({0}). 인터넷 연결을 확인한 뒤 검열을 다시 켜 주세요.',
   'ui.customCensorNoImage': '이 그림의 기록을 찾을 수 없어 저장하지 못했습니다',
+  'ui.customPresetPrevious': '이전 프리셋 (검수 모드에서 ↑)',
+  'ui.customPresetNext': '다음 프리셋 (검수 모드에서 ↓)',
+  'ui.customPresetMoveUp': '위로 옮기기',
+  'ui.customPresetMoveDown': '아래로 옮기기',
+  'ui.customPresetNoPicturesValue': '프리셋 "{0}"에는 검수할 그림이 없습니다',
   'ui.queuedForCastValue': '"{0}" 출연 예약',
   'ui.queuedWithSidebarSettings': '사이드바 설정 예약',
   'ui.deletedCast': '삭제된 출연',

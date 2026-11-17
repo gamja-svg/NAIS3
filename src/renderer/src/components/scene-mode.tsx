@@ -4,6 +4,7 @@ import {
   CalendarPlus,
   CalendarX,
   ChevronDown,
+  ChevronUp,
   Copy,
   Download,
   FileDown,
@@ -59,6 +60,7 @@ import { ReserveCount } from './reserve-count'
 import { SceneCastDialog } from './scene-cast-dialog'
 import { SceneDetail } from './scene-detail'
 import { SceneReview } from './custom-scene-review'
+import { useTouchMode } from '../lib/custom-touch-mode'
 import { TopSetButton } from './custom-top-set'
 import { noteSceneCardClick, useSceneCardDoubleClick } from '../lib/custom-scene-double-click'
 import { SortableList, SortableRow } from './sortable-list'
@@ -105,6 +107,9 @@ function PresetDropdown(): React.JSX.Element {
   const renamePreset = useScenesStore((s) => s.renamePreset)
   const deletePreset = useScenesStore((s) => s.deletePreset)
   const reorderPresets = useScenesStore((s) => s.reorderPresets)
+  const movePreset = useScenesStore((s) => s.movePreset)
+  const stepPreset = useScenesStore((s) => s.stepPreset)
+  const touchMode = useTouchMode()
   const [open, setOpen] = useState(false)
   const t = useT()
 
@@ -134,7 +139,7 @@ function PresetDropdown(): React.JSX.Element {
               ids={presets.map((p) => p.id)}
               onReorder={(ids) => void reorderPresets(ids)}
             >
-              {presets.map((p) => (
+              {presets.map((p, index) => (
                 <SortableRow
                   key={p.id}
                   id={p.id}
@@ -150,6 +155,26 @@ function PresetDropdown(): React.JSX.Element {
                   >
                     <span className="truncate">{p.name}</span>
                   </div>
+                  {/* [custom] 한 칸씩 자리 옮기기 — 끌기 어려운 화면(터치·원격)에서는 늘 보인다 */}
+                  {presets.length > 1 &&
+                    ([-1, 1] as const).map((dir) => (
+                      <button
+                        key={dir}
+                        className={cn(
+                          'shrink-0 rounded p-1 text-faint hover:text-ink disabled:pointer-events-none disabled:opacity-25',
+                          !touchMode &&
+                            'opacity-0 focus-visible:opacity-100 group-hover:opacity-100'
+                        )}
+                        disabled={dir < 0 ? index === 0 : index === presets.length - 1}
+                        onClick={() => void movePreset(p.id, dir)}
+                        title={t(dir < 0 ? 'ui.customPresetMoveUp' : 'ui.customPresetMoveDown')}
+                        aria-label={t(
+                          dir < 0 ? 'ui.customPresetMoveUp' : 'ui.customPresetMoveDown'
+                        )}
+                      >
+                        {dir < 0 ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                      </button>
+                    ))}
                   <button
                     className="shrink-0 rounded p-1 text-faint opacity-0 hover:text-ink group-hover:opacity-100"
                     onClick={async () => {
@@ -196,6 +221,26 @@ function PresetDropdown(): React.JSX.Element {
           </button>
         </PopoverContent>
       </Popover>
+      {/* [custom] 이전·다음 프리셋으로 바로 넘기기 */}
+      {presets.length > 1 && (
+        <div className="flex shrink-0 flex-col">
+          {([-1, 1] as const).map((dir) => {
+            const index = presets.findIndex((p) => p.id === activePresetId)
+            return (
+              <button
+                key={dir}
+                className="grid h-4 w-6 place-items-center rounded text-muted hover:bg-surface-2 hover:text-ink disabled:pointer-events-none disabled:opacity-25"
+                disabled={dir < 0 ? index <= 0 : index >= presets.length - 1}
+                onClick={() => void stepPreset(dir)}
+                title={t(dir < 0 ? 'ui.customPresetPrevious' : 'ui.customPresetNext')}
+                aria-label={t(dir < 0 ? 'ui.customPresetPrevious' : 'ui.customPresetNext')}
+              >
+                {dir < 0 ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+              </button>
+            )
+          })}
+        </div>
+      )}
     </>
   )
 }

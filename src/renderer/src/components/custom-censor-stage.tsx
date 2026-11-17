@@ -54,16 +54,12 @@ function loadImage(src: string): Promise<HTMLImageElement> {
   })
 }
 
-function canvasPngBase64(canvas: HTMLCanvasElement): Promise<string> {
-  return new Promise((resolve, reject) =>
-    canvas.toBlob((blob) => {
-      if (!blob) return reject(new Error('canvas'))
-      const reader = new FileReader()
-      reader.onload = () => resolve(String(reader.result).split(',')[1] ?? '')
-      reader.onerror = () => reject(new Error('canvas'))
-      reader.readAsDataURL(blob)
-    }, 'image/png')
-  )
+/**
+ * 칠 레이어를 PNG(base64)로 — 바로 끝나는 방식으로 뜬다. 나갈 때(화면에서 떼어진 뒤) 저장해야 해서,
+ * 나중에 끝나는 toBlob은 떼어진 캔버스에서 끝내 불리지 않는 일이 있다.
+ */
+function canvasPngBase64(canvas: HTMLCanvasElement): string {
+  return canvas.toDataURL('image/png').split(',')[1] ?? ''
 }
 
 /**
@@ -141,7 +137,7 @@ export function CensorStage({
       .then(async () => {
         const saved = await window.nais.invoke('custom:censorSave', {
           filePath: s.opened,
-          maskBase64: await snapshot
+          maskBase64: snapshot
         })
         s.opened = saved.filePath
         useCensorStore.getState().bump(saved.filePath)

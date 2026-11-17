@@ -72,6 +72,13 @@ interface ScenesState {
   /** 프리셋 순서 이동 (dir: -1 위 / +1 아래) */
   /** 프리셋 드래그 정렬 — 새 id 순서 반영 */
   reorderPresets: (ids: number[]) => Promise<void>
+  /** [custom] 프리셋을 목록에서 한 칸 위(-1)·아래(+1)로 옮긴다 */
+  movePreset: (id: number, dir: -1 | 1) => Promise<void>
+  /**
+   * [custom] 이전(-1)·다음(+1) 프리셋으로 넘어간다 (끝에서는 그대로).
+   * 검수 모드에서 넘기면 넘어간 프리셋의 첫 그림으로 검수를 이어 간다.
+   */
+  stepPreset: (dir: -1 | 1) => Promise<void>
 
   load: () => Promise<void>
   select: (id: number | null) => void
@@ -254,6 +261,26 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
     const byId = new Map(get().presets.map((p) => [p.id, p]))
     set({ presets: ids.map((pid) => byId.get(pid)!).filter(Boolean) })
     await window.nais.invoke('scenePresets:reorder', { ids })
+  },
+  movePreset: async (id, dir) => {
+    const ids = get().presets.map((p) => p.id)
+    const from = ids.indexOf(id)
+    const to = from + dir
+    if (from < 0 || to < 0 || to >= ids.length) return
+    ids.splice(to, 0, ...ids.splice(from, 1))
+    await get().reorderPresets(ids)
+  },
+  stepPreset: async (dir) => {
+    const { presets, activePresetId, reviewSceneId } = get()
+    const next = presets[presets.findIndex((p) => p.id === activePresetId) + dir]
+    if (!next || next.id === activePresetId) return
+    const reviewing = reviewSceneId != null
+    await get().setActivePreset(next.id) // 검수는 여기서 닫힌다 (씬 목록이 바뀐다)
+    if (!reviewing || get().activePresetId !== next.id) return
+    const { scenes, pendingOnly } = get()
+    const first = scenes.find((s) => !!s.thumbnailPath && (!pendingOnly || s.pending))
+    if (first) set({ reviewSceneId: first.id })
+    else toast(t('ui.customPresetNoPicturesValue', next.name), 'info')
   },
   setPresetDefaultResolution: async (id, width, height) => {
     set({

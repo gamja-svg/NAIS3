@@ -167,7 +167,7 @@ export const EN = {
   'ui.customAckAllPendingDoneValue': 'Cleared {0} not-generated marks',
   'ui.customAckAllPendingNone': 'No scenes are marked as not generated',
   'ui.customReviewHint':
-    '←/→, wheel or swipe to browse · double-tap the picture or G to regenerate now · R queue again · ~ censor · tap outside the picture or Esc to close',
+    '←/→, wheel or swipe to browse · ↑/↓ preset · double-tap the picture or G to regenerate now · R queue again · ~ censor · tap outside the picture or Esc to close',
   'ui.customPrevious': 'Previous',
   'ui.customNext': 'Next',
   'ui.customLaneTabs': 'Progress by account',
@@ -275,7 +275,7 @@ export const EN = {
   'ui.customCensorHint':
     'Censor (~ key) — paint white over this image. The original is kept; the painted copy becomes the cover.',
   'ui.customCensorFooter':
-    'Wheel zoom · Ctrl+wheel brush size · Drag paint · Shift erase · Alt+click tap-to-shape · Space+drag move · Ctrl+Z undo · ←/→ browse · ~ leave censor · Saved automatically',
+    'Wheel zoom · Ctrl+wheel brush size · Drag paint · Shift erase · Alt+click tap-to-shape · Space+drag move · Ctrl+Z undo · ←/→ browse · ↑/↓ preset · ~ leave censor · Saved automatically',
   'ui.customCensorPaint': 'Paint',
   'ui.customCensorPaintHint': 'Paint — cover what you draw over in white',
   'ui.customCensorErase': 'Erase',
@@ -302,6 +302,11 @@ export const EN = {
   'ui.customCensorModelFailedValue':
     'Could not download the tap-to-shape model ({0}). Check your connection, then turn Censor on again.',
   'ui.customCensorNoImage': 'Could not save: no record of this image was found',
+  'ui.customPresetPrevious': 'Previous preset (↑ in review)',
+  'ui.customPresetNext': 'Next preset (↓ in review)',
+  'ui.customPresetMoveUp': 'Move up',
+  'ui.customPresetMoveDown': 'Move down',
+  'ui.customPresetNoPicturesValue': 'Preset "{0}" has no pictures to review',
   'ui.queuedForCastValue': 'Queued for cast "{0}"',
   'ui.queuedWithSidebarSettings': 'Queued with sidebar settings',
   'ui.deletedCast': 'Deleted cast',

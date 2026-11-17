@@ -10,6 +10,7 @@ import { toast } from '../stores/toast-store'
 import { ImageContextMenu } from './image-context-menu'
 import { ContextMenuItem, ContextMenuSeparator } from './ui/context-menu'
 import { useScenesStore } from '../stores/scenes-store'
+import { useTouchMode } from '../lib/custom-touch-mode'
 
 export function HistoryPanel(): React.JSX.Element {
   const t = useT()
@@ -20,6 +21,8 @@ export function HistoryPanel(): React.JSX.Element {
   const refreshHistory = useGenerationStore((s) => s.refreshHistory)
   const setCenterMode = useLayoutStore((s) => s.setCenterMode)
   const goToScene = useScenesStore((s) => s.goToScene)
+  // [custom] 터치·원격 모드에서는 끌면 목록이 넘어가야 한다 — 그림을 집어 끄는 동작(메타데이터 열기)을 끈다
+  const touchMode = useTouchMode()
 
   const deleteOne = async (id: number, filePath: string): Promise<void> => {
     await window.nais.invoke('images:delete', { id })
@@ -100,6 +103,11 @@ export function HistoryPanel(): React.JSX.Element {
                     view(item.filePath)
                     setCenterMode('main') // 씬/디렉터 페이지에서도 클릭 시 메인으로 이동해 원본 표시
                   }}
+                  // [custom] 두 번 누르면 이 그림을 만든 씬이 있는 곳으로 (씬 그림만)
+                  onDoubleClick={() => {
+                    if (item.sceneId != null && item.presetId != null)
+                      void goToScene(item.presetId, item.sceneId)
+                  }}
                 >
                   {item.thumbnailUrl && (
                     <img
@@ -108,7 +116,7 @@ export function HistoryPanel(): React.JSX.Element {
                       loading="lazy"
                       {...thumbnailFallback(item.filePath)}
                       // 프리뷰로 드래그해서 메타데이터 열기
-                      draggable
+                      draggable={!touchMode}
                       onDragStart={(e) => {
                         e.dataTransfer.setData('nais/file-path', item.filePath)
                         e.dataTransfer.effectAllowed = 'copy'

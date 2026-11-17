@@ -1,4 +1,14 @@
-import { Brush, ChevronLeft, ChevronRight, Download, Plus, RefreshCw, X } from 'lucide-react'
+import {
+  Brush,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  ChevronUp,
+  Download,
+  Plus,
+  RefreshCw,
+  X
+} from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { Scene } from '@shared/types'
@@ -59,8 +69,13 @@ export function SceneReview({ scenes }: { scenes: Scene[] }): React.JSX.Element 
   )
   // Claude 창이 열려 있으면 그 자리는 비워 둔다 (검수하면서 대화할 수 있게)
   const claudeWidth = useClaudePanelStore((s) => (s.open ? s.width : 0))
-  // 검열(흰칠) — 켜 두면 씬을 넘겨도 유지된다
-  const [censor, setCensor] = useState(false)
+  // 검열(흰칠) — 켜 두면 씬·프리셋을 넘겨도 유지된다
+  const censor = useCensorStore((s) => s.on)
+  const toggleCensor = useCensorStore((s) => s.toggle)
+  // 이전·다음 프리셋 (↑/↓) — 넘어간 프리셋의 첫 그림으로 검수를 이어 간다
+  const stepPreset = useScenesStore((s) => s.stepPreset)
+  const presetIndex = useScenesStore((s) => s.presets.findIndex((p) => p.id === s.activePresetId))
+  const presetCount = useScenesStore((s) => s.presets.length)
   const censorRevs = useCensorStore((s) => s.revs)
   useEffect(() => bindCensorEvents(), [])
 
@@ -132,7 +147,9 @@ export function SceneReview({ scenes }: { scenes: Scene[] }): React.JSX.Element 
       else if (e.code === 'KeyR' && !e.repeat) queue()
       else if (e.code === 'KeyG' && !e.repeat) regenerate()
       // 물결표(~) 키 — 검열 켜기·끄기 (Shift 없이 눌러도 된다)
-      else if (e.code === 'Backquote' && !e.repeat) setCensor((on) => !on)
+      else if (e.code === 'Backquote' && !e.repeat) toggleCensor()
+      else if (e.key === 'ArrowUp' && !e.repeat) void stepPreset(-1)
+      else if (e.key === 'ArrowDown' && !e.repeat) void stepPreset(1)
       else return
       e.preventDefault()
       e.stopPropagation()
@@ -281,7 +298,34 @@ export function SceneReview({ scenes }: { scenes: Scene[] }): React.JSX.Element 
     >
       <header className="flex shrink-0 items-center gap-2 px-4 py-3">
         <div className="min-w-0 flex-1">
-          <div className="truncate text-[12px] opacity-70">{presetName}</div>
+          <div className="flex min-w-0 items-center gap-1 text-[12px]">
+            <span className="truncate opacity-70">{presetName}</span>
+            {presetCount > 1 && (
+              <>
+                <button
+                  className="grid size-6 shrink-0 place-items-center rounded-full bg-white/10 hover:bg-white/20 disabled:pointer-events-none disabled:opacity-25"
+                  disabled={presetIndex <= 0}
+                  title={t('ui.customPresetPrevious')}
+                  aria-label={t('ui.customPresetPrevious')}
+                  onClick={() => void stepPreset(-1)}
+                >
+                  <ChevronUp size={14} />
+                </button>
+                <button
+                  className="grid size-6 shrink-0 place-items-center rounded-full bg-white/10 hover:bg-white/20 disabled:pointer-events-none disabled:opacity-25"
+                  disabled={presetIndex >= presetCount - 1}
+                  title={t('ui.customPresetNext')}
+                  aria-label={t('ui.customPresetNext')}
+                  onClick={() => void stepPreset(1)}
+                >
+                  <ChevronDown size={14} />
+                </button>
+                <span className="shrink-0 font-mono opacity-60">
+                  {presetIndex + 1} / {presetCount}
+                </span>
+              </>
+            )}
+          </div>
           <div className="flex min-w-0 items-baseline gap-2">
             <span className="truncate text-[19px] font-semibold">{scene.name}</span>
             {scene.memo && (
@@ -317,7 +361,7 @@ export function SceneReview({ scenes }: { scenes: Scene[] }): React.JSX.Element 
           )}
           aria-pressed={censor}
           title={t('ui.customCensorHint')}
-          onClick={() => setCensor((on) => !on)}
+          onClick={toggleCensor}
         >
           <Brush size={15} /> {t('ui.customCensor')}
         </button>

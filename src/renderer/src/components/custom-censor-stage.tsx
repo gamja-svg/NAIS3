@@ -558,29 +558,29 @@ export function CensorStage({
       id: 'paint',
       label: t('ui.customCensorPaint'),
       hint: t('ui.customCensorPaintHint'),
-      icon: <Brush size={15} />
+      icon: <Brush size={22} />
     },
     {
       id: 'erase',
       label: t('ui.customCensorErase'),
       hint: t('ui.customCensorEraseHint'),
-      icon: <Eraser size={15} />
+      icon: <Eraser size={22} />
     },
     {
       id: 'pick',
       label: t('ui.customCensorPick'),
       hint: t('ui.customCensorPickHint'),
-      icon: <MousePointerClick size={15} />
+      icon: <MousePointerClick size={22} />
     },
     {
       id: 'pan',
       label: t('ui.customCensorPan'),
       hint: t('ui.customCensorPanHint'),
-      icon: <Hand size={15} />
+      icon: <Hand size={22} />
     }
   ]
   const iconButton =
-    'grid size-8 shrink-0 place-items-center rounded-full text-white/85 transition hover:bg-white/15 disabled:pointer-events-none disabled:opacity-30'
+    'grid size-10 shrink-0 place-items-center rounded-full text-white/85 transition hover:bg-white/15 disabled:pointer-events-none disabled:opacity-30'
   const status =
     modelPercent !== null
       ? t('ui.customCensorModelValue', modelPercent)
@@ -647,110 +647,110 @@ export function CensorStage({
         )}
       </div>
 
+      {/* 양옆 큰 버튼 — 그림 옆 빈 자리에 둔다 (손가락으로 누르기 좋게). 가운데는 넘기기 화살표 자리라 위·아래로 나눈다 */}
       <div
         role="toolbar"
         aria-label={t('ui.customCensor')}
-        className="absolute inset-x-0 bottom-2 mx-auto flex w-fit max-w-full flex-wrap items-center justify-center gap-1 rounded-2xl bg-black/75 px-2 py-1.5 text-[12.5px] shadow-lg backdrop-blur"
+        className="absolute -left-[76px] top-[62px] flex w-[72px] flex-col gap-1"
         onPointerDown={(e) => e.stopPropagation()}
       >
-        {tools.map((item) => (
-          <button
+        {tools.slice(0, 3).map((item) => (
+          <RailButton
             key={item.id}
-            type="button"
-            aria-pressed={tool === item.id}
-            title={item.hint}
+            label={item.label}
+            hint={item.hint}
+            active={tool === item.id}
             onClick={() => setTool(item.id)}
-            className={cn(
-              'flex h-8 shrink-0 items-center gap-1 rounded-full px-2.5 transition',
-              tool === item.id
-                ? 'bg-accent font-medium text-on-accent'
-                : 'text-white/85 hover:bg-white/15'
-            )}
           >
-            {item.icon} {item.label}
-          </button>
+            {item.icon}
+          </RailButton>
         ))}
-        <span className="mx-1 h-5 w-px shrink-0 bg-white/20" />
-        <button
-          type="button"
-          className={iconButton}
-          aria-label={t('ui.customCensorBrushSmaller')}
-          title={t('ui.customCensorBrushHint')}
-          disabled={brush <= BRUSH_MIN}
-          onClick={() => setBrush(stepBrush(brush, false))}
+      </div>
+      <div
+        className="absolute -left-[76px] bottom-0 flex w-[72px] flex-col gap-1"
+        onPointerDown={(e) => e.stopPropagation()}
+      >
+        <RailButton
+          label={tools[3].label}
+          hint={tools[3].hint}
+          active={tool === 'pan'}
+          onClick={() => setTool('pan')}
         >
-          <Minus size={15} />
-        </button>
-        <span
-          className="w-12 shrink-0 text-center font-mono text-[12px] opacity-85"
-          title={t('ui.customCensorBrushHint')}
+          {tools[3].icon}
+        </RailButton>
+        <RailButton
+          label={t('ui.customCensorSmart')}
+          hint={t('ui.customCensorSmartHint')}
+          active={smart}
+          plain
+          onClick={() => setSmart(!smart)}
         >
-          {t('ui.customCensorBrushValue', brush)}
-        </span>
-        <button
-          type="button"
-          className={iconButton}
-          aria-label={t('ui.customCensorBrushBigger')}
-          title={t('ui.customCensorBrushHint')}
-          disabled={brush >= BRUSH_MAX}
-          onClick={() => setBrush(stepBrush(brush, true))}
-        >
-          <Plus size={15} />
-        </button>
-        <span className="mx-1 h-5 w-px shrink-0 bg-white/20" />
-        <button
-          type="button"
-          className={iconButton}
-          aria-label={t('ui.zoomOut')}
-          title={t('ui.zoomOut')}
-          onClick={() => zoomButton(1 / 1.4)}
-        >
-          <ZoomOut size={15} />
-        </button>
-        <button
-          type="button"
-          className={iconButton}
-          aria-label={t('ui.customCensorFit')}
-          title={t('ui.customCensorFit')}
-          onClick={fit}
-        >
-          <Maximize size={15} />
-        </button>
-        <button
-          type="button"
-          className={iconButton}
-          aria-label={t('ui.zoomIn')}
-          title={t('ui.zoomIn')}
-          onClick={() => zoomButton(1.4)}
-        >
-          <ZoomIn size={15} />
-        </button>
-        <span className="mx-1 h-5 w-px shrink-0 bg-white/20" />
-        <button
-          type="button"
-          className={iconButton}
-          aria-label={t('ui.customCensorUndo')}
-          title={t('ui.customCensorUndo')}
+          <Pipette size={22} />
+        </RailButton>
+      </div>
+      <div
+        className="absolute -right-[76px] top-0 flex w-[72px] flex-col gap-1"
+        onPointerDown={(e) => e.stopPropagation()}
+      >
+        <RailButton
+          label={t('ui.customCensorUndoShort')}
+          hint={t('ui.customCensorUndo')}
           disabled={undoCount === 0}
           onClick={undoOnce}
         >
-          <Undo2 size={15} />
-        </button>
-        <span className="mx-1 h-5 w-px shrink-0 bg-white/20" />
-        <button
-          type="button"
-          aria-pressed={smart}
-          title={t('ui.customCensorSmartHint')}
-          onClick={() => setSmart(!smart)}
-          className={cn(
-            'flex h-8 shrink-0 items-center gap-1 rounded-full px-2.5 transition',
-            smart ? 'bg-white font-medium text-black' : 'text-white/85 hover:bg-white/15'
-          )}
+          <Undo2 size={22} />
+        </RailButton>
+        <RailButton
+          label={t('ui.customCensorBrushBigger')}
+          hint={t('ui.customCensorBrushHint')}
+          disabled={brush >= BRUSH_MAX}
+          onClick={() => setBrush(stepBrush(brush, true))}
         >
-          <Pipette size={15} /> {t('ui.customCensorSmart')}
-        </button>
+          <Plus size={22} />
+        </RailButton>
+        <RailButton
+          label={t('ui.customCensorBrushSmaller')}
+          hint={t('ui.customCensorBrushHint')}
+          disabled={brush <= BRUSH_MIN}
+          onClick={() => setBrush(stepBrush(brush, false))}
+        >
+          <Minus size={22} />
+        </RailButton>
+      </div>
+      <div
+        className="absolute -right-[76px] bottom-0 flex w-[72px] flex-col gap-1"
+        onPointerDown={(e) => e.stopPropagation()}
+      >
+        <RailButton label={t('ui.zoomIn')} hint={t('ui.zoomIn')} onClick={() => zoomButton(1.4)}>
+          <ZoomIn size={22} />
+        </RailButton>
+        <RailButton
+          label={t('ui.zoomOut')}
+          hint={t('ui.zoomOut')}
+          onClick={() => zoomButton(1 / 1.4)}
+        >
+          <ZoomOut size={22} />
+        </RailButton>
+        <RailButton
+          label={t('ui.customCensorFitShort')}
+          hint={t('ui.customCensorFit')}
+          onClick={fit}
+        >
+          <Maximize size={22} />
+        </RailButton>
+      </div>
+
+      {/* 아래 띠 — 지금 값(붓 크기·색 범위)과 방금 찍은 모양 바꾸기, 저장 상태 */}
+      <div
+        className="absolute inset-x-0 bottom-2 mx-auto flex w-fit max-w-full flex-wrap items-center justify-center gap-1 rounded-2xl bg-black/75 px-3 py-1.5 text-[12.5px] shadow-lg backdrop-blur"
+        onPointerDown={(e) => e.stopPropagation()}
+      >
+        <span className="shrink-0 font-mono opacity-85" title={t('ui.customCensorBrushHint')}>
+          {t('ui.customCensorBrushValue', brush)}
+        </span>
         {smart && (
           <>
+            <span className="mx-1 h-5 w-px shrink-0 bg-white/20" />
             <button
               type="button"
               className={iconButton}
@@ -759,10 +759,10 @@ export function CensorStage({
               disabled={tolerance <= TOLERANCE_MIN}
               onClick={() => setTolerance(stepTolerance(tolerance, false))}
             >
-              <Minus size={15} />
+              <Minus size={17} />
             </button>
             <span
-              className="w-9 shrink-0 text-center font-mono text-[12px] opacity-85"
+              className="w-10 shrink-0 text-center font-mono opacity-85"
               title={t('ui.customCensorToleranceHint')}
             >
               {t('ui.customCensorToleranceValue', tolerance)}
@@ -775,7 +775,7 @@ export function CensorStage({
               disabled={tolerance >= TOLERANCE_MAX}
               onClick={() => setTolerance(stepTolerance(tolerance, true))}
             >
-              <Plus size={15} />
+              <Plus size={17} />
             </button>
           </>
         )}
@@ -784,7 +784,7 @@ export function CensorStage({
             <span className="mx-1 h-5 w-px shrink-0 bg-white/20" />
             <button
               type="button"
-              className="h-8 shrink-0 rounded-full px-2.5 text-white/85 hover:bg-white/15 disabled:pointer-events-none disabled:opacity-30"
+              className="h-10 shrink-0 rounded-full px-3.5 text-[13px] text-white/90 hover:bg-white/15 disabled:pointer-events-none disabled:opacity-30"
               disabled={lastPick.index === 0}
               onClick={() => void resizePick(-1)}
             >
@@ -792,7 +792,7 @@ export function CensorStage({
             </button>
             <button
               type="button"
-              className="h-8 shrink-0 rounded-full px-2.5 text-white/85 hover:bg-white/15 disabled:pointer-events-none disabled:opacity-30"
+              className="h-10 shrink-0 rounded-full px-3.5 text-[13px] text-white/90 hover:bg-white/15 disabled:pointer-events-none disabled:opacity-30"
               disabled={lastPick.index === lastPick.result.shapes.length - 1}
               onClick={() => void resizePick(1)}
             >
@@ -807,5 +807,47 @@ export function CensorStage({
         )}
       </div>
     </div>
+  )
+}
+
+/** 그림 옆에 세로로 놓는 큰 버튼 (아이콘 + 이름) — 검수 화면의 `검열` 켜기 버튼도 같은 모양을 쓴다 */
+export function RailButton({
+  label,
+  hint,
+  active,
+  plain,
+  disabled,
+  onClick,
+  children
+}: {
+  label: string
+  hint: string
+  /** 켜짐·고른 도구 (없으면 그냥 누르는 버튼) */
+  active?: boolean
+  /** 켜졌을 때 강조색 대신 흰색 (도구가 아니라 켜고 끄는 것) */
+  plain?: boolean
+  disabled?: boolean
+  onClick: () => void
+  children: React.ReactNode
+}): React.JSX.Element {
+  return (
+    <button
+      type="button"
+      aria-pressed={active}
+      title={hint}
+      disabled={disabled}
+      onClick={onClick}
+      className={cn(
+        'flex h-[54px] w-full shrink-0 flex-col items-center justify-center gap-0.5 rounded-xl text-[11px] leading-none transition disabled:pointer-events-none disabled:opacity-30',
+        active
+          ? plain
+            ? 'bg-white font-semibold text-black'
+            : 'bg-accent font-semibold text-on-accent'
+          : 'bg-white/10 text-white/90 hover:bg-white/20'
+      )}
+    >
+      {children}
+      <span className="max-w-full truncate px-1">{label}</span>
+    </button>
   )
 }

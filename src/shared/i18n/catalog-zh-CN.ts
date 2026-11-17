@@ -291,6 +291,8 @@ export const ZH_CN = {
   'ui.customCensorModelValue': '正在下载取形模型 {0}%',
   'ui.customCensorModelFailedValue': '无法下载取形模型（{0}）。请检查网络连接后重新开启遮挡。',
   'ui.customCensorNoImage': '找不到这张图的记录，无法保存',
+  'ui.customCensorUndoShort': '撤销',
+  'ui.customCensorFitShort': '适应',
   'ui.customCensorSmart': '颜色匹配',
   'ui.customCensorSmartHint':
     '颜色匹配 — 只涂与起笔处颜色相近的像素（擦除也一样）。线条和其他颜色的部分会保留。',

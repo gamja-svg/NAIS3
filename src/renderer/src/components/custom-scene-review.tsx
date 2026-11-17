@@ -21,7 +21,7 @@ import { useSceneFrame, useSceneGenerating } from '../stores/custom-parallel-sto
 import { useGenerationStore } from '../stores/generation-store'
 import { useScenesStore } from '../stores/scenes-store'
 import { toast } from '../stores/toast-store'
-import { CensorStage } from './custom-censor-stage'
+import { CensorStage, RailButton } from './custom-censor-stage'
 import { ImageContextMenu } from './image-context-menu'
 
 /** 이만큼 가로로 끌면 넘긴 것으로 본다 (원격 접속의 터치는 마우스 드래그로 들어온다) */
@@ -355,17 +355,6 @@ export function SceneReview({ scenes }: { scenes: Scene[] }): React.JSX.Element 
           </div>
         </div>
         <button
-          className={cn(
-            'flex h-10 items-center gap-1.5 rounded-full px-3.5 text-[13px]',
-            censor ? 'bg-white font-medium text-black' : 'bg-white/10 hover:bg-white/20'
-          )}
-          aria-pressed={censor}
-          title={t('ui.customCensorHint')}
-          onClick={toggleCensor}
-        >
-          <Brush size={15} /> {t('ui.customCensor')}
-        </button>
-        <button
           className="flex h-10 items-center gap-1.5 rounded-full bg-accent px-3.5 text-[13px] font-medium text-on-accent hover:opacity-90"
           title={t('ui.customReviewRegenHint')}
           onClick={regenerate}
@@ -405,6 +394,18 @@ export function SceneReview({ scenes }: { scenes: Scene[] }): React.JSX.Element 
         data-review-stage
         className="relative flex min-h-0 flex-1 items-center justify-center px-20 pb-2"
       >
+        {/* 검열 켜기·끄기 — 그림 옆 빈 자리에 크게 (켜면 아래로 도구 버튼이 이어진다) */}
+        <div className="absolute left-1 top-0 w-[72px]">
+          <RailButton
+            label={t('ui.customCensor')}
+            hint={t('ui.customCensorHint')}
+            active={censor}
+            plain
+            onClick={toggleCensor}
+          >
+            <Brush size={22} />
+          </RailButton>
+        </div>
         <button
           className={cn(navButton, 'left-4')}
           disabled={!hasPrev}

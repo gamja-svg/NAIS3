@@ -1,0 +1,467 @@
+diff --git a/src/main/custom/censor.ts b/src/main/custom/censor.ts
+index 8117743914256767cdaa4f1c7d0da52e3a0908aa..d3cc51e72ce2d544877a3851a4b4eeb8fe47e097 100644
+--- a/src/main/custom/censor.ts
++++ b/src/main/custom/censor.ts
+@@ -3,7 +3,7 @@ import { extname } from 'path'
+ import type { CensorOpenResult, CensorSaveResult } from '../../shared/types'
+ import { getDb } from '../db'
+ import { t } from '../i18n'
+-import { saveGeneratedImage } from '../images/storage'
++import { isUnderImagesRoot, saveGeneratedImage } from '../images/storage'
+ import { getPresetName, getScene } from '../scenes/repo'
+ import sharp from '../sharp'
+ 
+@@ -84,6 +84,13 @@ export async function openCensor(filePath: string): Promise<CensorOpenResult> {
+   }
+ }
+ 
++/** 바탕 그림을 data: 주소로 — 화면이 픽셀을 읽을 수 있게 (그림 폴더 안의 파일만) */
++export function readCensorBase(filePath: string): string {
++  if (!isUnderImagesRoot(filePath)) throw new Error(t('ui.customCensorNoImage'))
++  const mime = extname(filePath).toLowerCase() === '.webp' ? 'image/webp' : 'image/png'
++  return `data:${mime};base64,${readFileSync(filePath).toString('base64')}`
++}
++
+ const PNG_SIG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+ /** 그림 내용이 아닌 청크 (프롬프트·색 정보) — 원본 것을 새 PNG로 옮긴다 */
+ const KEEP_CHUNKS = new Set([
+diff --git a/src/main/ipc.ts b/src/main/ipc.ts
+index a4e67066e77d2ec57b8740d3378df635f3a286ff..0b2a9f002a0097f0e5d9c2563f77c5f1f277ee54 100644
+--- a/src/main/ipc.ts
++++ b/src/main/ipc.ts
+@@ -139,7 +139,7 @@ import {
+   runWatchRequest,
+   setTopSetDir
+ } from './custom/top-set'
+-import { openCensor, saveCensor } from './custom/censor'
++import { openCensor, readCensorBase, saveCensor } from './custom/censor'
+ import { pickShape, warmSam } from './custom/censor-sam'
+ import {
+   arrangeFolderGroups,
+@@ -656,6 +656,7 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
+   })
+   handle('custom:censorPick', ({ filePath, x, y }) => pickShape(samDeps, filePath, x, y))
+   handle('custom:censorWarm', () => warmSam(samDeps))
++  handle('custom:censorBase', ({ filePath }) => ({ dataUrl: readCensorBase(filePath) }))
+   handle('custom:topSetPickDir', async () => {
+     const dir = await pickTopSetDir()
+     return dir ? { dir } : { dir: getTopSetDir(), canceled: true }
+diff --git a/src/renderer/src/components/custom-censor-stage.tsx b/src/renderer/src/components/custom-censor-stage.tsx
+index b1c242d4cc8b18087c92e92e22bfcb0a3abbb2e3..325a6e057453a3fad16f03e59416944dfe749e56 100644
+--- a/src/renderer/src/components/custom-censor-stage.tsx
++++ b/src/renderer/src/components/custom-censor-stage.tsx
+@@ -6,6 +6,7 @@ import {
+   Maximize,
+   Minus,
+   MousePointerClick,
++  Pipette,
+   Plus,
+   Undo2,
+   ZoomIn,
+@@ -18,21 +19,29 @@ import {
+   BRUSH_DEFAULT,
+   BRUSH_MAX,
+   BRUSH_MIN,
++  TOLERANCE_DEFAULT,
++  TOLERANCE_MAX,
++  TOLERANCE_MIN,
+   fitView,
++  sampleColor,
++  smartDab,
+   stepBrush,
++  stepTolerance,
+   toImage,
+   toolFor,
+   zoomAt,
+   type CensorTool,
+-  type CensorView
++  type CensorView,
++  type Pixels
+ } from '../lib/custom-censor'
+ import { useT } from '../lib/i18n'
+-import { intSetting, useStoredSetting } from '../lib/stored-setting'
++import { boolSetting, intSetting, useStoredSetting } from '../lib/stored-setting'
+ import { cn } from '../lib/utils'
+ import { useCensorStore } from '../stores/custom-censor-store'
+ import { toast } from '../stores/toast-store'
+ 
+ const BRUSH_SETTING = intSetting(BRUSH_MIN, BRUSH_MAX)
++const TOLERANCE_SETTING = intSetting(TOLERANCE_MIN, TOLERANCE_MAX)
+ /** 마지막으로 고친 뒤 이만큼 손을 떼면 저장한다 */
+ const SAVE_DELAY_MS = 1200
+ const UNDO_MAX = 12
+@@ -65,7 +74,7 @@ function canvasPngBase64(canvas: HTMLCanvasElement): string {
+ /**
+  * [custom] 검수 모드의 검열 — 대표 이미지에 흰칠을 한다.
+  * 휠 = 확대·축소, Ctrl+휠 = 붓 크기, 긋기 = 흰칠, Shift = 지우기, Alt+누르기 = 콕 찍기(누른 자리의 모양대로 칠함),
+- * Space·가운데 버튼으로 끌기 = 이동, Ctrl+Z = 되돌리기. 키 없이 쓰는 화면용으로 아래에 같은 도구 버튼이 있다.
++ * Space·가운데 버튼으로 끌기 = 이동, Ctrl+Z = 되돌리기. `색 맞춤`을 켜면 붓이 처음 닿은 자리와 비슷한 색만 칠한다(지운다). 키 없이 쓰는 화면용으로 아래에 같은 도구 버튼이 있다.
+  * 원본 그림 위에 칠 레이어(흰색 + 알파)를 겹쳐 보여 주고, 손을 떼면 잠시 뒤 알아서 저장한다 —
+  * 원본은 그대로 두고 칠한 그림이 씬의 새 대표 이미지가 된다 (main/custom/censor.ts).
+  */
+@@ -89,12 +98,53 @@ export function CensorStage({
+   const toolRef = useRef(tool)
+   const [brush, setBrush] = useStoredSetting('custom_censor_brush', BRUSH_DEFAULT, BRUSH_SETTING)
+   const brushRef = useRef(brush)
++  // 색 맞춤 — 붓이 처음 닿은 자리의 색과 비슷한 픽셀만 칠한다 (원본 픽셀은 켰을 때 한 번 읽어 온다)
++  const [smart, setSmart] = useStoredSetting('custom_censor_smart', false, boolSetting)
++  const [tolerance, setTolerance] = useStoredSetting(
++    'custom_censor_tolerance',
++    TOLERANCE_DEFAULT,
++    TOLERANCE_SETTING
++  )
++  const smartRef = useRef({ on: smart, tolerance })
++  const basePixels = useRef<{ path: string; pixels: Pixels } | null>(null)
++  const strokeColor = useRef<[number, number, number] | null>(null)
+   // 누르기·휠 처리기가 늘 지금 값을 보게 맞춰 둔다
+   useLayoutEffect(() => {
+     viewRef.current = view
+     toolRef.current = tool
+     brushRef.current = brush
++    smartRef.current = { on: smart, tolerance }
+   })
++
++  // 색 맞춤을 켰거나 그림이 바뀌면 원본 픽셀을 읽어 둔다 (읽기 전에 그은 것은 보통 붓으로 칠해진다)
++  const basePath = session?.basePath
++  useEffect(() => {
++    if (!smart || !basePath || basePixels.current?.path === basePath) return
++    let alive = true
++    void (async () => {
++      try {
++        const { dataUrl } = await window.nais.invoke('custom:censorBase', { filePath: basePath })
++        const img = await loadImage(dataUrl)
++        if (!alive) return
++        const canvas = document.createElement('canvas')
++        canvas.width = img.naturalWidth
++        canvas.height = img.naturalHeight
++        const c = canvas.getContext('2d', { willReadFrequently: true })
++        if (!c) return
++        c.drawImage(img, 0, 0)
++        const data = c.getImageData(0, 0, canvas.width, canvas.height)
++        basePixels.current = {
++          path: basePath,
++          pixels: { width: data.width, height: data.height, data: data.data }
++        }
++      } catch (error) {
++        toast(error instanceof Error ? error.message : String(error), 'error')
++      }
++    })()
++    return () => {
++      alive = false
++    }
++  }, [smart, basePath])
+   const [busy, setBusy] = useState(false)
+   const [undoCount, setUndoCount] = useState(0)
+   const undo = useRef<ImageData[]>([])
+@@ -324,6 +374,41 @@ export function CensorStage({
+   ): void => {
+     const c = ctx()
+     if (!c) return
++    const base = basePixels.current
++    const s = sessionRef.current
++    if (smartRef.current.on && s && base?.path === s.basePath) {
++      // 색 맞춤: 선을 따라 붓 원을 촘촘히 찍되, 기준 색과 비슷한 픽셀만 바꾼다
++      const radius = brushRef.current / 2
++      const start = from ?? { x, y }
++      strokeColor.current ??= sampleColor(base.pixels, start.x, start.y)
++      const bx = Math.max(0, Math.floor(Math.min(start.x, x) - radius))
++      const by = Math.max(0, Math.floor(Math.min(start.y, y) - radius))
++      const bw = Math.min(s.width, Math.ceil(Math.max(start.x, x) + radius) + 1) - bx
++      const bh = Math.min(s.height, Math.ceil(Math.max(start.y, y) + radius) + 1) - by
++      if (bw <= 0 || bh <= 0) return
++      const layer = c.getImageData(bx, by, bw, bh)
++      const steps = Math.max(
++        1,
++        Math.ceil(Math.hypot(x - start.x, y - start.y) / Math.max(1, radius / 2))
++      )
++      for (let i = from ? 1 : 0; i <= (from ? steps : 0); i++) {
++        const k = from ? i / steps : 0
++        smartDab(
++          layer,
++          bx,
++          by,
++          base.pixels,
++          start.x + (x - start.x) * k,
++          start.y + (y - start.y) * k,
++          radius,
++          strokeColor.current,
++          smartRef.current.tolerance,
++          erase
++        )
++      }
++      c.putImageData(layer, bx, by)
++      return
++    }
+     c.globalCompositeOperation = erase ? 'destination-out' : 'source-over'
+     c.strokeStyle = c.fillStyle = '#fff'
+     c.lineWidth = brushRef.current
+@@ -363,6 +448,7 @@ export function CensorStage({
+     pushUndo(snapshot())
+     setLastPick(null)
+     erasing.current = using === 'erase'
++    strokeColor.current = null // 기준 색은 긋기 시작한 자리에서 새로 잡는다
+     strokeTo(at.x, at.y, erasing.current)
+     drag.current = { kind: 'stroke', id: e.pointerId, x: at.x, y: at.y }
+   }
+@@ -650,6 +736,49 @@ export function CensorStage({
+         >
+           <Undo2 size={15} />
+         </button>
++        <span className="mx-1 h-5 w-px shrink-0 bg-white/20" />
++        <button
++          type="button"
++          aria-pressed={smart}
++          title={t('ui.customCensorSmartHint')}
++          onClick={() => setSmart(!smart)}
++          className={cn(
++            'flex h-8 shrink-0 items-center gap-1 rounded-full px-2.5 transition',
++            smart ? 'bg-white font-medium text-black' : 'text-white/85 hover:bg-white/15'
++          )}
++        >
++          <Pipette size={15} /> {t('ui.customCensorSmart')}
++        </button>
++        {smart && (
++          <>
++            <button
++              type="button"
++              className={iconButton}
++              aria-label={t('ui.customCensorToleranceSmaller')}
++              title={t('ui.customCensorToleranceHint')}
++              disabled={tolerance <= TOLERANCE_MIN}
++              onClick={() => setTolerance(stepTolerance(tolerance, false))}
++            >
++              <Minus size={15} />
++            </button>
++            <span
++              className="w-9 shrink-0 text-center font-mono text-[12px] opacity-85"
++              title={t('ui.customCensorToleranceHint')}
++            >
++              {t('ui.customCensorToleranceValue', tolerance)}
++            </span>
++            <button
++              type="button"
++              className={iconButton}
++              aria-label={t('ui.customCensorToleranceBigger')}
++              title={t('ui.customCensorToleranceHint')}
++              disabled={tolerance >= TOLERANCE_MAX}
++              onClick={() => setTolerance(stepTolerance(tolerance, true))}
++            >
++              <Plus size={15} />
++            </button>
++          </>
++        )}
+         {lastPick && lastPick.result.shapes.length > 1 && (
+           <>
+             <span className="mx-1 h-5 w-px shrink-0 bg-white/20" />
+diff --git a/src/renderer/src/lib/custom-censor.ts b/src/renderer/src/lib/custom-censor.ts
+index dea4cf2901e89d7bb3e04cf12cd942a6af6846f6..2f0c376796062039359076e2bd0d0481b598c70a 100644
+--- a/src/renderer/src/lib/custom-censor.ts
++++ b/src/renderer/src/lib/custom-censor.ts
+@@ -52,6 +52,82 @@ export function stepBrush(brush: number, up: boolean): number {
+   return Math.round(Math.min(BRUSH_MAX, Math.max(BRUSH_MIN, next)))
+ }
+ 
++export const TOLERANCE_MIN = 5
++export const TOLERANCE_MAX = 150
++export const TOLERANCE_DEFAULT = 40
++
++/** 허용 범위를 5씩 */
++export function stepTolerance(tolerance: number, up: boolean): number {
++  return Math.min(TOLERANCE_MAX, Math.max(TOLERANCE_MIN, tolerance + (up ? 5 : -5)))
++}
++
++export interface Pixels {
++  width: number
++  height: number
++  /** RGBA */
++  data: Uint8ClampedArray
++}
++
++/** (x, y) 둘레 3x3의 평균 색 — 색 맞춤 붓의 기준 색 (한 픽셀의 잡티에 흔들리지 않게) */
++export function sampleColor(base: Pixels, x: number, y: number): [number, number, number] {
++  const cx = Math.min(base.width - 1, Math.max(0, Math.round(x)))
++  const cy = Math.min(base.height - 1, Math.max(0, Math.round(y)))
++  let r = 0
++  let g = 0
++  let b = 0
++  let n = 0
++  for (let py = Math.max(0, cy - 1); py <= Math.min(base.height - 1, cy + 1); py++)
++    for (let px = Math.max(0, cx - 1); px <= Math.min(base.width - 1, cx + 1); px++) {
++      const i = (py * base.width + px) * 4
++      r += base.data[i]
++      g += base.data[i + 1]
++      b += base.data[i + 2]
++      n++
++    }
++  return [r / n, g / n, b / n]
++}
++
++/**
++ * 색 맞춤 붓 한 번 찍기 — 붓 원 안에서 원본 색이 기준 색과 비슷한(RGB 거리 ≤ tolerance) 픽셀만 칠하거나 지운다.
++ * layer = 칠 레이어의 일부 (그림의 (ox, oy)에서 시작하는 네모), base = 원본 그림 전체.
++ */
++export function smartDab(
++  layer: Pixels,
++  ox: number,
++  oy: number,
++  base: Pixels,
++  cx: number,
++  cy: number,
++  radius: number,
++  ref: [number, number, number],
++  tolerance: number,
++  erase: boolean
++): void {
++  const limit = tolerance * tolerance
++  const r2 = radius * radius
++  const x0 = Math.max(0, ox, Math.floor(cx - radius))
++  const y0 = Math.max(0, oy, Math.floor(cy - radius))
++  const x1 = Math.min(base.width, ox + layer.width, Math.ceil(cx + radius) + 1)
++  const y1 = Math.min(base.height, oy + layer.height, Math.ceil(cy + radius) + 1)
++  for (let y = y0; y < y1; y++)
++    for (let x = x0; x < x1; x++) {
++      const dx = x + 0.5 - cx
++      const dy = y + 0.5 - cy
++      if (dx * dx + dy * dy > r2) continue
++      const b = (y * base.width + x) * 4
++      const dr = base.data[b] - ref[0]
++      const dg = base.data[b + 1] - ref[1]
++      const db = base.data[b + 2] - ref[2]
++      if (dr * dr + dg * dg + db * db > limit) continue
++      const l = ((y - oy) * layer.width + (x - ox)) * 4
++      if (erase) layer.data[l + 3] = 0
++      else {
++        layer.data[l] = layer.data[l + 1] = layer.data[l + 2] = 255
++        layer.data[l + 3] = 255
++      }
++    }
++}
++
+ /**
+  * 누르는 순간 쓸 도구 — 키가 고른 도구보다 먼저다:
+  * Space·가운데 버튼 = 이동, Alt = 콕 찍기, Shift = 지우기, 아무 키도 없으면 고른 도구(기본 칠하기).
+diff --git a/src/shared/i18n/catalog-en.ts b/src/shared/i18n/catalog-en.ts
+index cd964f54b0158cb0c629041a0ed45fa1584f5fd2..c015e2ed0c779a5530af8552fd243511f895bc5c 100644
+--- a/src/shared/i18n/catalog-en.ts
++++ b/src/shared/i18n/catalog-en.ts
+@@ -302,6 +302,14 @@ export const EN = {
+   'ui.customCensorModelFailedValue':
+     'Could not download the tap-to-shape model ({0}). Check your connection, then turn Censor on again.',
+   'ui.customCensorNoImage': 'Could not save: no record of this image was found',
++  'ui.customCensorSmart': 'Match color',
++  'ui.customCensorSmartHint':
++    'Match color — paint only pixels close in color to where the stroke started (erasing works the same way). Lines and differently colored areas are left alone.',
++  'ui.customCensorToleranceSmaller': 'Narrower color range',
++  'ui.customCensorToleranceBigger': 'Wider color range',
++  'ui.customCensorToleranceHint':
++    'How close a color must be — smaller keeps to nearly the same color, larger also paints different colors',
++  'ui.customCensorToleranceValue': '±{0}',
+   'ui.customPresetPrevious': 'Previous preset (↑ in review)',
+   'ui.customPresetNext': 'Next preset (↓ in review)',
+   'ui.customPresetMoveUp': 'Move up',
+diff --git a/src/shared/i18n/catalog-ko.ts b/src/shared/i18n/catalog-ko.ts
+index 0afa538f6759d59be9a939b184e7fa6d46948236..241b56dafca7af7488fbcb3ed70516e3d1e12a4f 100644
+--- a/src/shared/i18n/catalog-ko.ts
++++ b/src/shared/i18n/catalog-ko.ts
+@@ -298,6 +298,14 @@ export const KO = {
+   'ui.customCensorModelFailedValue':
+     '콕 찍기 모델을 받지 못했습니다 ({0}). 인터넷 연결을 확인한 뒤 검열을 다시 켜 주세요.',
+   'ui.customCensorNoImage': '이 그림의 기록을 찾을 수 없어 저장하지 못했습니다',
++  'ui.customCensorSmart': '색 맞춤',
++  'ui.customCensorSmartHint':
++    '색 맞춤 — 붓이 처음 닿은 자리와 비슷한 색만 칠합니다 (지우기도 같습니다). 선이나 다른 색 부분은 붓이 지나가도 남습니다.',
++  'ui.customCensorToleranceSmaller': '비슷한 색 범위 좁게',
++  'ui.customCensorToleranceBigger': '비슷한 색 범위 넓게',
++  'ui.customCensorToleranceHint':
++    '비슷한 색으로 볼 범위 — 작을수록 꼭 같은 색만, 클수록 다른 색까지 칠합니다',
++  'ui.customCensorToleranceValue': '±{0}',
+   'ui.customPresetPrevious': '이전 프리셋 (검수 모드에서 ↑)',
+   'ui.customPresetNext': '다음 프리셋 (검수 모드에서 ↓)',
+   'ui.customPresetMoveUp': '위로 옮기기',
+diff --git a/src/shared/i18n/catalog-zh-CN.ts b/src/shared/i18n/catalog-zh-CN.ts
+index fb9e4a5fb630711cc2fbbc9c71c3f1f8b98095e8..7e349c9382c7e8107e251dedea91e9a32142dfad 100644
+--- a/src/shared/i18n/catalog-zh-CN.ts
++++ b/src/shared/i18n/catalog-zh-CN.ts
+@@ -291,6 +291,14 @@ export const ZH_CN = {
+   'ui.customCensorModelValue': '正在下载取形模型 {0}%',
+   'ui.customCensorModelFailedValue': '无法下载取形模型（{0}）。请检查网络连接后重新开启遮挡。',
+   'ui.customCensorNoImage': '找不到这张图的记录，无法保存',
++  'ui.customCensorSmart': '颜色匹配',
++  'ui.customCensorSmartHint':
++    '颜色匹配 — 只涂与起笔处颜色相近的像素（擦除也一样）。线条和其他颜色的部分会保留。',
++  'ui.customCensorToleranceSmaller': '缩小相近颜色范围',
++  'ui.customCensorToleranceBigger': '扩大相近颜色范围',
++  'ui.customCensorToleranceHint':
++    '视为相近颜色的范围 — 越小越只涂几乎相同的颜色，越大连不同的颜色也会涂',
++  'ui.customCensorToleranceValue': '±{0}',
+   'ui.customPresetPrevious': '上一个预设（检视中按 ↑）',
+   'ui.customPresetNext': '下一个预设（检视中按 ↓）',
+   'ui.customPresetMoveUp': '上移',
+diff --git a/src/shared/types.ts b/src/shared/types.ts
+index 12da4d43c13d13b44a3af4dc2476628937ff33dc..ae7ebc671b6cf9ab25cfb9f319139f8c14bb0574 100644
+--- a/src/shared/types.ts
++++ b/src/shared/types.ts
+@@ -565,6 +565,8 @@ export interface IpcInvokeMap {
+   'custom:censorSave': { req: { filePath: string; maskBase64: string }; res: CensorSaveResult }
+   'custom:censorPick': { req: { filePath: string; x: number; y: number }; res: CensorPickResult }
+   'custom:censorWarm': { req: void; res: void }
++  /** [custom] 바탕 그림의 픽셀을 읽을 수 있게 data: 주소로 (색 맞춤 붓) */
++  'custom:censorBase': { req: { filePath: string }; res: { dataUrl: string } }
+   'db:status': { req: void; res: { version: number; path: string } }
+   /** 앱 버전 */
+   'app:version': { req: void; res: { version: string } }
+diff --git a/tests/custom-censor-view.test.ts b/tests/custom-censor-view.test.ts
+index 585ffa26beba4a1a9fe8632f3813e468acde0313..0a03def7b7fc26d371c0119882b218becec8605c 100644
+--- a/tests/custom-censor-view.test.ts
++++ b/tests/custom-censor-view.test.ts
+@@ -3,10 +3,14 @@ import {
+   BRUSH_MAX,
+   BRUSH_MIN,
+   fitView,
++  sampleColor,
++  smartDab,
+   stepBrush,
++  stepTolerance,
+   toImage,
+   toolFor,
+-  zoomAt
++  zoomAt,
++  type Pixels
+ } from '../src/renderer/src/lib/custom-censor'
+ import { withCensorRev } from '../src/renderer/src/stores/custom-censor-store'
+ 
+@@ -53,4 +57,34 @@ describe('custom: censor view', () => {
+     )
+     expect(withCensorRev('nais-image://local/?path=a', 2)).toBe('nais-image://local/?path=a&v=2')
+   })
++
++  it('paints only pixels close in color to the reference inside the brush circle', () => {
++    // 왼쪽 절반은 살색, 오른쪽 절반은 어두운 선
++    const base: Pixels = { width: 8, height: 4, data: new Uint8ClampedArray(8 * 4 * 4) }
++    for (let p = 0; p < 32; p++)
++      base.data.set(p % 8 < 4 ? [240, 200, 180, 255] : [40, 20, 20, 255], p * 4)
++    const ref = sampleColor(base, 1, 1)
++    expect(ref).toEqual([240, 200, 180])
++    // 레이어는 그림의 (1, 0)에서 시작하는 6x4 조각
++    const layer: Pixels = { width: 6, height: 4, data: new Uint8ClampedArray(6 * 4 * 4) }
++    smartDab(layer, 1, 0, base, 4, 2, 2.5, ref, 40, false)
++    const alpha = (x: number, y: number): number => layer.data[(y * 6 + (x - 1)) * 4 + 3]
++    expect(alpha(3, 2)).toBe(255) // 살색 — 칠함
++    expect(alpha(2, 1)).toBe(255)
++    expect(alpha(4, 2)).toBe(0) // 선 — 붓이 지나가도 남는다
++    expect(alpha(5, 1)).toBe(0)
++    expect(alpha(1, 0)).toBe(0) // 붓 원 밖
++    // 지우기도 같은 색만
++    layer.data.fill(255)
++    smartDab(layer, 1, 0, base, 4, 2, 2.5, ref, 40, true)
++    expect(alpha(3, 2)).toBe(0)
++    expect(alpha(4, 2)).toBe(255)
++    // 범위를 넓히면 선까지 칠한다
++    layer.data.fill(0)
++    smartDab(layer, 1, 0, base, 4, 2, 2.5, ref, 400, false)
++    expect(alpha(4, 2)).toBe(255)
++    expect(stepTolerance(40, true)).toBe(45)
++    expect(stepTolerance(5, false)).toBe(5)
++    expect(stepTolerance(150, true)).toBe(150)
++  })
+ })

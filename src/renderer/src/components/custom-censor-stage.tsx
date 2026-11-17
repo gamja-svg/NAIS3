@@ -90,6 +90,7 @@ export function CensorStage({
   const ringRef = useRef<HTMLDivElement | null>(null)
   const [session, setSession] = useState<Session | null>(null)
   const sessionRef = useRef<Session | null>(null)
+  const pendingMask = useRef<{ session: Session; mask: HTMLImageElement | null } | null>(null)
   const [view, setView] = useState<CensorView>({ scale: 1, x: 0, y: 0 })
   const viewRef = useRef(view)
   /** 사용자가 확대·이동을 하지 않았으면 칸 크기가 바뀔 때 다시 맞춘다 */
@@ -228,30 +229,13 @@ export function CensorStage({
           height: opened.height
         }
         sessionRef.current = next
+        pendingMask.current = { session: next, mask }
         setSession(next)
         undo.current = []
         setUndoCount(0)
         setLastPick(null)
         dirty.current = false
         setSaveState('idle')
-        // 캔버스가 새 크기로 그려진 다음에 전에 칠해 둔 자리를 올린다
-        requestAnimationFrame(() => {
-          const c = ctx()
-          const canvas = canvasRef.current
-          if (!alive || !c || !canvas) return
-          c.clearRect(0, 0, canvas.width, canvas.height)
-          if (mask) {
-            // 저장된 마스크는 밝기 = 칠한 정도 — 흰색 + 알파로 바꿔 올린다
-            c.drawImage(mask, 0, 0, canvas.width, canvas.height)
-            const data = c.getImageData(0, 0, canvas.width, canvas.height)
-            for (let i = 0; i < data.data.length; i += 4) {
-              data.data[i + 3] = data.data[i]
-              data.data[i] = data.data[i + 1] = data.data[i + 2] = 255
-            }
-            c.putImageData(data, 0, 0)
-          }
-          fit()
-        })
       } catch (error) {
         toast(error instanceof Error ? error.message : String(error), 'error')
       }
@@ -260,6 +244,30 @@ export function CensorStage({
       alive = false
     }
   }, [filePath, fit])
+
+  // 연 그림의 캔버스가 화면에 올라온 바로 뒤에 — 전에 칠해 둔 자리를 올리고 화면에 맞춘다.
+  // (여는 쪽에서 다음 프레임에 하면 캔버스가 아직 없을 수 있다: 그림이 맞춰지지 않고 칠해 둔 자리도 빠진다)
+  useLayoutEffect(() => {
+    const pending = pendingMask.current
+    const canvas = canvasRef.current
+    if (!session || !canvas || pending?.session !== session) return
+    pendingMask.current = null
+    const c = canvas.getContext('2d', { willReadFrequently: true })
+    if (c) {
+      c.clearRect(0, 0, canvas.width, canvas.height)
+      if (pending.mask) {
+        // 저장된 마스크는 밝기 = 칠한 정도 — 흰색 + 알파로 바꿔 올린다
+        c.drawImage(pending.mask, 0, 0, canvas.width, canvas.height)
+        const data = c.getImageData(0, 0, canvas.width, canvas.height)
+        for (let i = 0; i < data.data.length; i += 4) {
+          data.data[i + 3] = data.data[i]
+          data.data[i] = data.data[i + 1] = data.data[i + 2] = 255
+        }
+        c.putImageData(data, 0, 0)
+      }
+    }
+    fit()
+  }, [session, fit])
 
   // 나갈 때(다른 씬으로 넘기기·검열 끄기·닫기) 고친 것을 저장한다
   useEffect(() => () => void save(), [save])

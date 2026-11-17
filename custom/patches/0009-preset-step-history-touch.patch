@@ -1,0 +1,530 @@
+diff --git a/src/renderer/src/components/custom-censor-stage.tsx b/src/renderer/src/components/custom-censor-stage.tsx
+index bcf64e68e0f2a37c02903c91bd70f5dfbe3b2066..b1c242d4cc8b18087c92e92e22bfcb0a3abbb2e3 100644
+--- a/src/renderer/src/components/custom-censor-stage.tsx
++++ b/src/renderer/src/components/custom-censor-stage.tsx
+@@ -54,16 +54,12 @@ function loadImage(src: string): Promise<HTMLImageElement> {
+   })
+ }
+ 
+-function canvasPngBase64(canvas: HTMLCanvasElement): Promise<string> {
+-  return new Promise((resolve, reject) =>
+-    canvas.toBlob((blob) => {
+-      if (!blob) return reject(new Error('canvas'))
+-      const reader = new FileReader()
+-      reader.onload = () => resolve(String(reader.result).split(',')[1] ?? '')
+-      reader.onerror = () => reject(new Error('canvas'))
+-      reader.readAsDataURL(blob)
+-    }, 'image/png')
+-  )
++/**
++ * 칠 레이어를 PNG(base64)로 — 바로 끝나는 방식으로 뜬다. 나갈 때(화면에서 떼어진 뒤) 저장해야 해서,
++ * 나중에 끝나는 toBlob은 떼어진 캔버스에서 끝내 불리지 않는 일이 있다.
++ */
++function canvasPngBase64(canvas: HTMLCanvasElement): string {
++  return canvas.toDataURL('image/png').split(',')[1] ?? ''
+ }
+ 
+ /**
+@@ -141,7 +137,7 @@ export function CensorStage({
+       .then(async () => {
+         const saved = await window.nais.invoke('custom:censorSave', {
+           filePath: s.opened,
+-          maskBase64: await snapshot
++          maskBase64: snapshot
+         })
+         s.opened = saved.filePath
+         useCensorStore.getState().bump(saved.filePath)
+diff --git a/src/renderer/src/components/custom-scene-review.tsx b/src/renderer/src/components/custom-scene-review.tsx
+index 34ccdd8e1127477e021509dbe76ea57609c2e4a9..ed9905aab414fa65afec7b3bcc70cd1dfc0c941a 100644
+--- a/src/renderer/src/components/custom-scene-review.tsx
++++ b/src/renderer/src/components/custom-scene-review.tsx
+@@ -1,4 +1,14 @@
+-import { Brush, ChevronLeft, ChevronRight, Download, Plus, RefreshCw, X } from 'lucide-react'
++import {
++  Brush,
++  ChevronDown,
++  ChevronLeft,
++  ChevronRight,
++  ChevronUp,
++  Download,
++  Plus,
++  RefreshCw,
++  X
++} from 'lucide-react'
+ import { useEffect, useRef, useState } from 'react'
+ import { createPortal } from 'react-dom'
+ import type { Scene } from '@shared/types'
+@@ -59,8 +69,13 @@ export function SceneReview({ scenes }: { scenes: Scene[] }): React.JSX.Element
+   )
+   // Claude 창이 열려 있으면 그 자리는 비워 둔다 (검수하면서 대화할 수 있게)
+   const claudeWidth = useClaudePanelStore((s) => (s.open ? s.width : 0))
+-  // 검열(흰칠) — 켜 두면 씬을 넘겨도 유지된다
+-  const [censor, setCensor] = useState(false)
++  // 검열(흰칠) — 켜 두면 씬·프리셋을 넘겨도 유지된다
++  const censor = useCensorStore((s) => s.on)
++  const toggleCensor = useCensorStore((s) => s.toggle)
++  // 이전·다음 프리셋 (↑/↓) — 넘어간 프리셋의 첫 그림으로 검수를 이어 간다
++  const stepPreset = useScenesStore((s) => s.stepPreset)
++  const presetIndex = useScenesStore((s) => s.presets.findIndex((p) => p.id === s.activePresetId))
++  const presetCount = useScenesStore((s) => s.presets.length)
+   const censorRevs = useCensorStore((s) => s.revs)
+   useEffect(() => bindCensorEvents(), [])
+ 
+@@ -132,7 +147,9 @@ export function SceneReview({ scenes }: { scenes: Scene[] }): React.JSX.Element
+       else if (e.code === 'KeyR' && !e.repeat) queue()
+       else if (e.code === 'KeyG' && !e.repeat) regenerate()
+       // 물결표(~) 키 — 검열 켜기·끄기 (Shift 없이 눌러도 된다)
+-      else if (e.code === 'Backquote' && !e.repeat) setCensor((on) => !on)
++      else if (e.code === 'Backquote' && !e.repeat) toggleCensor()
++      else if (e.key === 'ArrowUp' && !e.repeat) void stepPreset(-1)
++      else if (e.key === 'ArrowDown' && !e.repeat) void stepPreset(1)
+       else return
+       e.preventDefault()
+       e.stopPropagation()
+@@ -281,7 +298,34 @@ export function SceneReview({ scenes }: { scenes: Scene[] }): React.JSX.Element
+     >
+       <header className="flex shrink-0 items-center gap-2 px-4 py-3">
+         <div className="min-w-0 flex-1">
+-          <div className="truncate text-[12px] opacity-70">{presetName}</div>
++          <div className="flex min-w-0 items-center gap-1 text-[12px]">
++            <span className="truncate opacity-70">{presetName}</span>
++            {presetCount > 1 && (
++              <>
++                <button
++                  className="grid size-6 shrink-0 place-items-center rounded-full bg-white/10 hover:bg-white/20 disabled:pointer-events-none disabled:opacity-25"
++                  disabled={presetIndex <= 0}
++                  title={t('ui.customPresetPrevious')}
++                  aria-label={t('ui.customPresetPrevious')}
++                  onClick={() => void stepPreset(-1)}
++                >
++                  <ChevronUp size={14} />
++                </button>
++                <button
++                  className="grid size-6 shrink-0 place-items-center rounded-full bg-white/10 hover:bg-white/20 disabled:pointer-events-none disabled:opacity-25"
++                  disabled={presetIndex >= presetCount - 1}
++                  title={t('ui.customPresetNext')}
++                  aria-label={t('ui.customPresetNext')}
++                  onClick={() => void stepPreset(1)}
++                >
++                  <ChevronDown size={14} />
++                </button>
++                <span className="shrink-0 font-mono opacity-60">
++                  {presetIndex + 1} / {presetCount}
++                </span>
++              </>
++            )}
++          </div>
+           <div className="flex min-w-0 items-baseline gap-2">
+             <span className="truncate text-[19px] font-semibold">{scene.name}</span>
+             {scene.memo && (
+@@ -317,7 +361,7 @@ export function SceneReview({ scenes }: { scenes: Scene[] }): React.JSX.Element
+           )}
+           aria-pressed={censor}
+           title={t('ui.customCensorHint')}
+-          onClick={() => setCensor((on) => !on)}
++          onClick={toggleCensor}
+         >
+           <Brush size={15} /> {t('ui.customCensor')}
+         </button>
+diff --git a/src/renderer/src/components/history-panel.tsx b/src/renderer/src/components/history-panel.tsx
+index a77459884101d7fc90b29e677506c510fd5a6e13..55d870c1be37b6e407870b9081641a0dc1b46352 100644
+--- a/src/renderer/src/components/history-panel.tsx
++++ b/src/renderer/src/components/history-panel.tsx
+@@ -10,6 +10,7 @@ import { toast } from '../stores/toast-store'
+ import { ImageContextMenu } from './image-context-menu'
+ import { ContextMenuItem, ContextMenuSeparator } from './ui/context-menu'
+ import { useScenesStore } from '../stores/scenes-store'
++import { useTouchMode } from '../lib/custom-touch-mode'
+ 
+ export function HistoryPanel(): React.JSX.Element {
+   const t = useT()
+@@ -20,6 +21,8 @@ export function HistoryPanel(): React.JSX.Element {
+   const refreshHistory = useGenerationStore((s) => s.refreshHistory)
+   const setCenterMode = useLayoutStore((s) => s.setCenterMode)
+   const goToScene = useScenesStore((s) => s.goToScene)
++  // [custom] 터치·원격 모드에서는 끌면 목록이 넘어가야 한다 — 그림을 집어 끄는 동작(메타데이터 열기)을 끈다
++  const touchMode = useTouchMode()
+ 
+   const deleteOne = async (id: number, filePath: string): Promise<void> => {
+     await window.nais.invoke('images:delete', { id })
+@@ -100,6 +103,11 @@ export function HistoryPanel(): React.JSX.Element {
+                     view(item.filePath)
+                     setCenterMode('main') // 씬/디렉터 페이지에서도 클릭 시 메인으로 이동해 원본 표시
+                   }}
++                  // [custom] 두 번 누르면 이 그림을 만든 씬이 있는 곳으로 (씬 그림만)
++                  onDoubleClick={() => {
++                    if (item.sceneId != null && item.presetId != null)
++                      void goToScene(item.presetId, item.sceneId)
++                  }}
+                 >
+                   {item.thumbnailUrl && (
+                     <img
+@@ -108,7 +116,7 @@ export function HistoryPanel(): React.JSX.Element {
+                       loading="lazy"
+                       {...thumbnailFallback(item.filePath)}
+                       // 프리뷰로 드래그해서 메타데이터 열기
+-                      draggable
++                      draggable={!touchMode}
+                       onDragStart={(e) => {
+                         e.dataTransfer.setData('nais/file-path', item.filePath)
+                         e.dataTransfer.effectAllowed = 'copy'
+diff --git a/src/renderer/src/components/scene-mode.tsx b/src/renderer/src/components/scene-mode.tsx
+index 46f41885a0e3a5a08589970428b5874dc85b4ebf..c3add1e127a58b187d4956a365b6acb059b87889 100644
+--- a/src/renderer/src/components/scene-mode.tsx
++++ b/src/renderer/src/components/scene-mode.tsx
+@@ -4,6 +4,7 @@ import {
+   CalendarPlus,
+   CalendarX,
+   ChevronDown,
++  ChevronUp,
+   Copy,
+   Download,
+   FileDown,
+@@ -59,6 +60,7 @@ import { ReserveCount } from './reserve-count'
+ import { SceneCastDialog } from './scene-cast-dialog'
+ import { SceneDetail } from './scene-detail'
+ import { SceneReview } from './custom-scene-review'
++import { useTouchMode } from '../lib/custom-touch-mode'
+ import { TopSetButton } from './custom-top-set'
+ import { noteSceneCardClick, useSceneCardDoubleClick } from '../lib/custom-scene-double-click'
+ import { SortableList, SortableRow } from './sortable-list'
+@@ -105,6 +107,9 @@ function PresetDropdown(): React.JSX.Element {
+   const renamePreset = useScenesStore((s) => s.renamePreset)
+   const deletePreset = useScenesStore((s) => s.deletePreset)
+   const reorderPresets = useScenesStore((s) => s.reorderPresets)
++  const movePreset = useScenesStore((s) => s.movePreset)
++  const stepPreset = useScenesStore((s) => s.stepPreset)
++  const touchMode = useTouchMode()
+   const [open, setOpen] = useState(false)
+   const t = useT()
+ 
+@@ -134,7 +139,7 @@ function PresetDropdown(): React.JSX.Element {
+               ids={presets.map((p) => p.id)}
+               onReorder={(ids) => void reorderPresets(ids)}
+             >
+-              {presets.map((p) => (
++              {presets.map((p, index) => (
+                 <SortableRow
+                   key={p.id}
+                   id={p.id}
+@@ -150,6 +155,26 @@ function PresetDropdown(): React.JSX.Element {
+                   >
+                     <span className="truncate">{p.name}</span>
+                   </div>
++                  {/* [custom] 한 칸씩 자리 옮기기 — 끌기 어려운 화면(터치·원격)에서는 늘 보인다 */}
++                  {presets.length > 1 &&
++                    ([-1, 1] as const).map((dir) => (
++                      <button
++                        key={dir}
++                        className={cn(
++                          'shrink-0 rounded p-1 text-faint hover:text-ink disabled:pointer-events-none disabled:opacity-25',
++                          !touchMode &&
++                            'opacity-0 focus-visible:opacity-100 group-hover:opacity-100'
++                        )}
++                        disabled={dir < 0 ? index === 0 : index === presets.length - 1}
++                        onClick={() => void movePreset(p.id, dir)}
++                        title={t(dir < 0 ? 'ui.customPresetMoveUp' : 'ui.customPresetMoveDown')}
++                        aria-label={t(
++                          dir < 0 ? 'ui.customPresetMoveUp' : 'ui.customPresetMoveDown'
++                        )}
++                      >
++                        {dir < 0 ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
++                      </button>
++                    ))}
+                   <button
+                     className="shrink-0 rounded p-1 text-faint opacity-0 hover:text-ink group-hover:opacity-100"
+                     onClick={async () => {
+@@ -196,6 +221,26 @@ function PresetDropdown(): React.JSX.Element {
+           </button>
+         </PopoverContent>
+       </Popover>
++      {/* [custom] 이전·다음 프리셋으로 바로 넘기기 */}
++      {presets.length > 1 && (
++        <div className="flex shrink-0 flex-col">
++          {([-1, 1] as const).map((dir) => {
++            const index = presets.findIndex((p) => p.id === activePresetId)
++            return (
++              <button
++                key={dir}
++                className="grid h-4 w-6 place-items-center rounded text-muted hover:bg-surface-2 hover:text-ink disabled:pointer-events-none disabled:opacity-25"
++                disabled={dir < 0 ? index <= 0 : index >= presets.length - 1}
++                onClick={() => void stepPreset(dir)}
++                title={t(dir < 0 ? 'ui.customPresetPrevious' : 'ui.customPresetNext')}
++                aria-label={t(dir < 0 ? 'ui.customPresetPrevious' : 'ui.customPresetNext')}
++              >
++                {dir < 0 ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
++              </button>
++            )
++          })}
++        </div>
++      )}
+     </>
+   )
+ }
+diff --git a/src/renderer/src/stores/custom-censor-store.ts b/src/renderer/src/stores/custom-censor-store.ts
+index ac917187bf9a6c91517c9e8f4067e4370089fc9d..eac45cee498c8d42a6f9d1e89aa3764f149b015f 100644
+--- a/src/renderer/src/stores/custom-censor-store.ts
++++ b/src/renderer/src/stores/custom-censor-store.ts
+@@ -4,8 +4,11 @@ import { create } from 'zustand'
+  * [custom] 검열(흰칠) 화면 상태.
+  * - revs: 칠한 그림은 같은 파일을 다시 쓰므로, 저장할 때마다 번호를 올려 화면이 새 그림을 다시 읽게 한다.
+  * - modelPercent: 콕 찍기 모델을 받는 정도 (null = 받는 중 아님)
++ * - on: 검수 모드에서 검열을 켰는지 — 씬·프리셋을 넘겨도, 검수를 닫았다 열어도 유지된다 (앱을 끄면 꺼진다)
+  */
+ interface CensorState {
++  on: boolean
++  toggle: () => void
+   revs: Record<string, number>
+   modelPercent: number | null
+   bump: (filePath: string) => void
+@@ -13,6 +16,8 @@ interface CensorState {
+ }
+ 
+ export const useCensorStore = create<CensorState>((set) => ({
++  on: false,
++  toggle: () => set((s) => ({ on: !s.on })),
+   revs: {},
+   modelPercent: null,
+   bump: (filePath) =>
+diff --git a/src/renderer/src/stores/scenes-store.ts b/src/renderer/src/stores/scenes-store.ts
+index aa63078d88f3841693a319ea345cdd6a33f8a2b0..e7730e9f0b6e90cb5044ad89ff7364b2eff42da7 100644
+--- a/src/renderer/src/stores/scenes-store.ts
++++ b/src/renderer/src/stores/scenes-store.ts
+@@ -72,6 +72,13 @@ interface ScenesState {
+   /** 프리셋 순서 이동 (dir: -1 위 / +1 아래) */
+   /** 프리셋 드래그 정렬 — 새 id 순서 반영 */
+   reorderPresets: (ids: number[]) => Promise<void>
++  /** [custom] 프리셋을 목록에서 한 칸 위(-1)·아래(+1)로 옮긴다 */
++  movePreset: (id: number, dir: -1 | 1) => Promise<void>
++  /**
++   * [custom] 이전(-1)·다음(+1) 프리셋으로 넘어간다 (끝에서는 그대로).
++   * 검수 모드에서 넘기면 넘어간 프리셋의 첫 그림으로 검수를 이어 간다.
++   */
++  stepPreset: (dir: -1 | 1) => Promise<void>
+ 
+   load: () => Promise<void>
+   select: (id: number | null) => void
+@@ -255,6 +262,26 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
+     set({ presets: ids.map((pid) => byId.get(pid)!).filter(Boolean) })
+     await window.nais.invoke('scenePresets:reorder', { ids })
+   },
++  movePreset: async (id, dir) => {
++    const ids = get().presets.map((p) => p.id)
++    const from = ids.indexOf(id)
++    const to = from + dir
++    if (from < 0 || to < 0 || to >= ids.length) return
++    ids.splice(to, 0, ...ids.splice(from, 1))
++    await get().reorderPresets(ids)
++  },
++  stepPreset: async (dir) => {
++    const { presets, activePresetId, reviewSceneId } = get()
++    const next = presets[presets.findIndex((p) => p.id === activePresetId) + dir]
++    if (!next || next.id === activePresetId) return
++    const reviewing = reviewSceneId != null
++    await get().setActivePreset(next.id) // 검수는 여기서 닫힌다 (씬 목록이 바뀐다)
++    if (!reviewing || get().activePresetId !== next.id) return
++    const { scenes, pendingOnly } = get()
++    const first = scenes.find((s) => !!s.thumbnailPath && (!pendingOnly || s.pending))
++    if (first) set({ reviewSceneId: first.id })
++    else toast(t('ui.customPresetNoPicturesValue', next.name), 'info')
++  },
+   setPresetDefaultResolution: async (id, width, height) => {
+     set({
+       presets: get().presets.map((p) =>
+diff --git a/src/shared/i18n/catalog-en.ts b/src/shared/i18n/catalog-en.ts
+index 941bba60b5ab43c4ac88b3f8cb2eddc2022ff2d7..cd964f54b0158cb0c629041a0ed45fa1584f5fd2 100644
+--- a/src/shared/i18n/catalog-en.ts
++++ b/src/shared/i18n/catalog-en.ts
+@@ -167,7 +167,7 @@ export const EN = {
+   'ui.customAckAllPendingDoneValue': 'Cleared {0} not-generated marks',
+   'ui.customAckAllPendingNone': 'No scenes are marked as not generated',
+   'ui.customReviewHint':
+-    '←/→, wheel or swipe to browse · double-tap the picture or G to regenerate now · R queue again · ~ censor · tap outside the picture or Esc to close',
++    '←/→, wheel or swipe to browse · ↑/↓ preset · double-tap the picture or G to regenerate now · R queue again · ~ censor · tap outside the picture or Esc to close',
+   'ui.customPrevious': 'Previous',
+   'ui.customNext': 'Next',
+   'ui.customLaneTabs': 'Progress by account',
+@@ -275,7 +275,7 @@ export const EN = {
+   'ui.customCensorHint':
+     'Censor (~ key) — paint white over this image. The original is kept; the painted copy becomes the cover.',
+   'ui.customCensorFooter':
+-    'Wheel zoom · Ctrl+wheel brush size · Drag paint · Shift erase · Alt+click tap-to-shape · Space+drag move · Ctrl+Z undo · ←/→ browse · ~ leave censor · Saved automatically',
++    'Wheel zoom · Ctrl+wheel brush size · Drag paint · Shift erase · Alt+click tap-to-shape · Space+drag move · Ctrl+Z undo · ←/→ browse · ↑/↓ preset · ~ leave censor · Saved automatically',
+   'ui.customCensorPaint': 'Paint',
+   'ui.customCensorPaintHint': 'Paint — cover what you draw over in white',
+   'ui.customCensorErase': 'Erase',
+@@ -302,6 +302,11 @@ export const EN = {
+   'ui.customCensorModelFailedValue':
+     'Could not download the tap-to-shape model ({0}). Check your connection, then turn Censor on again.',
+   'ui.customCensorNoImage': 'Could not save: no record of this image was found',
++  'ui.customPresetPrevious': 'Previous preset (↑ in review)',
++  'ui.customPresetNext': 'Next preset (↓ in review)',
++  'ui.customPresetMoveUp': 'Move up',
++  'ui.customPresetMoveDown': 'Move down',
++  'ui.customPresetNoPicturesValue': 'Preset "{0}" has no pictures to review',
+   'ui.queuedForCastValue': 'Queued for cast "{0}"',
+   'ui.queuedWithSidebarSettings': 'Queued with sidebar settings',
+   'ui.deletedCast': 'Deleted cast',
+diff --git a/src/shared/i18n/catalog-ko.ts b/src/shared/i18n/catalog-ko.ts
+index 9cc356512df521f6429127a671c18819653f394c..0afa538f6759d59be9a939b184e7fa6d46948236 100644
+--- a/src/shared/i18n/catalog-ko.ts
++++ b/src/shared/i18n/catalog-ko.ts
+@@ -167,7 +167,7 @@ export const KO = {
+   'ui.customAckAllPendingDoneValue': '미생성 표시 {0}개를 껐습니다',
+   'ui.customAckAllPendingNone': '미생성으로 표시된 씬이 없습니다',
+   'ui.customReviewHint':
+-    '←/→·휠·좌우로 끌어서 넘기기 · 그림 더블탭·G 바로 다시 뽑기 · R 다시 뽑기 예약 · ~ 검열 · 그림 밖 누르기·Esc 닫기',
++    '←/→·휠·좌우로 끌어서 넘기기 · ↑/↓ 프리셋 · 그림 더블탭·G 바로 다시 뽑기 · R 다시 뽑기 예약 · ~ 검열 · 그림 밖 누르기·Esc 닫기',
+   'ui.customPrevious': '이전',
+   'ui.customNext': '다음',
+   'ui.customLaneTabs': '계정별 진행',
+@@ -271,7 +271,7 @@ export const KO = {
+   'ui.customCensorHint':
+     '검열 (~ 키) — 이 그림에 흰칠을 합니다. 원본은 그대로 두고 칠한 그림이 대표 이미지가 됩니다.',
+   'ui.customCensorFooter':
+-    '휠 확대·축소 · Ctrl+휠 붓 크기 · 긋기 흰칠 · Shift 지우기 · Alt+누르기 콕 찍기 · Space+끌기 이동 · Ctrl+Z 되돌리기 · ←/→ 넘기기 · ~ 검열 끄기 · 자동 저장',
++    '휠 확대·축소 · Ctrl+휠 붓 크기 · 긋기 흰칠 · Shift 지우기 · Alt+누르기 콕 찍기 · Space+끌기 이동 · Ctrl+Z 되돌리기 · ←/→ 넘기기 · ↑/↓ 프리셋 · ~ 검열 끄기 · 자동 저장',
+   'ui.customCensorPaint': '칠하기',
+   'ui.customCensorPaintHint': '칠하기 — 그은 자리를 흰색으로 칠합니다',
+   'ui.customCensorErase': '지우기',
+@@ -298,6 +298,11 @@ export const KO = {
+   'ui.customCensorModelFailedValue':
+     '콕 찍기 모델을 받지 못했습니다 ({0}). 인터넷 연결을 확인한 뒤 검열을 다시 켜 주세요.',
+   'ui.customCensorNoImage': '이 그림의 기록을 찾을 수 없어 저장하지 못했습니다',
++  'ui.customPresetPrevious': '이전 프리셋 (검수 모드에서 ↑)',
++  'ui.customPresetNext': '다음 프리셋 (검수 모드에서 ↓)',
++  'ui.customPresetMoveUp': '위로 옮기기',
++  'ui.customPresetMoveDown': '아래로 옮기기',
++  'ui.customPresetNoPicturesValue': '프리셋 "{0}"에는 검수할 그림이 없습니다',
+   'ui.queuedForCastValue': '"{0}" 출연 예약',
+   'ui.queuedWithSidebarSettings': '사이드바 설정 예약',
+   'ui.deletedCast': '삭제된 출연',
+diff --git a/src/shared/i18n/catalog-zh-CN.ts b/src/shared/i18n/catalog-zh-CN.ts
+index 56844caaab5f68be914d9050c2bbcff42b308c36..fb9e4a5fb630711cc2fbbc9c71c3f1f8b98095e8 100644
+--- a/src/shared/i18n/catalog-zh-CN.ts
++++ b/src/shared/i18n/catalog-zh-CN.ts
+@@ -165,7 +165,7 @@ export const ZH_CN = {
+   'ui.customAckAllPendingDoneValue': '已清除 {0} 个未生成标记',
+   'ui.customAckAllPendingNone': '没有标记为未生成的场景',
+   'ui.customReviewHint':
+-    '←/→、滚轮或左右拖动翻看 · 双击图片或 G 立即重新生成 · R 预约重新生成 · ~ 遮挡 · 点击图片外或 Esc 关闭',
++    '←/→、滚轮或左右拖动翻看 · ↑/↓ 预设 · 双击图片或 G 立即重新生成 · R 预约重新生成 · ~ 遮挡 · 点击图片外或 Esc 关闭',
+   'ui.customPrevious': '上一张',
+   'ui.customNext': '下一张',
+   'ui.customLaneTabs': '各账户进度',
+@@ -266,7 +266,7 @@ export const ZH_CN = {
+   'ui.customCensor': '遮挡',
+   'ui.customCensorHint': '遮挡（~ 键）— 在这张图上涂白。原图保留，涂好的图会成为封面。',
+   'ui.customCensorFooter':
+-    '滚轮缩放 · Ctrl+滚轮画笔大小 · 拖动涂白 · Shift 擦除 · Alt+点击取形 · Space+拖动移动 · Ctrl+Z 撤销 · ←/→ 切换 · ~ 退出遮挡 · 自动保存',
++    '滚轮缩放 · Ctrl+滚轮画笔大小 · 拖动涂白 · Shift 擦除 · Alt+点击取形 · Space+拖动移动 · Ctrl+Z 撤销 · ←/→ 切换 · ↑/↓ 预设 · ~ 退出遮挡 · 自动保存',
+   'ui.customCensorPaint': '涂抹',
+   'ui.customCensorPaintHint': '涂抹 — 把划过的地方涂成白色',
+   'ui.customCensorErase': '擦除',
+@@ -291,6 +291,11 @@ export const ZH_CN = {
+   'ui.customCensorModelValue': '正在下载取形模型 {0}%',
+   'ui.customCensorModelFailedValue': '无法下载取形模型（{0}）。请检查网络连接后重新开启遮挡。',
+   'ui.customCensorNoImage': '找不到这张图的记录，无法保存',
++  'ui.customPresetPrevious': '上一个预设（检视中按 ↑）',
++  'ui.customPresetNext': '下一个预设（检视中按 ↓）',
++  'ui.customPresetMoveUp': '上移',
++  'ui.customPresetMoveDown': '下移',
++  'ui.customPresetNoPicturesValue': '预设“{0}”没有可检视的图片',
+   'ui.queuedForCastValue': '已按角色组合「{0}」预约',
+   'ui.queuedWithSidebarSettings': '已按左侧当前配置预约',
+   'ui.deletedCast': '已删除的角色组合',
+diff --git a/tests/custom-preset-step.test.ts b/tests/custom-preset-step.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..303d9fb900e0abe915e53d22fd11c9f6551c4c2a
+--- /dev/null
++++ b/tests/custom-preset-step.test.ts
+@@ -0,0 +1,89 @@
++// @vitest-environment happy-dom
++import { beforeEach, describe, expect, it, vi } from 'vitest'
++import type { NaisApi } from '../src/preload/index'
++import type { Scene, ScenePreset } from '../src/shared/types'
++import { useLanguageStore } from '../src/renderer/src/lib/i18n'
++import { useScenesStore } from '../src/renderer/src/stores/scenes-store'
++import { useToastStore } from '../src/renderer/src/stores/toast-store'
++
++// [custom] 프리셋 자리 옮기기 · 이전/다음 프리셋으로 넘기기 (검수 모드는 이어 간다)
++const presets = [
++  { id: 1, name: 'A' },
++  { id: 2, name: 'B' },
++  { id: 3, name: 'C' }
++] as ScenePreset[]
++const scene = (id: number, presetId: number, extra: Partial<Scene> = {}): Scene =>
++  ({ id, presetId, name: String(id), thumbnailPath: '', pending: false, ...extra }) as Scene
++const scenesOf: Record<number, Scene[]> = {
++  1: [scene(10, 1, { thumbnailPath: 'a.png' })],
++  2: [
++    scene(20, 2),
++    scene(21, 2, { thumbnailPath: 'b.png' }),
++    scene(22, 2, { thumbnailPath: 'c.png', pending: true })
++  ],
++  3: [scene(30, 3)]
++}
++let calls: [string, unknown][] = []
++
++beforeEach(() => {
++  calls = []
++  window.nais = {
++    invoke: vi.fn(async (channel: string, payload: { presetId?: number }) => {
++      calls.push([channel, payload])
++      if (channel === 'scenes:list') return { items: scenesOf[payload.presetId ?? 0] ?? [] }
++      if (channel === 'scenes:reservedTotal') return { total: 0 }
++      return undefined
++    }),
++    on: () => () => {}
++  } as unknown as NaisApi
++  useLanguageStore.setState({ lang: 'ko' })
++  useToastStore.setState({ toasts: [] })
++  useScenesStore.setState({
++    presets,
++    activePresetId: 1,
++    scenes: scenesOf[1],
++    reviewSceneId: null,
++    pendingOnly: false
++  })
++})
++
++describe('custom: preset order and stepping', () => {
++  it('moves a preset one place up or down and saves the new order', async () => {
++    await useScenesStore.getState().movePreset(1, 1)
++    expect(useScenesStore.getState().presets.map((p) => p.id)).toEqual([2, 1, 3])
++    expect(calls.at(-1)).toEqual(['scenePresets:reorder', { ids: [2, 1, 3] }])
++    calls = []
++    await useScenesStore.getState().movePreset(2, -1) // 이미 맨 위
++    expect(calls).toEqual([])
++  })
++
++  it('steps to the next preset and stops at the ends', async () => {
++    await useScenesStore.getState().stepPreset(1)
++    expect(useScenesStore.getState()).toMatchObject({ activePresetId: 2, reviewSceneId: null })
++    await useScenesStore.getState().stepPreset(1)
++    await useScenesStore.getState().stepPreset(1) // 끝
++    expect(useScenesStore.getState().activePresetId).toBe(3)
++    useScenesStore.setState({ activePresetId: 1 })
++    await useScenesStore.getState().stepPreset(-1)
++    expect(useScenesStore.getState().activePresetId).toBe(1)
++  })
++
++  it('keeps reviewing from the first picture of the preset it stepped to', async () => {
++    useScenesStore.setState({ reviewSceneId: 10 })
++    await useScenesStore.getState().stepPreset(1)
++    expect(useScenesStore.getState()).toMatchObject({ activePresetId: 2, reviewSceneId: 21 })
++
++    // 미생성만 보는 중이면 미생성 씬의 그림부터
++    useScenesStore.setState({ activePresetId: 1, reviewSceneId: 10, pendingOnly: true })
++    await useScenesStore.getState().stepPreset(1)
++    expect(useScenesStore.getState().reviewSceneId).toBe(22)
++
++    // 그림이 없는 프리셋이면 검수를 닫고 알린다
++    useScenesStore.setState({ pendingOnly: false })
++    await useScenesStore.getState().stepPreset(1)
++    expect(useScenesStore.getState()).toMatchObject({ activePresetId: 3, reviewSceneId: null })
++    expect(useToastStore.getState().toasts.at(-1)?.message).toBe(
++      '프리셋 "C"에는 검수할 그림이 없습니다'
++    )
++  })
++})

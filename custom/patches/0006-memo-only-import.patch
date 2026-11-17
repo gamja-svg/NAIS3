@@ -1,0 +1,457 @@
+diff --git a/src/main/custom/watch-folder.ts b/src/main/custom/watch-folder.ts
+index a67b6676f9627d99a63117c0b85f92bd3becb0ee..6a58becb36ef0dcf7eb1d8a93dad05d0bbcedd50 100644
+--- a/src/main/custom/watch-folder.ts
++++ b/src/main/custom/watch-folder.ts
+@@ -14,6 +14,7 @@ import { isWatchRequestFile, isWatchResultFile } from './top-set'
+  *   포함)은 건드리지 않는다. 처리한 파일은 크기·수정 시각을 기억해, 다시 바뀔 때까지 또 불러오지 않는다
+  *   (프로그램을 껐다 켜도 유지).
+  * - 불러오기는 파일 고르기와 같은 applyImportedScenes: 같은 이름 씬은 내용만 교체, 새 이름은 추가.
++ *   prompt 칸이 없는 줄은 같은 이름 씬의 메모만 바꾼다(없는 씬은 건너뜀).
+  *   씬을 지우거나 이미지를 만들지는 않는다.
+  * - 프리셋 정하기: JSON 최상위 `preset` 이름(없으면 새로 만듦) → 없으면 파일 이름에 든 프리셋 이름.
+  *   파일 이름만으로는 프리셋을 새로 만들지 않는다.
+diff --git a/src/main/ipc.ts b/src/main/ipc.ts
+index 8234885375f285259fa2da760200141e4533e59a..411436eb6ee970f569b9b18c02264b88f24385a9 100644
+--- a/src/main/ipc.ts
++++ b/src/main/ipc.ts
+@@ -637,7 +637,9 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
+   }
+   handle('custom:topSetGetDir', () => ({ dir: getTopSetDir() }))
+   handle('custom:sceneBase', ({ id }) => getSceneBase(id))
+-  handle('custom:sceneMemo', ({ id, memo }) => setSceneMemo(id, memo))
++  handle('custom:sceneMemo', ({ id, memo }) => {
++    setSceneMemo(id, memo)
++  })
+   handle('custom:topSetPickDir', async () => {
+     const dir = await pickTopSetDir()
+     return dir ? { dir } : { dir: getTopSetDir(), canceled: true }
+diff --git a/src/main/scenes/import-formats.ts b/src/main/scenes/import-formats.ts
+index 64d174278fcd77992aefe9d97f1ef8090c5c3b10..c352d2f4c36e25f9861178153c2e7716e3df4ed7 100644
+--- a/src/main/scenes/import-formats.ts
++++ b/src/main/scenes/import-formats.ts
+@@ -1,7 +1,11 @@
+ /** 씬 JSON 가져오기로 들어오는 씬 1개 (없는 필드는 저장할 때 기본값) */
+ export interface ImportedScene {
+   name?: string
+-  prompt: string
++  /**
++   * [custom] 없으면 씬 JSON에 prompt 칸이 없던 줄 — 같은 이름 씬의 내용(프롬프트·네거티브·크기)은
++   * 그대로 두고 메모만 바꾼다. 같은 이름 씬이 없으면 새로 만들지 않고 건너뛴다.
++   */
++  prompt?: string
+   negativePrompt?: string
+   width?: number
+   height?: number
+@@ -45,7 +49,8 @@ export function parseSceneImport(raw: string): ImportedScene[] | null {
+   if (Array.isArray(data.scenes)) {
+     return data.scenes.filter(isObj).map((s) => ({
+       name: str(s.name),
+-      prompt: str(s.prompt) ?? str(s.scenePrompt) ?? '', // NAIS2 파일은 scenePrompt
++      // NAIS2 파일은 scenePrompt. [custom] 둘 다 없으면 메모만 바꾸는 줄 (내용은 그대로)
++      prompt: str(s.prompt) ?? str(s.scenePrompt),
+       negativePrompt: str(s.negativePrompt),
+       width: num(s.width),
+       height: num(s.height),
+diff --git a/src/main/scenes/repo.ts b/src/main/scenes/repo.ts
+index e933115be18ba7ec9b586768515401d6d828781e..a56708d1a0f2e4df8107c6bb600aa2deda91ed89 100644
+--- a/src/main/scenes/repo.ts
++++ b/src/main/scenes/repo.ts
+@@ -182,16 +182,23 @@ export function getSceneBase(id: number): { prompt: string; negativePrompt: stri
+ 
+ const MEMO_MAX = 200
+ 
+-/** [custom] 씬 메모(별명) 저장 — 한 줄로 줄이고, 비우면 지운다. 내용 변경이 아니라 미생성 표시는 건드리지 않는다 */
+-export function setSceneMemo(id: number, memo: string): void {
++/**
++ * [custom] 씬 메모(별명) 저장 — 한 줄로 줄이고, 비우면 지운다. 내용 변경이 아니라 미생성 표시는 건드리지 않는다.
++ * 메모가 실제로 바뀌었으면 true.
++ */
++export function setSceneMemo(id: number, memo: string): boolean {
+   const text = memo.replace(/\s+/g, ' ').trim().slice(0, MEMO_MAX)
+   const db = marksDb()
++  const before = db.prepare('SELECT memo FROM custom_scene_memos WHERE scene_id = ?').get(id) as
++    { memo: string } | undefined
++  if ((before?.memo ?? '') === text) return false
+   if (!text) db.prepare('DELETE FROM custom_scene_memos WHERE scene_id = ?').run(id)
+   else
+     db.prepare(
+       `INSERT INTO custom_scene_memos (scene_id, memo) VALUES (?, ?)
+        ON CONFLICT(scene_id) DO UPDATE SET memo = excluded.memo`
+     ).run(id, text)
++  return true
+ }
+ 
+ // [custom] 지운 씬의 메모·미생성 표시를 치운다 — 씬 번호(id)는 새 씬에 다시 쓰일 수 있다.
+@@ -783,17 +790,27 @@ export async function importScenesJson(
+   if (result.canceled || result.filePaths.length === 0) return { count: 0, canceled: true }
+   const scenes = parseSceneImport(readFileSync(result.filePaths[0], 'utf-8'))
+   if (!scenes) return { count: 0, unrecognized: true }
+-  applyImportedScenes(presetId, scenes)
+-  return { count: scenes.length }
++  const outcome = applyImportedScenes(presetId, scenes)
++  return {
++    // [custom] 같은 이름 씬이 없어 건너뛴 메모 줄은 세지 않는다
++    count: outcome.added + outcome.updated + outcome.unchanged,
++    ...(outcome.memos > 0 ? { memos: outcome.memos } : {}),
++    ...(outcome.skipped > 0 ? { skipped: outcome.skipped } : {})
++  }
+ }
+ 
+ /** [custom] 불러온 씬을 프리셋에 반영한 결과 (감시 폴더 알림용) */
+ export interface ImportApplyResult {
+   added: number
+   updated: number
++  /** 내용이 같았던 씬 + 메모만 적은 줄(prompt 칸 없음)이 가리킨 씬 */
+   unchanged: number
+   /** 새로 추가했거나 내용이 바뀐 씬 (자동 생성 대상) */
+   sceneIds: number[]
++  /** 메모가 바뀐 씬 수 — 메모는 내용 변경이 아니라 다시 뽑지 않는다 */
++  memos: number
++  /** 메모만 적은 줄인데 같은 이름 씬이 없어 건너뛴 수 (씬을 새로 만들지 않는다) */
++  skipped: number
+ }
+ 
+ /**
+@@ -801,7 +818,14 @@ export interface ImportApplyResult {
+  * 감시 폴더(custom/watch-folder)가 같이 쓴다.
+  */
+ export function applyImportedScenes(presetId: number, scenes: ImportedScene[]): ImportApplyResult {
+-  const outcome: ImportApplyResult = { added: 0, updated: 0, unchanged: 0, sceneIds: [] }
++  const outcome: ImportApplyResult = {
++    added: 0,
++    updated: 0,
++    unchanged: 0,
++    sceneIds: [],
++    memos: 0,
++    skipped: 0
++  }
+   const db = getDb()
+   const max = db
+     .prepare('SELECT COALESCE(MAX(sort_order), 0) AS m FROM gen_scenes WHERE preset_id = ?')
+@@ -820,6 +844,20 @@ export function applyImportedScenes(presetId: number, scenes: ImportedScene[]):
+   )
+   db.transaction(() => {
+     for (const s of scenes) {
++      // [custom] prompt 칸이 없는 줄 — 같은 이름 씬의 내용은 그대로 두고 메모만 바꾼다.
++      // 다른 내용 칸(negativePrompt·width·height)도 보지 않고, 같은 이름 씬이 없으면 만들지 않는다.
++      if (s.prompt === undefined) {
++        const target = s.name
++          ? (findByName.get(presetId, s.name) as { id: number } | undefined)
++          : undefined
++        if (!target) {
++          outcome.skipped++
++          continue
++        }
++        outcome.unchanged++
++        if (s.memo !== undefined && setSceneMemo(target.id, s.memo)) outcome.memos++
++        continue
++      }
+       const name = s.name ?? t('ui.scene')
+       const existing = s.name
+         ? (findByName.get(presetId, name) as
+@@ -849,7 +887,7 @@ export function applyImportedScenes(presetId: number, scenes: ImportedScene[]):
+           outcome.sceneIds.push(existing.id)
+         } else outcome.unchanged++
+         // [custom] 메모가 적혀 있으면 바꾼다 (빈 글자면 지움, 칸이 없으면 그대로) — 다시 뽑을 일은 아니다
+-        if (s.memo !== undefined) setSceneMemo(existing.id, s.memo)
++        if (s.memo !== undefined && setSceneMemo(existing.id, s.memo)) outcome.memos++
+         continue
+       }
+       outcome.added++
+@@ -863,7 +901,7 @@ export function applyImportedScenes(presetId: number, scenes: ImportedScene[]):
+         ++order
+       )
+       outcome.sceneIds.push(Number(inserted.lastInsertRowid))
+-      if (s.memo) setSceneMemo(Number(inserted.lastInsertRowid), s.memo) // [custom]
++      if (s.memo && setSceneMemo(Number(inserted.lastInsertRowid), s.memo)) outcome.memos++ // [custom]
+     }
+   })()
+   return outcome
+diff --git a/src/renderer/src/components/scene-mode.tsx b/src/renderer/src/components/scene-mode.tsx
+index 590a228aa19f2e537c17d39f6311c74e0d20db0d..46f41885a0e3a5a08589970428b5874dc85b4ebf 100644
+--- a/src/renderer/src/components/scene-mode.tsx
++++ b/src/renderer/src/components/scene-mode.tsx
+@@ -46,7 +46,7 @@ import {
+   useState,
+   type CSSProperties
+ } from 'react'
+-import type { Scene, SceneCast } from '@shared/types'
++import type { IpcInvokeMap, Scene, SceneCast } from '@shared/types'
+ import { RESOLUTIONS, imageUrl, thumbnailFallback } from '../lib/constants'
+ import { useT } from '../lib/i18n'
+ import { useGenerationStore } from '../stores/generation-store'
+@@ -468,7 +468,7 @@ function SceneGrid(): React.JSX.Element {
+     await window.nais.invoke('scenes:exportJson', { presetId: activePresetId })
+   }
+   async function importJson(): Promise<void> {
+-    let result: { count: number; unrecognized?: boolean; canceled?: boolean }
++    let result: IpcInvokeMap['scenes:importJson']['res']
+     try {
+       result = await window.nais.invoke('scenes:importJson', { presetId: activePresetId })
+     } catch (e) {
+@@ -477,7 +477,14 @@ function SceneGrid(): React.JSX.Element {
+     }
+     if (result.canceled) return
+     if (result.unrecognized) toast(t('ui.unrecognizedSceneJson'), 'error')
+-    else if (result.count > 0) {
++    else if (result.memos || result.skipped) {
++      // [custom] 메모가 바뀌었거나 메모 줄의 씬을 못 찾았으면 그 수까지 알린다
++      toast(
++        t('ui.customImportedMemoValue', result.count, result.memos ?? 0, result.skipped ?? 0),
++        result.count > 0 ? 'success' : 'info'
++      )
++      if (result.count > 0) void useScenesStore.getState().load()
++    } else if (result.count > 0) {
+       toast(t('ui.importedValueScenes', result.count), 'success')
+       void useScenesStore.getState().load()
+     } else toast(t('ui.noScenesToImport'), 'info')
+diff --git a/src/renderer/src/stores/scenes-store.ts b/src/renderer/src/stores/scenes-store.ts
+index ac7e3d021ff41a4e89badc30af653be6f45930ae..3d8b3a154226915b22ea05a0fe8562796641cebc 100644
+--- a/src/renderer/src/stores/scenes-store.ts
++++ b/src/renderer/src/stores/scenes-store.ts
+@@ -801,15 +801,20 @@ export function bindSceneEvents(): () => void {
+       toast(t('ui.customWatchFailedValue', event.file, reason), 'error')
+       return
+     }
++    const counts = [
++      event.file,
++      event.presetName ?? '',
++      event.added ?? 0,
++      event.updated ?? 0,
++      event.unchanged ?? 0
++    ] as const
++    const memos = event.memos ?? 0
++    const skipped = event.skipped ?? 0
+     toast(
+-      t(
+-        'ui.customWatchImportedValue',
+-        event.file,
+-        event.presetName ?? '',
+-        event.added ?? 0,
+-        event.updated ?? 0,
+-        event.unchanged ?? 0
+-      ),
++      // 메모가 바뀌었거나 이름이 맞는 씬을 못 찾았을 때만 그 수까지 보인다
++      memos > 0 || skipped > 0
++        ? t('ui.customWatchImportedMemoValue', ...counts, memos, skipped)
++        : t('ui.customWatchImportedValue', ...counts),
+       'success'
+     )
+     const st = useScenesStore.getState()
+diff --git a/src/shared/i18n/catalog-en.ts b/src/shared/i18n/catalog-en.ts
+index d7010df0b0f6c9d326b2686d7822bebf8b1d7d2c..7a70bf252cdae126f5aa12ab3816d7ea64a500e1 100644
+--- a/src/shared/i18n/catalog-en.ts
++++ b/src/shared/i18n/catalog-en.ts
+@@ -203,6 +203,8 @@ export const EN = {
+   'ui.customWatchChooseFolder': 'Choose watch folder',
+   'ui.customWatchImportedValue':
+     'Watch folder: {0} → {1} (added {2} · changed {3} · unchanged {4})',
++  'ui.customWatchImportedMemoValue':
++    'Watch folder: {0} → {1} (added {2} · changed {3} · unchanged {4} · memos {5} · not found {6})',
+   'ui.customWatchFailedValue': 'Watch folder: failed to import {0} — {1}',
+   'ui.customWatchNoPreset':
+     'Cannot tell which preset to use. Put the preset name in the file name or add "preset" to the JSON.',
+@@ -259,6 +261,7 @@ export const EN = {
+   'ui.customSceneMemoClear': 'Clear memo',
+   'ui.customSceneMemoTitleValue': 'Memo for {0}',
+   'ui.customSceneMemoPlaceholder': 'Memo — what this scene shows (shown on the card and in review)',
++  'ui.customImportedMemoValue': 'Imported {0} {0|scene|scenes} (memos {1} · not found {2})',
+   'ui.queuedForCastValue': 'Queued for cast "{0}"',
+   'ui.queuedWithSidebarSettings': 'Queued with sidebar settings',
+   'ui.deletedCast': 'Deleted cast',
+diff --git a/src/shared/i18n/catalog-ko.ts b/src/shared/i18n/catalog-ko.ts
+index d08673ffbaec7fa4c8efde7da75e987e0b9c78b2..3b875b72585e7844da49cc21a844581bbc92769d 100644
+--- a/src/shared/i18n/catalog-ko.ts
++++ b/src/shared/i18n/catalog-ko.ts
+@@ -200,6 +200,8 @@ export const KO = {
+   'ui.customWatchNotChosen': '폴더를 고르지 않음',
+   'ui.customWatchChooseFolder': '감시 폴더 선택',
+   'ui.customWatchImportedValue': '감시 폴더: {0} → {1} (추가 {2} · 변경 {3} · 그대로 {4})',
++  'ui.customWatchImportedMemoValue':
++    '감시 폴더: {0} → {1} (추가 {2} · 변경 {3} · 그대로 {4} · 메모 {5} · 못 찾음 {6})',
+   'ui.customWatchFailedValue': '감시 폴더: {0} 불러오기 실패 — {1}',
+   'ui.customWatchNoPreset':
+     '어느 프리셋에 넣을지 알 수 없습니다. JSON 맨 위에 "preset": "프리셋 이름"을 적어 주세요.',
+@@ -255,6 +257,7 @@ export const KO = {
+   'ui.customSceneMemoClear': '메모 지우기',
+   'ui.customSceneMemoTitleValue': '{0} 메모',
+   'ui.customSceneMemoPlaceholder': '메모 — 어떤 장면인지 (카드·검수 화면에 보여요)',
++  'ui.customImportedMemoValue': '씬 {0}개 가져옴 (메모 {1} · 못 찾음 {2})',
+   'ui.queuedForCastValue': '"{0}" 출연 예약',
+   'ui.queuedWithSidebarSettings': '사이드바 설정 예약',
+   'ui.deletedCast': '삭제된 출연',
+diff --git a/src/shared/i18n/catalog-zh-CN.ts b/src/shared/i18n/catalog-zh-CN.ts
+index 7036bba95a0d69b9b1f9ed30ce6671c58ca7238d..069d8abcc4a782fe0b29e2ccc10a8bd86ca66142 100644
+--- a/src/shared/i18n/catalog-zh-CN.ts
++++ b/src/shared/i18n/catalog-zh-CN.ts
+@@ -198,6 +198,8 @@ export const ZH_CN = {
+   'ui.customWatchNotChosen': '未选择文件夹',
+   'ui.customWatchChooseFolder': '选择监视文件夹',
+   'ui.customWatchImportedValue': '监视文件夹：{0} → {1}（新增 {2} · 更改 {3} · 未变 {4}）',
++  'ui.customWatchImportedMemoValue':
++    '监视文件夹：{0} → {1}（新增 {2} · 更改 {3} · 未变 {4} · 备注 {5} · 未找到 {6}）',
+   'ui.customWatchFailedValue': '监视文件夹：{0} 导入失败 — {1}',
+   'ui.customWatchNoPreset':
+     '无法确定要导入的预设。请在文件名中包含预设名称，或在 JSON 中写入 "preset"。',
+@@ -253,6 +255,7 @@ export const ZH_CN = {
+   'ui.customSceneMemoClear': '清除备注',
+   'ui.customSceneMemoTitleValue': '{0} 的备注',
+   'ui.customSceneMemoPlaceholder': '备注 — 这是什么场景（显示在卡片和检视画面）',
++  'ui.customImportedMemoValue': '已导入 {0} 个场景（备注 {1} · 未找到 {2}）',
+   'ui.queuedForCastValue': '已按角色组合「{0}」预约',
+   'ui.queuedWithSidebarSettings': '已按左侧当前配置预约',
+   'ui.deletedCast': '已删除的角色组合',
+diff --git a/src/shared/types.ts b/src/shared/types.ts
+index 5d57c6c9583c706fdfb55fdc7551b9afe4d1148a..b12784b93e0b621aa1dd40d4506367d8b4792f4f 100644
+--- a/src/shared/types.ts
++++ b/src/shared/types.ts
+@@ -493,6 +493,10 @@ export interface WatchFolderEvent {
+   unchanged?: number
+   /** 새로 추가했거나 내용이 바뀐 씬 (자동 생성 대상) */
+   sceneIds?: number[]
++  /** 메모가 바뀐 씬 수 */
++  memos?: number
++  /** 메모만 적은 줄(prompt 칸 없음)인데 같은 이름 씬이 없어 건너뜀 */
++  skipped?: number
+ }
+ 
+ /** [custom] 대표 세트 받기 결과 — 씬마다 카드에 보이는 대표 이미지(최신 즐겨찾기, 없으면 최신) 한 장씩 */
+@@ -862,8 +866,17 @@ export interface IpcInvokeMap {
+   'custom:watchPickDir': { req: void; res: WatchFolderConfig }
+   'scenes:importJson': {
+     req: { presetId: number }
+-    /** unrecognized = 알 수 없는 JSON 형식, canceled = 파일을 고르지 않음 */
+-    res: { count: number; unrecognized?: boolean; canceled?: boolean }
++    /**
++     * unrecognized = 알 수 없는 JSON 형식, canceled = 파일을 고르지 않음.
++     * [custom] memos = 메모가 바뀐 씬 수, skipped = 메모만 적은 줄인데 같은 이름 씬이 없어 건너뜀 (count에서 뺌)
++     */
++    res: {
++      count: number
++      unrecognized?: boolean
++      canceled?: boolean
++      memos?: number
++      skipped?: number
++    }
+   }
+   /** 즐겨찾기 이미지 또는 각 씬 최상단 이미지를 ZIP으로 (파일 다이얼로그) */
+   /** 활성 프리셋 ZIP 내보내기 (NAIS2 방식 — 씬별 즐겨찾기 전부, 없으면 최상단 1장) */
+diff --git a/tests/custom-scene-memo.integration.ts b/tests/custom-scene-memo.integration.ts
+index e3df0ba5572db36fb90bed64615bdf4ba978dcd6..a677aa75a0b10878f2f22e321e8ddf7ba9f7f5cb 100644
+--- a/tests/custom-scene-memo.integration.ts
++++ b/tests/custom-scene-memo.integration.ts
+@@ -4,6 +4,7 @@ import { join } from 'path'
+ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+ import { closeDb, getDb, initDb } from '../src/main/db'
+ import {
++  applyImportedScenes,
+   bulkDelete,
+   createPreset,
+   createScene,
+@@ -137,4 +138,63 @@ describe('custom: scene memo', () => {
+     }
+     expect(saved.scenes.map((s) => s.memo)).toEqual(['교복 미소', undefined, undefined])
+   })
++
++  it('changes only the memo for rows without a prompt, and never creates scenes for them', async () => {
++    const preset = createPreset('p')
++    const one = createScene(preset, '1')
++    const two = createScene(preset, '2')
++    updateScene(one, { prompt: 'girl', negativePrompt: 'bad', width: 1024, height: 1024 })
++    updateScene(two, { prompt: 'girl, sitting' })
++    setSceneMemo(two, '옛 메모')
++    getDb()
++      .prepare(
++        `INSERT INTO images (file_path, payload_json, kind, scene_id, created_at)
++         VALUES ('x.png', '{}', 'scene', ?, datetime('now', '+1 minute'))`
++      )
++      .run(one)
++    const before = getScene(one)
++    writeFileSync(
++      environment.file,
++      JSON.stringify({
++        scenes: [
++          // prompt 칸이 없으면 다른 내용 칸이 있어도 보지 않는다
++          { name: '1', memo: '교복 미소', negativePrompt: 'IGNORED', width: 512 },
++          { name: '2', memo: '' },
++          { name: '9', memo: '없는 씬' },
++          { memo: '이름 없음' }
++        ]
++      }),
++      'utf-8'
++    )
++
++    expect(await importScenesJson(preset)).toEqual({ count: 2, memos: 2, skipped: 2 })
++    const after = getScene(one)
++    expect(after).toMatchObject({
++      prompt: 'girl',
++      negativePrompt: 'bad',
++      width: 1024,
++      height: 1024,
++      memo: '교복 미소',
++      pending: false // 내용은 그대로라 다시 뽑을 씬이 아니다
++    })
++    expect(after?.prompt).toBe(before?.prompt)
++    expect(getScene(two)?.prompt).toBe('girl, sitting')
++    expect(memoOf(two)).toBeUndefined() // 빈 글자는 메모를 지운다
++    expect(listScenes(preset).map((s) => s.name)).toEqual(['1', '2']) // 9번·이름 없는 줄은 만들지 않음
++
++    // 감시 폴더와 같은 경로: 자동 생성 대상이 없고, 같은 메모를 다시 넣으면 바뀐 메모도 없다
++    const again = applyImportedScenes(preset, [
++      { name: '1', memo: '교복 미소' },
++      { name: '2', memo: '앉은 자세' }
++    ])
++    expect(again).toEqual({
++      added: 0,
++      updated: 0,
++      unchanged: 2,
++      sceneIds: [],
++      memos: 1,
++      skipped: 0
++    })
++    expect(memoOf(two)).toBe('앉은 자세')
++  })
+ })
+diff --git a/tests/custom-watch-folder.integration.ts b/tests/custom-watch-folder.integration.ts
+index fb6ebbd7f1f898ba9cd41bec646f5d27e9ff950c..649993ba8a04689a73ee2ca5f533b10dfe35b5b4 100644
+--- a/tests/custom-watch-folder.integration.ts
++++ b/tests/custom-watch-folder.integration.ts
+@@ -127,7 +127,9 @@ describe('custom: watch folder', () => {
+       added: 1,
+       updated: 1,
+       unchanged: 0,
+-      sceneIds: [kept, listScenes(preset).find((s) => s.name === '002')!.id]
++      sceneIds: [kept, listScenes(preset).find((s) => s.name === '002')!.id],
++      memos: 0,
++      skipped: 0
+     })
+     expect(getScene(kept)?.prompt).toBe('new prompt')
+     expect(listScenes(preset).map((s) => s.name)).toEqual(['001', '002'])
+diff --git a/tests/scene-import-formats.test.ts b/tests/scene-import-formats.test.ts
+index 6ac29c37ed6a8be41e3a268a1af032d48431fb1e..7d1323b19b548c10982a87742d229af0ad606988 100644
+--- a/tests/scene-import-formats.test.ts
++++ b/tests/scene-import-formats.test.ts
+@@ -24,6 +24,23 @@ describe('씬 JSON 가져오기 형식', () => {
+     ])
+   })
+ 
++  it('[custom] prompt 칸이 없는 줄은 prompt 없이 둔다 — 메모만 바꾸는 줄 (빈 글자는 내용)', () => {
++    const scenes = parseSceneImport(
++      json({
++        scenes: [
++          { name: '1', memo: '교복 미소' },
++          { name: '2', prompt: '', memo: '빈 프롬프트' },
++          { name: '3', prompt: null, negativePrompt: 'n', width: 1024 }
++        ]
++      })
++    )
++    expect(scenes?.map((s) => [s.name, s.prompt, s.memo])).toEqual([
++      ['1', undefined, '교복 미소'],
++      ['2', '', '빈 프롬프트'],
++      ['3', undefined, undefined]
++    ])
++  })
++
+   it('구형 scene_preset_export.json (최상위 배열)', () => {
+     expect(
+       parseSceneImport(json([{ scene_name: 'S1', scene_prompt: 'a' }, { scene_prompt: 'b' }]))

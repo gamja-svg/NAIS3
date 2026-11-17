@@ -139,6 +139,8 @@ import {
   runWatchRequest,
   setTopSetDir
 } from './custom/top-set'
+import { openCensor, saveCensor } from './custom/censor'
+import { pickShape, warmSam } from './custom/censor-sam'
 import {
   arrangeFolderGroups,
   createFolderGroup,
@@ -197,7 +199,7 @@ import {
   scenesRoot
 } from './images/storage'
 import { copyFileSync, existsSync, readFileSync, writeFileSync } from 'fs'
-import { basename } from 'path'
+import { basename, join } from 'path'
 import sharp from './sharp'
 import { verifyToken } from './nai/client'
 import { t } from './i18n'
@@ -640,6 +642,20 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
   handle('custom:sceneMemo', ({ id, memo }) => {
     setSceneMemo(id, memo)
   })
+  // [custom] 검수 모드의 검열(흰칠) — 원본은 두고 칠한 그림을 같은 씬에 저장, 콕 찍기는 모양 따기 모델
+  const samDeps = {
+    dir: join(app.getPath('userData'), 'custom-models'),
+    progress: (percent: number) => broadcast('custom:censorModel', { percent })
+  }
+  handle('custom:censorOpen', ({ filePath }) => openCensor(filePath))
+  handle('custom:censorSave', async ({ filePath, maskBase64 }) => {
+    const saved = await saveCensor(filePath, maskBase64)
+    if (saved.sceneId != null)
+      broadcast('scenes:changed', { sceneId: saved.sceneId, filePath: saved.filePath })
+    return saved
+  })
+  handle('custom:censorPick', ({ filePath, x, y }) => pickShape(samDeps, filePath, x, y))
+  handle('custom:censorWarm', () => warmSam(samDeps))
   handle('custom:topSetPickDir', async () => {
     const dir = await pickTopSetDir()
     return dir ? { dir } : { dir: getTopSetDir(), canceled: true }

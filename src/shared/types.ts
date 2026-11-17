@@ -521,6 +521,33 @@ export interface TopSetResult {
   pending: number
 }
 
+/** [custom] 검열(흰칠)할 그림을 연 결과 */
+export interface CensorOpenResult {
+  /** 바탕 그림 — 전에 칠해 둔 그림이면 그 원본 */
+  basePath: string
+  width: number
+  height: number
+  /** 전에 칠해 둔 자리 (한 채널 PNG, base64). 없으면 null */
+  maskBase64: string | null
+}
+
+/** [custom] 칠한 그림을 저장한 결과 */
+export interface CensorSaveResult {
+  /** 이제 대표 이미지인 그림 (칠한 그림) */
+  filePath: string
+  sceneId: number | null
+  /** 새 그림을 만들었는지 (false = 전에 만든 그림을 다시 썼거나, 칠한 게 없어 그대로) */
+  created: boolean
+}
+
+/** [custom] 콕 찍기 결과 — 찍은 자리의 모양 후보 (작은 것부터) */
+export interface CensorPickResult {
+  /** 그림 좌표의 네모와, 그 안의 모양 (흰색 + 알파 PNG, base64) */
+  shapes: { x: number; y: number; width: number; height: number; png: string }[]
+  /** 처음 칠할 후보의 번호 */
+  pick: number
+}
+
 /** [custom] 감시 폴더의 요청 파일(*.request.json) 하나를 처리한 결과 */
 export interface WatchRequestEvent {
   /** 감시 폴더 기준 상대 경로 */
@@ -533,6 +560,11 @@ export interface WatchRequestEvent {
 }
 
 export interface IpcInvokeMap {
+  /** [custom] 검열(흰칠): 그림 열기 · 칠한 그림 저장 · 콕 찍기 · 모양 따기 모델 미리 준비 */
+  'custom:censorOpen': { req: { filePath: string }; res: CensorOpenResult }
+  'custom:censorSave': { req: { filePath: string; maskBase64: string }; res: CensorSaveResult }
+  'custom:censorPick': { req: { filePath: string; x: number; y: number }; res: CensorPickResult }
+  'custom:censorWarm': { req: void; res: void }
   'db:status': { req: void; res: { version: number; path: string } }
   /** 앱 버전 */
   'app:version': { req: void; res: { version: string } }
@@ -1010,6 +1042,8 @@ export interface IpcEventMap {
   'scenes:reservationsChanged': Record<string, never>
   /** [custom] 감시 폴더가 파일 하나를 처리함 */
   'custom:watchImported': WatchFolderEvent
+  /** [custom] 모양 따기 모델을 받는 정도 (0~100, 100 = 준비됨) */
+  'custom:censorModel': { percent: number }
   /** [custom] 감시 폴더가 요청 파일 하나를 처리함 (대표 세트 받기 등) */
   'custom:watchRequestDone': WatchRequestEvent
   /** 단축키로 앱 화면 배율이 바뀜 */

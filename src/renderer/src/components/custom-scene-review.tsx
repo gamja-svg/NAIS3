@@ -1,15 +1,17 @@
-import { ChevronLeft, ChevronRight, Download, Plus, RefreshCw, X } from 'lucide-react'
+import { Brush, ChevronLeft, ChevronRight, Download, Plus, RefreshCw, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { Scene } from '@shared/types'
 import { imageUrl } from '../lib/constants'
 import { useT } from '../lib/i18n'
 import { cn } from '../lib/utils'
+import { bindCensorEvents, useCensorStore, withCensorRev } from '../stores/custom-censor-store'
 import { useClaudePanelStore } from '../stores/custom-claude-panel-store'
 import { useSceneFrame, useSceneGenerating } from '../stores/custom-parallel-store'
 import { useGenerationStore } from '../stores/generation-store'
 import { useScenesStore } from '../stores/scenes-store'
 import { toast } from '../stores/toast-store'
+import { CensorStage } from './custom-censor-stage'
 import { ImageContextMenu } from './image-context-menu'
 
 /** 이만큼 가로로 끌면 넘긴 것으로 본다 (원격 접속의 터치는 마우스 드래그로 들어온다) */
@@ -43,6 +45,8 @@ function insidePicture(img: HTMLImageElement, x: number, y: number): boolean {
  * 대표 이미지가 된다 (즐겨찾기가 있는 씬은 즐겨찾기가 대표라 그대로). 이미지가 없는 씬은 건너뛴다.
  * 넘겨 보는 씬 목록은 열 때 정해 둔다 — 미생성만 보기에서 다시 뽑아 미생성이 풀려도 빠지지 않게.
  * 닫으면 마지막으로 본 씬 카드로 목록을 데려간다.
+ * `검열`을 켜면 그 동안은 그림에 흰칠을 하는 화면이 된다 (custom-censor-stage.tsx) — 휠·누르기·끌기가
+ * 칠하기 조작으로 바뀌고, 넘기기는 ←/→와 화면 버튼으로 한다.
  */
 export function SceneReview({ scenes }: { scenes: Scene[] }): React.JSX.Element | null {
   const t = useT()
@@ -55,6 +59,10 @@ export function SceneReview({ scenes }: { scenes: Scene[] }): React.JSX.Element 
   )
   // Claude 창이 열려 있으면 그 자리는 비워 둔다 (검수하면서 대화할 수 있게)
   const claudeWidth = useClaudePanelStore((s) => (s.open ? s.width : 0))
+  // 검열(흰칠) — 켜 두면 씬을 넘겨도 유지된다
+  const [censor, setCensor] = useState(false)
+  const censorRevs = useCensorStore((s) => s.revs)
+  useEffect(() => bindCensorEvents(), [])
 
   // 열 때의 씬 순서를 고정하고, 내용(대표 이미지·미생성 등)은 최신 값으로 본다
   const [reviewIds] = useState(() => scenes.map((s) => s.id))
@@ -123,6 +131,8 @@ export function SceneReview({ scenes }: { scenes: Scene[] }): React.JSX.Element 
       else if (e.key === 'ArrowRight') go(index + 1)
       else if (e.code === 'KeyR' && !e.repeat) queue()
       else if (e.code === 'KeyG' && !e.repeat) regenerate()
+      // 물결표(~) 키 — 검열 켜기·끄기 (Shift 없이 눌러도 된다)
+      else if (e.code === 'Backquote' && !e.repeat) setCensor((on) => !on)
       else return
       e.preventDefault()
       e.stopPropagation()
@@ -139,6 +149,7 @@ export function SceneReview({ scenes }: { scenes: Scene[] }): React.JSX.Element 
     if (!el) return
     const onWheel = (e: WheelEvent): void => {
       e.preventDefault()
+      if (censor) return // 검열 중의 휠은 확대·붓 크기 (작업 칸이 따로 받는다)
       const now = performance.now()
       const w = wheel.current
       if (now < w.lockUntil) return
@@ -214,7 +225,8 @@ export function SceneReview({ scenes }: { scenes: Scene[] }): React.JSX.Element 
       style={{ right: claudeWidth }}
       onPointerDown={(e) => {
         closeOnClick.current = false
-        if (e.button !== 0) return
+        // 검열 중에는 넘기기·다시 뽑기·그림 밖 닫기를 받지 않는다 (칠하다가 잘못 눌리지 않게)
+        if (e.button !== 0 || censor) return
         const picture = onPicture(e)
         swipe.current = {
           x: e.clientX,
@@ -299,6 +311,17 @@ export function SceneReview({ scenes }: { scenes: Scene[] }): React.JSX.Element 
           </div>
         </div>
         <button
+          className={cn(
+            'flex h-10 items-center gap-1.5 rounded-full px-3.5 text-[13px]',
+            censor ? 'bg-white font-medium text-black' : 'bg-white/10 hover:bg-white/20'
+          )}
+          aria-pressed={censor}
+          title={t('ui.customCensorHint')}
+          onClick={() => setCensor((on) => !on)}
+        >
+          <Brush size={15} /> {t('ui.customCensor')}
+        </button>
+        <button
           className="flex h-10 items-center gap-1.5 rounded-full bg-accent px-3.5 text-[13px] font-medium text-on-accent hover:opacity-90"
           title={t('ui.customReviewRegenHint')}
           onClick={regenerate}
@@ -355,12 +378,15 @@ export function SceneReview({ scenes }: { scenes: Scene[] }): React.JSX.Element 
             draggable={false}
             alt=""
           />
+        ) : censor ? (
+          <CensorStage key={scene.id} filePath={scene.thumbnailPath} />
         ) : (
           /* 우클릭 메뉴 (복사·메타데이터 등) — 라이트박스와 같다 */
           <ImageContextMenu filePath={scene.thumbnailPath}>
             <img
               key={scene.id}
-              src={imageUrl(scene.thumbnailPath)}
+              // 칠한 그림은 같은 파일을 다시 쓴다 — 저장한 뒤에는 새로 읽게 번호를 붙인다
+              src={withCensorRev(imageUrl(scene.thumbnailPath), censorRevs[scene.thumbnailPath])}
               className="max-h-full max-w-full rounded-lg object-contain shadow-2xl"
               onError={(e) => {
                 // 원본 파일이 옮겨졌으면 저장된 썸네일이라도 보여 준다
@@ -383,7 +409,7 @@ export function SceneReview({ scenes }: { scenes: Scene[] }): React.JSX.Element 
       </main>
 
       <footer className="shrink-0 pb-3 text-center text-[11.5px] opacity-60">
-        {t('ui.customReviewHint')}
+        {t(censor ? 'ui.customCensorFooter' : 'ui.customReviewHint')}
       </footer>
 
       {flash && (

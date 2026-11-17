@@ -6,6 +6,7 @@ import {
   Maximize,
   Minus,
   MousePointerClick,
+  Pipette,
   Plus,
   Undo2,
   ZoomIn,
@@ -18,21 +19,29 @@ import {
   BRUSH_DEFAULT,
   BRUSH_MAX,
   BRUSH_MIN,
+  TOLERANCE_DEFAULT,
+  TOLERANCE_MAX,
+  TOLERANCE_MIN,
   fitView,
+  sampleColor,
+  smartDab,
   stepBrush,
+  stepTolerance,
   toImage,
   toolFor,
   zoomAt,
   type CensorTool,
-  type CensorView
+  type CensorView,
+  type Pixels
 } from '../lib/custom-censor'
 import { useT } from '../lib/i18n'
-import { intSetting, useStoredSetting } from '../lib/stored-setting'
+import { boolSetting, intSetting, useStoredSetting } from '../lib/stored-setting'
 import { cn } from '../lib/utils'
 import { useCensorStore } from '../stores/custom-censor-store'
 import { toast } from '../stores/toast-store'
 
 const BRUSH_SETTING = intSetting(BRUSH_MIN, BRUSH_MAX)
+const TOLERANCE_SETTING = intSetting(TOLERANCE_MIN, TOLERANCE_MAX)
 /** 마지막으로 고친 뒤 이만큼 손을 떼면 저장한다 */
 const SAVE_DELAY_MS = 1200
 const UNDO_MAX = 12
@@ -65,7 +74,7 @@ function canvasPngBase64(canvas: HTMLCanvasElement): string {
 /**
  * [custom] 검수 모드의 검열 — 대표 이미지에 흰칠을 한다.
  * 휠 = 확대·축소, Ctrl+휠 = 붓 크기, 긋기 = 흰칠, Shift = 지우기, Alt+누르기 = 콕 찍기(누른 자리의 모양대로 칠함),
- * Space·가운데 버튼으로 끌기 = 이동, Ctrl+Z = 되돌리기. 키 없이 쓰는 화면용으로 아래에 같은 도구 버튼이 있다.
+ * Space·가운데 버튼으로 끌기 = 이동, Ctrl+Z = 되돌리기. `색 맞춤`을 켜면 붓이 처음 닿은 자리와 비슷한 색만 칠한다(지운다). 키 없이 쓰는 화면용으로 아래에 같은 도구 버튼이 있다.
  * 원본 그림 위에 칠 레이어(흰색 + 알파)를 겹쳐 보여 주고, 손을 떼면 잠시 뒤 알아서 저장한다 —
  * 원본은 그대로 두고 칠한 그림이 씬의 새 대표 이미지가 된다 (main/custom/censor.ts).
  */
@@ -89,12 +98,53 @@ export function CensorStage({
   const toolRef = useRef(tool)
   const [brush, setBrush] = useStoredSetting('custom_censor_brush', BRUSH_DEFAULT, BRUSH_SETTING)
   const brushRef = useRef(brush)
+  // 색 맞춤 — 붓이 처음 닿은 자리의 색과 비슷한 픽셀만 칠한다 (원본 픽셀은 켰을 때 한 번 읽어 온다)
+  const [smart, setSmart] = useStoredSetting('custom_censor_smart', false, boolSetting)
+  const [tolerance, setTolerance] = useStoredSetting(
+    'custom_censor_tolerance',
+    TOLERANCE_DEFAULT,
+    TOLERANCE_SETTING
+  )
+  const smartRef = useRef({ on: smart, tolerance })
+  const basePixels = useRef<{ path: string; pixels: Pixels } | null>(null)
+  const strokeColor = useRef<[number, number, number] | null>(null)
   // 누르기·휠 처리기가 늘 지금 값을 보게 맞춰 둔다
   useLayoutEffect(() => {
     viewRef.current = view
     toolRef.current = tool
     brushRef.current = brush
+    smartRef.current = { on: smart, tolerance }
   })
+
+  // 색 맞춤을 켰거나 그림이 바뀌면 원본 픽셀을 읽어 둔다 (읽기 전에 그은 것은 보통 붓으로 칠해진다)
+  const basePath = session?.basePath
+  useEffect(() => {
+    if (!smart || !basePath || basePixels.current?.path === basePath) return
+    let alive = true
+    void (async () => {
+      try {
+        const { dataUrl } = await window.nais.invoke('custom:censorBase', { filePath: basePath })
+        const img = await loadImage(dataUrl)
+        if (!alive) return
+        const canvas = document.createElement('canvas')
+        canvas.width = img.naturalWidth
+        canvas.height = img.naturalHeight
+        const c = canvas.getContext('2d', { willReadFrequently: true })
+        if (!c) return
+        c.drawImage(img, 0, 0)
+        const data = c.getImageData(0, 0, canvas.width, canvas.height)
+        basePixels.current = {
+          path: basePath,
+          pixels: { width: data.width, height: data.height, data: data.data }
+        }
+      } catch (error) {
+        toast(error instanceof Error ? error.message : String(error), 'error')
+      }
+    })()
+    return () => {
+      alive = false
+    }
+  }, [smart, basePath])
   const [busy, setBusy] = useState(false)
   const [undoCount, setUndoCount] = useState(0)
   const undo = useRef<ImageData[]>([])
@@ -324,6 +374,41 @@ export function CensorStage({
   ): void => {
     const c = ctx()
     if (!c) return
+    const base = basePixels.current
+    const s = sessionRef.current
+    if (smartRef.current.on && s && base?.path === s.basePath) {
+      // 색 맞춤: 선을 따라 붓 원을 촘촘히 찍되, 기준 색과 비슷한 픽셀만 바꾼다
+      const radius = brushRef.current / 2
+      const start = from ?? { x, y }
+      strokeColor.current ??= sampleColor(base.pixels, start.x, start.y)
+      const bx = Math.max(0, Math.floor(Math.min(start.x, x) - radius))
+      const by = Math.max(0, Math.floor(Math.min(start.y, y) - radius))
+      const bw = Math.min(s.width, Math.ceil(Math.max(start.x, x) + radius) + 1) - bx
+      const bh = Math.min(s.height, Math.ceil(Math.max(start.y, y) + radius) + 1) - by
+      if (bw <= 0 || bh <= 0) return
+      const layer = c.getImageData(bx, by, bw, bh)
+      const steps = Math.max(
+        1,
+        Math.ceil(Math.hypot(x - start.x, y - start.y) / Math.max(1, radius / 2))
+      )
+      for (let i = from ? 1 : 0; i <= (from ? steps : 0); i++) {
+        const k = from ? i / steps : 0
+        smartDab(
+          layer,
+          bx,
+          by,
+          base.pixels,
+          start.x + (x - start.x) * k,
+          start.y + (y - start.y) * k,
+          radius,
+          strokeColor.current,
+          smartRef.current.tolerance,
+          erase
+        )
+      }
+      c.putImageData(layer, bx, by)
+      return
+    }
     c.globalCompositeOperation = erase ? 'destination-out' : 'source-over'
     c.strokeStyle = c.fillStyle = '#fff'
     c.lineWidth = brushRef.current
@@ -363,6 +448,7 @@ export function CensorStage({
     pushUndo(snapshot())
     setLastPick(null)
     erasing.current = using === 'erase'
+    strokeColor.current = null // 기준 색은 긋기 시작한 자리에서 새로 잡는다
     strokeTo(at.x, at.y, erasing.current)
     drag.current = { kind: 'stroke', id: e.pointerId, x: at.x, y: at.y }
   }
@@ -650,6 +736,49 @@ export function CensorStage({
         >
           <Undo2 size={15} />
         </button>
+        <span className="mx-1 h-5 w-px shrink-0 bg-white/20" />
+        <button
+          type="button"
+          aria-pressed={smart}
+          title={t('ui.customCensorSmartHint')}
+          onClick={() => setSmart(!smart)}
+          className={cn(
+            'flex h-8 shrink-0 items-center gap-1 rounded-full px-2.5 transition',
+            smart ? 'bg-white font-medium text-black' : 'text-white/85 hover:bg-white/15'
+          )}
+        >
+          <Pipette size={15} /> {t('ui.customCensorSmart')}
+        </button>
+        {smart && (
+          <>
+            <button
+              type="button"
+              className={iconButton}
+              aria-label={t('ui.customCensorToleranceSmaller')}
+              title={t('ui.customCensorToleranceHint')}
+              disabled={tolerance <= TOLERANCE_MIN}
+              onClick={() => setTolerance(stepTolerance(tolerance, false))}
+            >
+              <Minus size={15} />
+            </button>
+            <span
+              className="w-9 shrink-0 text-center font-mono text-[12px] opacity-85"
+              title={t('ui.customCensorToleranceHint')}
+            >
+              {t('ui.customCensorToleranceValue', tolerance)}
+            </span>
+            <button
+              type="button"
+              className={iconButton}
+              aria-label={t('ui.customCensorToleranceBigger')}
+              title={t('ui.customCensorToleranceHint')}
+              disabled={tolerance >= TOLERANCE_MAX}
+              onClick={() => setTolerance(stepTolerance(tolerance, true))}
+            >
+              <Plus size={15} />
+            </button>
+          </>
+        )}
         {lastPick && lastPick.result.shapes.length > 1 && (
           <>
             <span className="mx-1 h-5 w-px shrink-0 bg-white/20" />

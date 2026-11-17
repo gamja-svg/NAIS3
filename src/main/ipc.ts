@@ -139,7 +139,7 @@ import {
   runWatchRequest,
   setTopSetDir
 } from './custom/top-set'
-import { openCensor, saveCensor } from './custom/censor'
+import { openCensor, readCensorBase, saveCensor } from './custom/censor'
 import { pickShape, warmSam } from './custom/censor-sam'
 import {
   arrangeFolderGroups,
@@ -656,6 +656,7 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
   })
   handle('custom:censorPick', ({ filePath, x, y }) => pickShape(samDeps, filePath, x, y))
   handle('custom:censorWarm', () => warmSam(samDeps))
+  handle('custom:censorBase', ({ filePath }) => ({ dataUrl: readCensorBase(filePath) }))
   handle('custom:topSetPickDir', async () => {
     const dir = await pickTopSetDir()
     return dir ? { dir } : { dir: getTopSetDir(), canceled: true }

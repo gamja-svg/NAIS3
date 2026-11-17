@@ -52,6 +52,82 @@ export function stepBrush(brush: number, up: boolean): number {
   return Math.round(Math.min(BRUSH_MAX, Math.max(BRUSH_MIN, next)))
 }
 
+export const TOLERANCE_MIN = 5
+export const TOLERANCE_MAX = 150
+export const TOLERANCE_DEFAULT = 40
+
+/** 허용 범위를 5씩 */
+export function stepTolerance(tolerance: number, up: boolean): number {
+  return Math.min(TOLERANCE_MAX, Math.max(TOLERANCE_MIN, tolerance + (up ? 5 : -5)))
+}
+
+export interface Pixels {
+  width: number
+  height: number
+  /** RGBA */
+  data: Uint8ClampedArray
+}
+
+/** (x, y) 둘레 3x3의 평균 색 — 색 맞춤 붓의 기준 색 (한 픽셀의 잡티에 흔들리지 않게) */
+export function sampleColor(base: Pixels, x: number, y: number): [number, number, number] {
+  const cx = Math.min(base.width - 1, Math.max(0, Math.round(x)))
+  const cy = Math.min(base.height - 1, Math.max(0, Math.round(y)))
+  let r = 0
+  let g = 0
+  let b = 0
+  let n = 0
+  for (let py = Math.max(0, cy - 1); py <= Math.min(base.height - 1, cy + 1); py++)
+    for (let px = Math.max(0, cx - 1); px <= Math.min(base.width - 1, cx + 1); px++) {
+      const i = (py * base.width + px) * 4
+      r += base.data[i]
+      g += base.data[i + 1]
+      b += base.data[i + 2]
+      n++
+    }
+  return [r / n, g / n, b / n]
+}
+
+/**
+ * 색 맞춤 붓 한 번 찍기 — 붓 원 안에서 원본 색이 기준 색과 비슷한(RGB 거리 ≤ tolerance) 픽셀만 칠하거나 지운다.
+ * layer = 칠 레이어의 일부 (그림의 (ox, oy)에서 시작하는 네모), base = 원본 그림 전체.
+ */
+export function smartDab(
+  layer: Pixels,
+  ox: number,
+  oy: number,
+  base: Pixels,
+  cx: number,
+  cy: number,
+  radius: number,
+  ref: [number, number, number],
+  tolerance: number,
+  erase: boolean
+): void {
+  const limit = tolerance * tolerance
+  const r2 = radius * radius
+  const x0 = Math.max(0, ox, Math.floor(cx - radius))
+  const y0 = Math.max(0, oy, Math.floor(cy - radius))
+  const x1 = Math.min(base.width, ox + layer.width, Math.ceil(cx + radius) + 1)
+  const y1 = Math.min(base.height, oy + layer.height, Math.ceil(cy + radius) + 1)
+  for (let y = y0; y < y1; y++)
+    for (let x = x0; x < x1; x++) {
+      const dx = x + 0.5 - cx
+      const dy = y + 0.5 - cy
+      if (dx * dx + dy * dy > r2) continue
+      const b = (y * base.width + x) * 4
+      const dr = base.data[b] - ref[0]
+      const dg = base.data[b + 1] - ref[1]
+      const db = base.data[b + 2] - ref[2]
+      if (dr * dr + dg * dg + db * db > limit) continue
+      const l = ((y - oy) * layer.width + (x - ox)) * 4
+      if (erase) layer.data[l + 3] = 0
+      else {
+        layer.data[l] = layer.data[l + 1] = layer.data[l + 2] = 255
+        layer.data[l + 3] = 255
+      }
+    }
+}
+
 /**
  * 누르는 순간 쓸 도구 — 키가 고른 도구보다 먼저다:
  * Space·가운데 버튼 = 이동, Alt = 콕 찍기, Shift = 지우기, 아무 키도 없으면 고른 도구(기본 칠하기).

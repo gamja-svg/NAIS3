@@ -3,10 +3,14 @@ import {
   BRUSH_MAX,
   BRUSH_MIN,
   fitView,
+  sampleColor,
+  smartDab,
   stepBrush,
+  stepTolerance,
   toImage,
   toolFor,
-  zoomAt
+  zoomAt,
+  type Pixels
 } from '../src/renderer/src/lib/custom-censor'
 import { withCensorRev } from '../src/renderer/src/stores/custom-censor-store'
 
@@ -52,5 +56,35 @@ describe('custom: censor view', () => {
       'nais-image://local/?path=a'
     )
     expect(withCensorRev('nais-image://local/?path=a', 2)).toBe('nais-image://local/?path=a&v=2')
+  })
+
+  it('paints only pixels close in color to the reference inside the brush circle', () => {
+    // 왼쪽 절반은 살색, 오른쪽 절반은 어두운 선
+    const base: Pixels = { width: 8, height: 4, data: new Uint8ClampedArray(8 * 4 * 4) }
+    for (let p = 0; p < 32; p++)
+      base.data.set(p % 8 < 4 ? [240, 200, 180, 255] : [40, 20, 20, 255], p * 4)
+    const ref = sampleColor(base, 1, 1)
+    expect(ref).toEqual([240, 200, 180])
+    // 레이어는 그림의 (1, 0)에서 시작하는 6x4 조각
+    const layer: Pixels = { width: 6, height: 4, data: new Uint8ClampedArray(6 * 4 * 4) }
+    smartDab(layer, 1, 0, base, 4, 2, 2.5, ref, 40, false)
+    const alpha = (x: number, y: number): number => layer.data[(y * 6 + (x - 1)) * 4 + 3]
+    expect(alpha(3, 2)).toBe(255) // 살색 — 칠함
+    expect(alpha(2, 1)).toBe(255)
+    expect(alpha(4, 2)).toBe(0) // 선 — 붓이 지나가도 남는다
+    expect(alpha(5, 1)).toBe(0)
+    expect(alpha(1, 0)).toBe(0) // 붓 원 밖
+    // 지우기도 같은 색만
+    layer.data.fill(255)
+    smartDab(layer, 1, 0, base, 4, 2, 2.5, ref, 40, true)
+    expect(alpha(3, 2)).toBe(0)
+    expect(alpha(4, 2)).toBe(255)
+    // 범위를 넓히면 선까지 칠한다
+    layer.data.fill(0)
+    smartDab(layer, 1, 0, base, 4, 2, 2.5, ref, 400, false)
+    expect(alpha(4, 2)).toBe(255)
+    expect(stepTolerance(40, true)).toBe(45)
+    expect(stepTolerance(5, false)).toBe(5)
+    expect(stepTolerance(150, true)).toBe(150)
   })
 })

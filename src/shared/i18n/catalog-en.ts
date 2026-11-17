@@ -302,6 +302,14 @@ export const EN = {
   'ui.customCensorModelFailedValue':
     'Could not download the tap-to-shape model ({0}). Check your connection, then turn Censor on again.',
   'ui.customCensorNoImage': 'Could not save: no record of this image was found',
+  'ui.customCensorSmart': 'Match color',
+  'ui.customCensorSmartHint':
+    'Match color — paint only pixels close in color to where the stroke started (erasing works the same way). Lines and differently colored areas are left alone.',
+  'ui.customCensorToleranceSmaller': 'Narrower color range',
+  'ui.customCensorToleranceBigger': 'Wider color range',
+  'ui.customCensorToleranceHint':
+    'How close a color must be — smaller keeps to nearly the same color, larger also paints different colors',
+  'ui.customCensorToleranceValue': '±{0}',
   'ui.customPresetPrevious': 'Previous preset (↑ in review)',
   'ui.customPresetNext': 'Next preset (↓ in review)',
   'ui.customPresetMoveUp': 'Move up',

@@ -298,6 +298,14 @@ export const KO = {
   'ui.customCensorModelFailedValue':
     '콕 찍기 모델을 받지 못했습니다 ({0}). 인터넷 연결을 확인한 뒤 검열을 다시 켜 주세요.',
   'ui.customCensorNoImage': '이 그림의 기록을 찾을 수 없어 저장하지 못했습니다',
+  'ui.customCensorSmart': '색 맞춤',
+  'ui.customCensorSmartHint':
+    '색 맞춤 — 붓이 처음 닿은 자리와 비슷한 색만 칠합니다 (지우기도 같습니다). 선이나 다른 색 부분은 붓이 지나가도 남습니다.',
+  'ui.customCensorToleranceSmaller': '비슷한 색 범위 좁게',
+  'ui.customCensorToleranceBigger': '비슷한 색 범위 넓게',
+  'ui.customCensorToleranceHint':
+    '비슷한 색으로 볼 범위 — 작을수록 꼭 같은 색만, 클수록 다른 색까지 칠합니다',
+  'ui.customCensorToleranceValue': '±{0}',
   'ui.customPresetPrevious': '이전 프리셋 (검수 모드에서 ↑)',
   'ui.customPresetNext': '다음 프리셋 (검수 모드에서 ↓)',
   'ui.customPresetMoveUp': '위로 옮기기',

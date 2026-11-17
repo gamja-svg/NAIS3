@@ -565,6 +565,8 @@ export interface IpcInvokeMap {
   'custom:censorSave': { req: { filePath: string; maskBase64: string }; res: CensorSaveResult }
   'custom:censorPick': { req: { filePath: string; x: number; y: number }; res: CensorPickResult }
   'custom:censorWarm': { req: void; res: void }
+  /** [custom] 바탕 그림의 픽셀을 읽을 수 있게 data: 주소로 (색 맞춤 붓) */
+  'custom:censorBase': { req: { filePath: string }; res: { dataUrl: string } }
   'db:status': { req: void; res: { version: number; path: string } }
   /** 앱 버전 */
   'app:version': { req: void; res: { version: string } }

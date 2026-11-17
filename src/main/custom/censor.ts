@@ -3,7 +3,7 @@ import { extname } from 'path'
 import type { CensorOpenResult, CensorSaveResult } from '../../shared/types'
 import { getDb } from '../db'
 import { t } from '../i18n'
-import { saveGeneratedImage } from '../images/storage'
+import { isUnderImagesRoot, saveGeneratedImage } from '../images/storage'
 import { getPresetName, getScene } from '../scenes/repo'
 import sharp from '../sharp'
 
@@ -82,6 +82,13 @@ export async function openCensor(filePath: string): Promise<CensorOpenResult> {
     height: meta.height ?? 0,
     maskBase64: saved && basePath !== filePath ? saved.mask.toString('base64') : null
   }
+}
+
+/** 바탕 그림을 data: 주소로 — 화면이 픽셀을 읽을 수 있게 (그림 폴더 안의 파일만) */
+export function readCensorBase(filePath: string): string {
+  if (!isUnderImagesRoot(filePath)) throw new Error(t('ui.customCensorNoImage'))
+  const mime = extname(filePath).toLowerCase() === '.webp' ? 'image/webp' : 'image/png'
+  return `data:${mime};base64,${readFileSync(filePath).toString('base64')}`
 }
 
 const PNG_SIG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])

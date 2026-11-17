@@ -291,6 +291,14 @@ export const ZH_CN = {
   'ui.customCensorModelValue': '正在下载取形模型 {0}%',
   'ui.customCensorModelFailedValue': '无法下载取形模型（{0}）。请检查网络连接后重新开启遮挡。',
   'ui.customCensorNoImage': '找不到这张图的记录，无法保存',
+  'ui.customCensorSmart': '颜色匹配',
+  'ui.customCensorSmartHint':
+    '颜色匹配 — 只涂与起笔处颜色相近的像素（擦除也一样）。线条和其他颜色的部分会保留。',
+  'ui.customCensorToleranceSmaller': '缩小相近颜色范围',
+  'ui.customCensorToleranceBigger': '扩大相近颜色范围',
+  'ui.customCensorToleranceHint':
+    '视为相近颜色的范围 — 越小越只涂几乎相同的颜色，越大连不同的颜色也会涂',
+  'ui.customCensorToleranceValue': '±{0}',
   'ui.customPresetPrevious': '上一个预设（检视中按 ↑）',
   'ui.customPresetNext': '下一个预设（检视中按 ↓）',
   'ui.customPresetMoveUp': '上移',

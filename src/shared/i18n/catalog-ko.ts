@@ -200,6 +200,8 @@ export const KO = {
   'ui.customWatchNotChosen': '폴더를 고르지 않음',
   'ui.customWatchChooseFolder': '감시 폴더 선택',
   'ui.customWatchImportedValue': '감시 폴더: {0} → {1} (추가 {2} · 변경 {3} · 그대로 {4})',
+  'ui.customWatchImportedMemoValue':
+    '감시 폴더: {0} → {1} (추가 {2} · 변경 {3} · 그대로 {4} · 메모 {5} · 못 찾음 {6})',
   'ui.customWatchFailedValue': '감시 폴더: {0} 불러오기 실패 — {1}',
   'ui.customWatchNoPreset':
     '어느 프리셋에 넣을지 알 수 없습니다. JSON 맨 위에 "preset": "프리셋 이름"을 적어 주세요.',
@@ -255,6 +257,7 @@ export const KO = {
   'ui.customSceneMemoClear': '메모 지우기',
   'ui.customSceneMemoTitleValue': '{0} 메모',
   'ui.customSceneMemoPlaceholder': '메모 — 어떤 장면인지 (카드·검수 화면에 보여요)',
+  'ui.customImportedMemoValue': '씬 {0}개 가져옴 (메모 {1} · 못 찾음 {2})',
   'ui.queuedForCastValue': '"{0}" 출연 예약',
   'ui.queuedWithSidebarSettings': '사이드바 설정 예약',
   'ui.deletedCast': '삭제된 출연',

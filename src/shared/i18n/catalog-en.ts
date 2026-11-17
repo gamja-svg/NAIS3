@@ -203,6 +203,8 @@ export const EN = {
   'ui.customWatchChooseFolder': 'Choose watch folder',
   'ui.customWatchImportedValue':
     'Watch folder: {0} → {1} (added {2} · changed {3} · unchanged {4})',
+  'ui.customWatchImportedMemoValue':
+    'Watch folder: {0} → {1} (added {2} · changed {3} · unchanged {4} · memos {5} · not found {6})',
   'ui.customWatchFailedValue': 'Watch folder: failed to import {0} — {1}',
   'ui.customWatchNoPreset':
     'Cannot tell which preset to use. Put the preset name in the file name or add "preset" to the JSON.',
@@ -259,6 +261,7 @@ export const EN = {
   'ui.customSceneMemoClear': 'Clear memo',
   'ui.customSceneMemoTitleValue': 'Memo for {0}',
   'ui.customSceneMemoPlaceholder': 'Memo — what this scene shows (shown on the card and in review)',
+  'ui.customImportedMemoValue': 'Imported {0} {0|scene|scenes} (memos {1} · not found {2})',
   'ui.queuedForCastValue': 'Queued for cast "{0}"',
   'ui.queuedWithSidebarSettings': 'Queued with sidebar settings',
   'ui.deletedCast': 'Deleted cast',

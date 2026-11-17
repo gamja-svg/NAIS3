@@ -24,6 +24,23 @@ describe('씬 JSON 가져오기 형식', () => {
     ])
   })
 
+  it('[custom] prompt 칸이 없는 줄은 prompt 없이 둔다 — 메모만 바꾸는 줄 (빈 글자는 내용)', () => {
+    const scenes = parseSceneImport(
+      json({
+        scenes: [
+          { name: '1', memo: '교복 미소' },
+          { name: '2', prompt: '', memo: '빈 프롬프트' },
+          { name: '3', prompt: null, negativePrompt: 'n', width: 1024 }
+        ]
+      })
+    )
+    expect(scenes?.map((s) => [s.name, s.prompt, s.memo])).toEqual([
+      ['1', undefined, '교복 미소'],
+      ['2', '', '빈 프롬프트'],
+      ['3', undefined, undefined]
+    ])
+  })
+
   it('구형 scene_preset_export.json (최상위 배열)', () => {
     expect(
       parseSceneImport(json([{ scene_name: 'S1', scene_prompt: 'a' }, { scene_prompt: 'b' }]))

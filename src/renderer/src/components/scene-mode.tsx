@@ -46,7 +46,7 @@ import {
   useState,
   type CSSProperties
 } from 'react'
-import type { Scene, SceneCast } from '@shared/types'
+import type { IpcInvokeMap, Scene, SceneCast } from '@shared/types'
 import { RESOLUTIONS, imageUrl, thumbnailFallback } from '../lib/constants'
 import { useT } from '../lib/i18n'
 import { useGenerationStore } from '../stores/generation-store'
@@ -468,7 +468,7 @@ function SceneGrid(): React.JSX.Element {
     await window.nais.invoke('scenes:exportJson', { presetId: activePresetId })
   }
   async function importJson(): Promise<void> {
-    let result: { count: number; unrecognized?: boolean; canceled?: boolean }
+    let result: IpcInvokeMap['scenes:importJson']['res']
     try {
       result = await window.nais.invoke('scenes:importJson', { presetId: activePresetId })
     } catch (e) {
@@ -477,7 +477,14 @@ function SceneGrid(): React.JSX.Element {
     }
     if (result.canceled) return
     if (result.unrecognized) toast(t('ui.unrecognizedSceneJson'), 'error')
-    else if (result.count > 0) {
+    else if (result.memos || result.skipped) {
+      // [custom] 메모가 바뀌었거나 메모 줄의 씬을 못 찾았으면 그 수까지 알린다
+      toast(
+        t('ui.customImportedMemoValue', result.count, result.memos ?? 0, result.skipped ?? 0),
+        result.count > 0 ? 'success' : 'info'
+      )
+      if (result.count > 0) void useScenesStore.getState().load()
+    } else if (result.count > 0) {
       toast(t('ui.importedValueScenes', result.count), 'success')
       void useScenesStore.getState().load()
     } else toast(t('ui.noScenesToImport'), 'info')

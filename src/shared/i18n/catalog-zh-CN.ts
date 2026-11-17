@@ -198,6 +198,8 @@ export const ZH_CN = {
   'ui.customWatchNotChosen': '未选择文件夹',
   'ui.customWatchChooseFolder': '选择监视文件夹',
   'ui.customWatchImportedValue': '监视文件夹：{0} → {1}（新增 {2} · 更改 {3} · 未变 {4}）',
+  'ui.customWatchImportedMemoValue':
+    '监视文件夹：{0} → {1}（新增 {2} · 更改 {3} · 未变 {4} · 备注 {5} · 未找到 {6}）',
   'ui.customWatchFailedValue': '监视文件夹：{0} 导入失败 — {1}',
   'ui.customWatchNoPreset':
     '无法确定要导入的预设。请在文件名中包含预设名称，或在 JSON 中写入 "preset"。',
@@ -253,6 +255,7 @@ export const ZH_CN = {
   'ui.customSceneMemoClear': '清除备注',
   'ui.customSceneMemoTitleValue': '{0} 的备注',
   'ui.customSceneMemoPlaceholder': '备注 — 这是什么场景（显示在卡片和检视画面）',
+  'ui.customImportedMemoValue': '已导入 {0} 个场景（备注 {1} · 未找到 {2}）',
   'ui.queuedForCastValue': '已按角色组合「{0}」预约',
   'ui.queuedWithSidebarSettings': '已按左侧当前配置预约',
   'ui.deletedCast': '已删除的角色组合',

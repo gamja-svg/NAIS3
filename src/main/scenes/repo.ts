@@ -182,16 +182,23 @@ export function getSceneBase(id: number): { prompt: string; negativePrompt: stri
 
 const MEMO_MAX = 200
 
-/** [custom] 씬 메모(별명) 저장 — 한 줄로 줄이고, 비우면 지운다. 내용 변경이 아니라 미생성 표시는 건드리지 않는다 */
-export function setSceneMemo(id: number, memo: string): void {
+/**
+ * [custom] 씬 메모(별명) 저장 — 한 줄로 줄이고, 비우면 지운다. 내용 변경이 아니라 미생성 표시는 건드리지 않는다.
+ * 메모가 실제로 바뀌었으면 true.
+ */
+export function setSceneMemo(id: number, memo: string): boolean {
   const text = memo.replace(/\s+/g, ' ').trim().slice(0, MEMO_MAX)
   const db = marksDb()
+  const before = db.prepare('SELECT memo FROM custom_scene_memos WHERE scene_id = ?').get(id) as
+    { memo: string } | undefined
+  if ((before?.memo ?? '') === text) return false
   if (!text) db.prepare('DELETE FROM custom_scene_memos WHERE scene_id = ?').run(id)
   else
     db.prepare(
       `INSERT INTO custom_scene_memos (scene_id, memo) VALUES (?, ?)
        ON CONFLICT(scene_id) DO UPDATE SET memo = excluded.memo`
     ).run(id, text)
+  return true
 }
 
 // [custom] 지운 씬의 메모·미생성 표시를 치운다 — 씬 번호(id)는 새 씬에 다시 쓰일 수 있다.
@@ -783,17 +790,27 @@ export async function importScenesJson(
   if (result.canceled || result.filePaths.length === 0) return { count: 0, canceled: true }
   const scenes = parseSceneImport(readFileSync(result.filePaths[0], 'utf-8'))
   if (!scenes) return { count: 0, unrecognized: true }
-  applyImportedScenes(presetId, scenes)
-  return { count: scenes.length }
+  const outcome = applyImportedScenes(presetId, scenes)
+  return {
+    // [custom] 같은 이름 씬이 없어 건너뛴 메모 줄은 세지 않는다
+    count: outcome.added + outcome.updated + outcome.unchanged,
+    ...(outcome.memos > 0 ? { memos: outcome.memos } : {}),
+    ...(outcome.skipped > 0 ? { skipped: outcome.skipped } : {})
+  }
 }
 
 /** [custom] 불러온 씬을 프리셋에 반영한 결과 (감시 폴더 알림용) */
 export interface ImportApplyResult {
   added: number
   updated: number
+  /** 내용이 같았던 씬 + 메모만 적은 줄(prompt 칸 없음)이 가리킨 씬 */
   unchanged: number
   /** 새로 추가했거나 내용이 바뀐 씬 (자동 생성 대상) */
   sceneIds: number[]
+  /** 메모가 바뀐 씬 수 — 메모는 내용 변경이 아니라 다시 뽑지 않는다 */
+  memos: number
+  /** 메모만 적은 줄인데 같은 이름 씬이 없어 건너뛴 수 (씬을 새로 만들지 않는다) */
+  skipped: number
 }
 
 /**
@@ -801,7 +818,14 @@ export interface ImportApplyResult {
  * 감시 폴더(custom/watch-folder)가 같이 쓴다.
  */
 export function applyImportedScenes(presetId: number, scenes: ImportedScene[]): ImportApplyResult {
-  const outcome: ImportApplyResult = { added: 0, updated: 0, unchanged: 0, sceneIds: [] }
+  const outcome: ImportApplyResult = {
+    added: 0,
+    updated: 0,
+    unchanged: 0,
+    sceneIds: [],
+    memos: 0,
+    skipped: 0
+  }
   const db = getDb()
   const max = db
     .prepare('SELECT COALESCE(MAX(sort_order), 0) AS m FROM gen_scenes WHERE preset_id = ?')
@@ -820,6 +844,20 @@ export function applyImportedScenes(presetId: number, scenes: ImportedScene[]): 
   )
   db.transaction(() => {
     for (const s of scenes) {
+      // [custom] prompt 칸이 없는 줄 — 같은 이름 씬의 내용은 그대로 두고 메모만 바꾼다.
+      // 다른 내용 칸(negativePrompt·width·height)도 보지 않고, 같은 이름 씬이 없으면 만들지 않는다.
+      if (s.prompt === undefined) {
+        const target = s.name
+          ? (findByName.get(presetId, s.name) as { id: number } | undefined)
+          : undefined
+        if (!target) {
+          outcome.skipped++
+          continue
+        }
+        outcome.unchanged++
+        if (s.memo !== undefined && setSceneMemo(target.id, s.memo)) outcome.memos++
+        continue
+      }
       const name = s.name ?? t('ui.scene')
       const existing = s.name
         ? (findByName.get(presetId, name) as
@@ -849,7 +887,7 @@ export function applyImportedScenes(presetId: number, scenes: ImportedScene[]): 
           outcome.sceneIds.push(existing.id)
         } else outcome.unchanged++
         // [custom] 메모가 적혀 있으면 바꾼다 (빈 글자면 지움, 칸이 없으면 그대로) — 다시 뽑을 일은 아니다
-        if (s.memo !== undefined) setSceneMemo(existing.id, s.memo)
+        if (s.memo !== undefined && setSceneMemo(existing.id, s.memo)) outcome.memos++
         continue
       }
       outcome.added++
@@ -863,7 +901,7 @@ export function applyImportedScenes(presetId: number, scenes: ImportedScene[]): 
         ++order
       )
       outcome.sceneIds.push(Number(inserted.lastInsertRowid))
-      if (s.memo) setSceneMemo(Number(inserted.lastInsertRowid), s.memo) // [custom]
+      if (s.memo && setSceneMemo(Number(inserted.lastInsertRowid), s.memo)) outcome.memos++ // [custom]
     }
   })()
   return outcome

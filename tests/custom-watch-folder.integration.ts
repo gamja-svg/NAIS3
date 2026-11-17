@@ -127,7 +127,9 @@ describe('custom: watch folder', () => {
       added: 1,
       updated: 1,
       unchanged: 0,
-      sceneIds: [kept, listScenes(preset).find((s) => s.name === '002')!.id]
+      sceneIds: [kept, listScenes(preset).find((s) => s.name === '002')!.id],
+      memos: 0,
+      skipped: 0
     })
     expect(getScene(kept)?.prompt).toBe('new prompt')
     expect(listScenes(preset).map((s) => s.name)).toEqual(['001', '002'])

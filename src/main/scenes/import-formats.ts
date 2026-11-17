@@ -1,7 +1,11 @@
 /** 씬 JSON 가져오기로 들어오는 씬 1개 (없는 필드는 저장할 때 기본값) */
 export interface ImportedScene {
   name?: string
-  prompt: string
+  /**
+   * [custom] 없으면 씬 JSON에 prompt 칸이 없던 줄 — 같은 이름 씬의 내용(프롬프트·네거티브·크기)은
+   * 그대로 두고 메모만 바꾼다. 같은 이름 씬이 없으면 새로 만들지 않고 건너뛴다.
+   */
+  prompt?: string
   negativePrompt?: string
   width?: number
   height?: number
@@ -45,7 +49,8 @@ export function parseSceneImport(raw: string): ImportedScene[] | null {
   if (Array.isArray(data.scenes)) {
     return data.scenes.filter(isObj).map((s) => ({
       name: str(s.name),
-      prompt: str(s.prompt) ?? str(s.scenePrompt) ?? '', // NAIS2 파일은 scenePrompt
+      // NAIS2 파일은 scenePrompt. [custom] 둘 다 없으면 메모만 바꾸는 줄 (내용은 그대로)
+      prompt: str(s.prompt) ?? str(s.scenePrompt),
       negativePrompt: str(s.negativePrompt),
       width: num(s.width),
       height: num(s.height),

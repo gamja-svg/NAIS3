@@ -4,6 +4,7 @@ import { join } from 'path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { closeDb, getDb, initDb } from '../src/main/db'
 import {
+  applyImportedScenes,
   bulkDelete,
   createPreset,
   createScene,
@@ -136,5 +137,64 @@ describe('custom: scene memo', () => {
       scenes: { name: string; memo?: string }[]
     }
     expect(saved.scenes.map((s) => s.memo)).toEqual(['교복 미소', undefined, undefined])
+  })
+
+  it('changes only the memo for rows without a prompt, and never creates scenes for them', async () => {
+    const preset = createPreset('p')
+    const one = createScene(preset, '1')
+    const two = createScene(preset, '2')
+    updateScene(one, { prompt: 'girl', negativePrompt: 'bad', width: 1024, height: 1024 })
+    updateScene(two, { prompt: 'girl, sitting' })
+    setSceneMemo(two, '옛 메모')
+    getDb()
+      .prepare(
+        `INSERT INTO images (file_path, payload_json, kind, scene_id, created_at)
+         VALUES ('x.png', '{}', 'scene', ?, datetime('now', '+1 minute'))`
+      )
+      .run(one)
+    const before = getScene(one)
+    writeFileSync(
+      environment.file,
+      JSON.stringify({
+        scenes: [
+          // prompt 칸이 없으면 다른 내용 칸이 있어도 보지 않는다
+          { name: '1', memo: '교복 미소', negativePrompt: 'IGNORED', width: 512 },
+          { name: '2', memo: '' },
+          { name: '9', memo: '없는 씬' },
+          { memo: '이름 없음' }
+        ]
+      }),
+      'utf-8'
+    )
+
+    expect(await importScenesJson(preset)).toEqual({ count: 2, memos: 2, skipped: 2 })
+    const after = getScene(one)
+    expect(after).toMatchObject({
+      prompt: 'girl',
+      negativePrompt: 'bad',
+      width: 1024,
+      height: 1024,
+      memo: '교복 미소',
+      pending: false // 내용은 그대로라 다시 뽑을 씬이 아니다
+    })
+    expect(after?.prompt).toBe(before?.prompt)
+    expect(getScene(two)?.prompt).toBe('girl, sitting')
+    expect(memoOf(two)).toBeUndefined() // 빈 글자는 메모를 지운다
+    expect(listScenes(preset).map((s) => s.name)).toEqual(['1', '2']) // 9번·이름 없는 줄은 만들지 않음
+
+    // 감시 폴더와 같은 경로: 자동 생성 대상이 없고, 같은 메모를 다시 넣으면 바뀐 메모도 없다
+    const again = applyImportedScenes(preset, [
+      { name: '1', memo: '교복 미소' },
+      { name: '2', memo: '앉은 자세' }
+    ])
+    expect(again).toEqual({
+      added: 0,
+      updated: 0,
+      unchanged: 2,
+      sceneIds: [],
+      memos: 1,
+      skipped: 0
+    })
+    expect(memoOf(two)).toBe('앉은 자세')
   })
 })

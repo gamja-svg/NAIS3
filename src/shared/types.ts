@@ -493,6 +493,10 @@ export interface WatchFolderEvent {
   unchanged?: number
   /** 새로 추가했거나 내용이 바뀐 씬 (자동 생성 대상) */
   sceneIds?: number[]
+  /** 메모가 바뀐 씬 수 */
+  memos?: number
+  /** 메모만 적은 줄(prompt 칸 없음)인데 같은 이름 씬이 없어 건너뜀 */
+  skipped?: number
 }
 
 /** [custom] 대표 세트 받기 결과 — 씬마다 카드에 보이는 대표 이미지(최신 즐겨찾기, 없으면 최신) 한 장씩 */
@@ -862,8 +866,17 @@ export interface IpcInvokeMap {
   'custom:watchPickDir': { req: void; res: WatchFolderConfig }
   'scenes:importJson': {
     req: { presetId: number }
-    /** unrecognized = 알 수 없는 JSON 형식, canceled = 파일을 고르지 않음 */
-    res: { count: number; unrecognized?: boolean; canceled?: boolean }
+    /**
+     * unrecognized = 알 수 없는 JSON 형식, canceled = 파일을 고르지 않음.
+     * [custom] memos = 메모가 바뀐 씬 수, skipped = 메모만 적은 줄인데 같은 이름 씬이 없어 건너뜀 (count에서 뺌)
+     */
+    res: {
+      count: number
+      unrecognized?: boolean
+      canceled?: boolean
+      memos?: number
+      skipped?: number
+    }
   }
   /** 즐겨찾기 이미지 또는 각 씬 최상단 이미지를 ZIP으로 (파일 다이얼로그) */
   /** 활성 프리셋 ZIP 내보내기 (NAIS2 방식 — 씬별 즐겨찾기 전부, 없으면 최상단 1장) */

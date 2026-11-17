@@ -801,15 +801,20 @@ export function bindSceneEvents(): () => void {
       toast(t('ui.customWatchFailedValue', event.file, reason), 'error')
       return
     }
+    const counts = [
+      event.file,
+      event.presetName ?? '',
+      event.added ?? 0,
+      event.updated ?? 0,
+      event.unchanged ?? 0
+    ] as const
+    const memos = event.memos ?? 0
+    const skipped = event.skipped ?? 0
     toast(
-      t(
-        'ui.customWatchImportedValue',
-        event.file,
-        event.presetName ?? '',
-        event.added ?? 0,
-        event.updated ?? 0,
-        event.unchanged ?? 0
-      ),
+      // 메모가 바뀌었거나 이름이 맞는 씬을 못 찾았을 때만 그 수까지 보인다
+      memos > 0 || skipped > 0
+        ? t('ui.customWatchImportedMemoValue', ...counts, memos, skipped)
+        : t('ui.customWatchImportedValue', ...counts),
       'success'
     )
     const st = useScenesStore.getState()

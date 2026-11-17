@@ -1,0 +1,583 @@
+diff --git a/src/main/custom/top-set.ts b/src/main/custom/top-set.ts
+index 6fcf0c090fe6c31d182a1d1dada58ccf528154cf..5fef8366baf699d75d7555f157c062601bc178b7 100644
+--- a/src/main/custom/top-set.ts
++++ b/src/main/custom/top-set.ts
+@@ -1,5 +1,6 @@
+ import { copyFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'fs'
+ import { dirname, extname, isAbsolute, join, resolve } from 'path'
++import { WATCH_AUTOGEN_KEY } from '../../shared/custom-watch'
+ import type { TopSetResult, WatchRequestEvent } from '../../shared/types'
+ import { getSetting, setSetting } from '../db/settings'
+ import { t } from '../i18n'
+@@ -165,13 +166,8 @@ interface TopSetRequest {
+   subfolders: boolean | null
+ }
+ 
+-/**
+- * 요청 파일 내용:
+- * `{ "action": "exportTopSet", "preset": "이름" | "presets": ["이름", ...], "to": "폴더", "subfolders": true }`
+- * - to가 없으면 기본 폴더 안 프리셋 이름 폴더로 (한 번 누르기와 같다). 상대 경로는 요청 파일 기준.
+- * - to가 있으면 프리셋이 하나일 때 그 폴더에 바로, 여럿이면 그 안에 프리셋 이름 폴더로 (subfolders로 바꿀 수 있다).
+- */
+-export function parseTopSetRequest(raw: string): TopSetRequest | string {
++/** 요청 파일을 JSON 객체로 읽는다 — 읽을 수 없으면 알림 문구 */
++function requestBody(raw: string): Record<string, unknown> | string {
+   let data: unknown
+   try {
+     data = JSON.parse(raw.replace(/^\uFEFF/, ''))
+@@ -180,7 +176,28 @@ export function parseTopSetRequest(raw: string): TopSetRequest | string {
+   }
+   if (typeof data !== 'object' || data === null || Array.isArray(data))
+     return t('ui.customRequestBadJson')
+-  const body = data as Record<string, unknown>
++  return data as Record<string, unknown>
++}
++
++/**
++ * 불러온 씬 자동 생성 켜기·끄기 요청: `{ "action": "autoGenerate", "enabled": true | false }`.
++ * 이 요청이 아니면 null, enabled가 true·false가 아니면 알림 문구.
++ */
++export function parseAutoGenerateRequest(raw: string): boolean | string | null {
++  const body = requestBody(raw)
++  if (typeof body === 'string' || body.action !== 'autoGenerate') return null
++  return typeof body.enabled === 'boolean' ? body.enabled : t('ui.customRequestAutoGenEnabled')
++}
++
++/**
++ * 요청 파일 내용:
++ * `{ "action": "exportTopSet", "preset": "이름" | "presets": ["이름", ...], "to": "폴더", "subfolders": true }`
++ * - to가 없으면 기본 폴더 안 프리셋 이름 폴더로 (한 번 누르기와 같다). 상대 경로는 요청 파일 기준.
++ * - to가 있으면 프리셋이 하나일 때 그 폴더에 바로, 여럿이면 그 안에 프리셋 이름 폴더로 (subfolders로 바꿀 수 있다).
++ */
++export function parseTopSetRequest(raw: string): TopSetRequest | string {
++  const body = requestBody(raw)
++  if (typeof body === 'string') return body
+   if (body.action !== 'exportTopSet') return t('ui.customRequestUnknownAction')
+   const names = [
+     ...(typeof body.preset === 'string' ? [body.preset] : []),
+@@ -215,7 +232,14 @@ export async function runWatchRequest(
+   } catch {
+     event.errors.push(t('ui.customWatchReadError'))
+   }
+-  const request = raw ? parseTopSetRequest(raw) : null
++  const autoGenerate = raw ? parseAutoGenerateRequest(raw) : null
++  if (typeof autoGenerate === 'string') event.errors.push(autoGenerate)
++  else if (autoGenerate !== null) {
++    // 설정 > 저장의 스위치·타이틀바 `자동 생성` 버튼과 같은 값 — 화면은 알림을 받고 맞춘다
++    setSetting(WATCH_AUTOGEN_KEY, autoGenerate ? '1' : '0')
++    event.autoGenerate = autoGenerate
++  }
++  const request = raw && autoGenerate === null ? parseTopSetRequest(raw) : null
+   if (typeof request === 'string') event.errors.push(request)
+   else if (request) {
+     const presets = listPresets()
+diff --git a/src/main/custom/watch-folder.ts b/src/main/custom/watch-folder.ts
+index 6a58becb36ef0dcf7eb1d8a93dad05d0bbcedd50..ee96749565cd9b52feec1555d4eae3f1d304442f 100644
+--- a/src/main/custom/watch-folder.ts
++++ b/src/main/custom/watch-folder.ts
+@@ -20,7 +20,7 @@ import { isWatchRequestFile, isWatchResultFile } from './top-set'
+  *   파일 이름만으로는 프리셋을 새로 만들지 않는다.
+  * - fs.watch 대신 주기 확인: 동기화 폴더에서도 같게 동작하고, 쓰는 도중인 파일을 크기·수정 시각이
+  *   두 번 연속 같을 때까지 기다리기 쉽다.
+- * - `*.request.json`은 씬이 아니라 요청(대표 세트 받기 등)으로 넘기고, 그 결과로 남기는
++ * - `*.request.json`은 씬이 아니라 요청(대표 세트 받기, 자동 생성 켜기·끄기)으로 넘기고, 그 결과로 남기는
+  *   `*.result.json`은 읽지 않는다.
+  */
+ 
+diff --git a/src/renderer/src/App.tsx b/src/renderer/src/App.tsx
+index 30d3fec283b1e927e13fbb13ad0ad6a50dcd5dcd..bc56fb7ac0899d2e906385dcb7e1c6d18dcacd59 100644
+--- a/src/renderer/src/App.tsx
++++ b/src/renderer/src/App.tsx
+@@ -53,6 +53,7 @@ import { useFolderGroupsStore } from './stores/custom-folder-groups-store'
+ import { bindParallelEvents, useParallelStore } from './stores/custom-parallel-store'
+ import { ClaudePanel } from './components/custom-claude-panel'
+ import { useClaudePanelStore } from './stores/custom-claude-panel-store'
++import { useAutoGenStore } from './stores/custom-autogen-store'
+ 
+ // 좌우 패널 접기/펴기 — 페이지 넘김(SidePageHost)과 같은 연출 (lib/page-turn).
+ // 메인 영역이 가장자리 그림자를 달고 넓어지며 패널을 덮고, 패널은 바깥쪽으로 조금 밀리며 작아지고 흐려진다.
+@@ -112,6 +113,7 @@ export default function App(): React.JSX.Element {
+         useFolderGroupsStore.getState().load(), // [custom] 상위 폴더
+         useParallelStore.getState().load(), // [custom] 여러 계정으로 동시 생성
+         useClaudePanelStore.getState().hydrate(), // [custom] Claude 창
++        useAutoGenStore.getState().hydrate(), // [custom] 불러온 씬 자동 생성
+         useFragmentsStore.getState().load(),
+         useVibesStore.getState().load(),
+         useCharRefsStore.getState().load(),
+diff --git a/src/renderer/src/components/custom-autogen-toggle.tsx b/src/renderer/src/components/custom-autogen-toggle.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..331e7b6b88de47f5c9584b1c2bad3551fc6bede4
+--- /dev/null
++++ b/src/renderer/src/components/custom-autogen-toggle.tsx
+@@ -0,0 +1,35 @@
++import { Zap } from 'lucide-react'
++import { useT } from '../lib/i18n'
++import { cn } from '../lib/utils'
++import { useAutoGenStore } from '../stores/custom-autogen-store'
++
++/**
++ * [custom] 타이틀바 `자동 생성` 버튼 — 감시 폴더로 불러온 씬을 바로 생성할지 켜고 끈다.
++ * 설정 > 저장의 `불러온 씬 자동 생성`과 같은 값이고, 요청 파일로 바뀌어도 따라 바뀐다.
++ * 감시 폴더가 꺼져 있으면 쓰이지 않으므로 보이지 않는다.
++ */
++export function AutoGenToggle(): React.JSX.Element | null {
++  const t = useT()
++  const enabled = useAutoGenStore((s) => s.enabled)
++  const watching = useAutoGenStore((s) => s.watching)
++  const toggle = useAutoGenStore((s) => s.toggle)
++  if (!watching) return null
++  return (
++    <button
++      type="button"
++      aria-pressed={enabled}
++      aria-label={t('ui.customWatchAutoGenerate')}
++      title={t(enabled ? 'ui.customAutoGenOnTitle' : 'ui.customAutoGenOffTitle')}
++      onClick={toggle}
++      className={cn(
++        'no-drag mx-0.5 flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-[11.5px] font-medium transition-colors',
++        enabled
++          ? 'bg-accent/15 text-accent-ink hover:bg-accent/25'
++          : 'text-muted hover:bg-surface-2 hover:text-ink'
++      )}
++    >
++      <Zap size={13} className={cn(enabled && 'fill-current')} />
++      {t('ui.customAutoGen')}
++    </button>
++  )
++}
+diff --git a/src/renderer/src/components/titlebar.tsx b/src/renderer/src/components/titlebar.tsx
+index a72117cd6d9f0d04f190f6e001a5bbfedd20842e..42bd27e45e61249bb9eb04803a6a93725c4a3842 100644
+--- a/src/renderer/src/components/titlebar.tsx
++++ b/src/renderer/src/components/titlebar.tsx
+@@ -30,6 +30,7 @@ import { inpaintingModelFor, modelCapabilities } from '@shared/nai-models'
+ import { snapNaiResolution } from '@shared/nai-resolution'
+ import { PageNav } from './page-nav'
+ import { useClaudePanelStore } from '../stores/custom-claude-panel-store'
++import { AutoGenToggle } from './custom-autogen-toggle'
+ import { ThemeToggle } from './theme-toggle'
+ 
+ const isMac = typeof navigator !== 'undefined' && navigator.platform.toLowerCase().includes('mac')
+@@ -385,6 +386,7 @@ export function Titlebar(): React.JSX.Element {
+       {isMac && <OpusUsageChip />}
+       {isMac && <AnlasChips balance={anlasBalance} cost={anlasCost} />}
+ 
++      <AutoGenToggle />
+       <ClaudeToggle />
+       <PanelToggle side="right" />
+       {isMac && (
+diff --git a/src/renderer/src/components/token-dialog.tsx b/src/renderer/src/components/token-dialog.tsx
+index 6392c170c93207460bd66fce6233e9b1e217f21b..3330473dbec37b5904ba76d276a84589a7b2d592 100644
+--- a/src/renderer/src/components/token-dialog.tsx
++++ b/src/renderer/src/components/token-dialog.tsx
+@@ -59,6 +59,7 @@ import { Switch } from './ui/switch'
+ import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs'
+ import { TOUCH_MODE_KEY, applyTouchMode } from '../lib/custom-touch-mode'
+ import { useParallelStore } from '../stores/custom-parallel-store'
++import { useAutoGenStore } from '../stores/custom-autogen-store'
+ 
+ type SectionId = 'appearance' | 'generation' | 'storage' | 'shortcuts' | 'account' | 'about'
+ 
+@@ -617,11 +618,17 @@ function SaveDirRow({
+ /** [custom] 감시 폴더 — 켜고 끄기 + 폴더 고르기 */
+ function WatchFolderRow(): React.JSX.Element {
+   const t = useT()
+-  const [config, setConfig] = useState<WatchFolderConfig>({ enabled: false, dir: '' })
+-  const [autoGenerate, setAutoGenerate] = useBoolSetting('custom_watch_autogen', false)
++  const [config, setWatchConfig] = useState<WatchFolderConfig>({ enabled: false, dir: '' })
++  // 타이틀바 `자동 생성` 버튼·요청 파일과 같은 값
++  const autoGenerate = useAutoGenStore((s) => s.enabled)
++  const setAutoGenerate = useAutoGenStore((s) => s.setEnabled)
++  const setConfig = useCallback((next: WatchFolderConfig) => {
++    setWatchConfig(next)
++    useAutoGenStore.getState().setWatching(next.enabled)
++  }, [])
+   useEffect(() => {
+     void window.nais.invoke('custom:watchGet', undefined).then(setConfig)
+-  }, [])
++  }, [setConfig])
+   return (
+     <div className="flex flex-col gap-1.5">
+       <div className="flex items-center justify-between gap-6">
+diff --git a/src/renderer/src/stores/custom-autogen-store.ts b/src/renderer/src/stores/custom-autogen-store.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..b48dae7cf4ff66c7c8d2e149313b46978e749445
+--- /dev/null
++++ b/src/renderer/src/stores/custom-autogen-store.ts
+@@ -0,0 +1,39 @@
++import { create } from 'zustand'
++import { WATCH_AUTOGEN_KEY } from '@shared/custom-watch'
++
++/**
++ * [custom] 불러온 씬 자동 생성 — 켜면 감시 폴더가 추가하거나 바꾼 씬을 바로 1장씩 생성한다.
++ * 값은 settings에 있고, 설정 > 저장의 스위치·타이틀바 `자동 생성` 버튼·요청 파일
++ * (`{"action": "autoGenerate", "enabled": true}`)이 함께 바꾼다. 요청 파일로 바뀌면 알림을 받아 맞춘다.
++ */
++interface AutoGenState {
++  enabled: boolean
++  /** 감시 폴더가 켜져 있는지 — 꺼져 있으면 자동 생성은 쓰이지 않아 타이틀바 버튼을 숨긴다 */
++  watching: boolean
++  /** 켜고 끄고 저장 (설정 스위치·타이틀바 버튼) */
++  setEnabled: (enabled: boolean) => void
++  toggle: () => void
++  /** 다른 곳에서 이미 저장한 값을 화면에만 맞춘다 (요청 파일) */
++  sync: (enabled: boolean) => void
++  setWatching: (watching: boolean) => void
++  hydrate: () => Promise<void>
++}
++
++export const useAutoGenStore = create<AutoGenState>((set, get) => ({
++  enabled: false,
++  watching: false,
++  setEnabled: (enabled) => {
++    set({ enabled })
++    void window.nais.invoke('settings:set', { key: WATCH_AUTOGEN_KEY, value: enabled ? '1' : '0' })
++  },
++  toggle: () => get().setEnabled(!get().enabled),
++  sync: (enabled) => set({ enabled }),
++  setWatching: (watching) => set({ watching }),
++  hydrate: async () => {
++    const [setting, watch] = await Promise.all([
++      window.nais.invoke('settings:get', { key: WATCH_AUTOGEN_KEY }),
++      window.nais.invoke('custom:watchGet', undefined)
++    ])
++    set({ enabled: setting.value === '1', watching: watch.enabled })
++  }
++}))
+diff --git a/src/renderer/src/stores/scenes-store.ts b/src/renderer/src/stores/scenes-store.ts
+index 3d8b3a154226915b22ea05a0fe8562796641cebc..aa63078d88f3841693a319ea345cdd6a33f8a2b0 100644
+--- a/src/renderer/src/stores/scenes-store.ts
++++ b/src/renderer/src/stores/scenes-store.ts
+@@ -1,7 +1,8 @@
+ import { create } from 'zustand'
+ import { applySceneRequest } from '@shared/scene-request'
+-import { WATCH_AUTOGEN_LIMIT, canAutoGenerate } from '@shared/custom-watch'
++import { WATCH_AUTOGEN_KEY, WATCH_AUTOGEN_LIMIT, canAutoGenerate } from '@shared/custom-watch'
+ import { toast } from './toast-store'
++import { useAutoGenStore } from './custom-autogen-store'
+ import { t } from '../lib/i18n'
+ import { topSetSummary } from '../lib/custom-top-set'
+ import { recordNav } from '../lib/nav-history'
+@@ -740,7 +741,7 @@ async function autoGenerateWatched(
+ ): Promise<void> {
+   if (presetId == null || sceneIds.length === 0) return
+   try {
+-    const { value } = await window.nais.invoke('settings:get', { key: 'custom_watch_autogen' })
++    const { value } = await window.nais.invoke('settings:get', { key: WATCH_AUTOGEN_KEY })
+     if (value !== '1') return
+     const status = await window.nais.invoke('queue:status', undefined)
+     const pending = status.items.filter((i) => i.state === 'pending' || i.state === 'generating')
+@@ -828,6 +829,17 @@ export function bindSceneEvents(): () => void {
+         t('ui.customRequestDoneValue', event.file, topSetSummary(result)),
+         result.failed > 0 ? 'error' : 'success'
+       )
++    // 요청 파일로 자동 생성을 켜거나 끔 — 값은 이미 저장됐으니 버튼·설정 화면만 맞춘다
++    if (event.autoGenerate !== undefined) {
++      useAutoGenStore.getState().sync(event.autoGenerate)
++      toast(
++        t(
++          event.autoGenerate ? 'ui.customRequestAutoGenOnValue' : 'ui.customRequestAutoGenOffValue',
++          event.file
++        ),
++        'info'
++      )
++    }
+     if (event.errors.length > 0)
+       toast(t('ui.customRequestFailedValue', event.file, event.errors.join(' / ')), 'error')
+   })
+diff --git a/src/shared/custom-watch.ts b/src/shared/custom-watch.ts
+index e41724816864c629365a31b86f0a0aa66120b138..8f0d7bf64f375a1bd16629489bc5653b16df8fc7 100644
+--- a/src/shared/custom-watch.ts
++++ b/src/shared/custom-watch.ts
+@@ -1,6 +1,12 @@
+ /** [custom] 감시 폴더 자동 생성 — 대기 중인 생성까지 합쳐 이 장수를 넘기면 자동으로 생성하지 않는다 */
+ export const WATCH_AUTOGEN_LIMIT = 30
+ 
++/**
++ * [custom] 불러온 씬 자동 생성 켜짐('1')/꺼짐('0') 설정 키.
++ * 설정 > 저장의 스위치, 타이틀바 `자동 생성` 버튼, 감시 폴더 요청 파일(`"action": "autoGenerate"`)이 함께 쓴다.
++ */
++export const WATCH_AUTOGEN_KEY = 'custom_watch_autogen'
++
+ /**
+  * 바뀐 씬을 자동으로 생성해도 되는지. 대기열에 이미 쌓인 것(손으로 건 것 포함)과 합쳐 한도를 넘으면
+  * 하나도 넣지 않는다 — 일부만 넣으면 무엇이 빠졌는지 알기 어렵다.
+diff --git a/src/shared/i18n/catalog-en.ts b/src/shared/i18n/catalog-en.ts
+index 7a70bf252cdae126f5aa12ab3816d7ea64a500e1..54dc35382e50589bb7808cb03d1156b496b36f8f 100644
+--- a/src/shared/i18n/catalog-en.ts
++++ b/src/shared/i18n/catalog-en.ts
+@@ -248,11 +248,20 @@ export const EN = {
+   'ui.customTopSetNoDefaultDir':
+     'No default cover set folder. Choose one with Save cover set in the scene list, or put a "to" folder in the request.',
+   'ui.customRequestBadJson': 'The request file is not valid JSON',
+-  'ui.customRequestUnknownAction': 'Unknown request (only "action": "exportTopSet" is supported)',
++  'ui.customRequestUnknownAction':
++    'Unknown request ("action" must be "exportTopSet" or "autoGenerate")',
+   'ui.customRequestNoPreset': 'The request names no preset',
+   'ui.customRequestPresetNotFoundValue': 'Preset "{0}" not found',
+   'ui.customRequestDoneValue': 'Request {0}: cover set saved — {1}',
+   'ui.customRequestFailedValue': 'Request {0}: failed — {1}',
++  'ui.customRequestAutoGenEnabled': 'Set "enabled" to true or false',
++  'ui.customRequestAutoGenOnValue': 'Request {0}: auto-generation of imported scenes turned on',
++  'ui.customRequestAutoGenOffValue': 'Request {0}: auto-generation of imported scenes turned off',
++  'ui.customAutoGen': 'Auto-gen',
++  'ui.customAutoGenOnTitle':
++    'Auto-generating imported scenes — new or changed scenes from the watch folder get one image each right away. Click to turn off.',
++  'ui.customAutoGenOffTitle':
++    'Auto-generation of imported scenes is off — scenes from the watch folder are only imported. Click to turn on.',
+   'ui.customChangedTagsYellow': 'Yellow',
+   'ui.customChangedTagsLegend': '= changed since the last image',
+   'ui.customRemovedTags': 'Removed',
+diff --git a/src/shared/i18n/catalog-ko.ts b/src/shared/i18n/catalog-ko.ts
+index 3b875b72585e7844da49cc21a844581bbc92769d..032b0362a48b628718865240e8b79eff17c95026 100644
+--- a/src/shared/i18n/catalog-ko.ts
++++ b/src/shared/i18n/catalog-ko.ts
+@@ -244,11 +244,20 @@ export const KO = {
+   'ui.customTopSetNoDefaultDir':
+     '대표 세트 기본 폴더가 정해져 있지 않습니다. 씬 목록의 대표 세트 받기로 먼저 고르거나 요청에 "to" 폴더를 적어 주세요.',
+   'ui.customRequestBadJson': '요청 파일을 읽을 수 없습니다 (JSON 형식이 아님)',
+-  'ui.customRequestUnknownAction': '알 수 없는 요청입니다 ("action": "exportTopSet"만 됩니다)',
++  'ui.customRequestUnknownAction':
++    '알 수 없는 요청입니다 ("action"은 "exportTopSet" 또는 "autoGenerate")',
+   'ui.customRequestNoPreset': '요청에 프리셋 이름이 없습니다',
+   'ui.customRequestPresetNotFoundValue': '프리셋 "{0}"을(를) 찾을 수 없습니다',
+   'ui.customRequestDoneValue': '요청 파일 {0}: 대표 세트 받음 — {1}',
+   'ui.customRequestFailedValue': '요청 파일 {0}: 처리하지 못함 — {1}',
++  'ui.customRequestAutoGenEnabled': '"enabled"에 true 또는 false를 적어 주세요',
++  'ui.customRequestAutoGenOnValue': '요청 파일 {0}: 불러온 씬 자동 생성을 켰습니다',
++  'ui.customRequestAutoGenOffValue': '요청 파일 {0}: 불러온 씬 자동 생성을 껐습니다',
++  'ui.customAutoGen': '자동 생성',
++  'ui.customAutoGenOnTitle':
++    '불러온 씬 자동 생성 켜짐 — 감시 폴더로 들어온 새 씬·바뀐 씬을 바로 1장씩 생성합니다. 누르면 끕니다.',
++  'ui.customAutoGenOffTitle':
++    '불러온 씬 자동 생성 꺼짐 — 감시 폴더로 들어온 씬은 불러오기만 합니다. 누르면 켭니다.',
+   'ui.customChangedTagsYellow': '노란색',
+   'ui.customChangedTagsLegend': '= 마지막으로 뽑은 뒤 바뀐 태그',
+   'ui.customRemovedTags': '빠진 태그',
+diff --git a/src/shared/i18n/catalog-zh-CN.ts b/src/shared/i18n/catalog-zh-CN.ts
+index 069d8abcc4a782fe0b29e2ccc10a8bd86ca66142..9c7a3c680bdca0d9d86cee43d2c49e1deab3e4ba 100644
+--- a/src/shared/i18n/catalog-zh-CN.ts
++++ b/src/shared/i18n/catalog-zh-CN.ts
+@@ -242,11 +242,18 @@ export const ZH_CN = {
+   'ui.customTopSetNoDefaultDir':
+     '尚未设置封面集默认文件夹。请先在场景列表中用“保存封面集”选择，或在请求中填写 "to" 文件夹。',
+   'ui.customRequestBadJson': '请求文件不是有效的 JSON',
+-  'ui.customRequestUnknownAction': '未知请求（仅支持 "action": "exportTopSet"）',
++  'ui.customRequestUnknownAction': '未知请求（"action" 只能是 "exportTopSet" 或 "autoGenerate"）',
+   'ui.customRequestNoPreset': '请求中没有预设名称',
+   'ui.customRequestPresetNotFoundValue': '找不到预设“{0}”',
+   'ui.customRequestDoneValue': '请求文件 {0}：封面集已保存 — {1}',
+   'ui.customRequestFailedValue': '请求文件 {0}：处理失败 — {1}',
++  'ui.customRequestAutoGenEnabled': '请将 "enabled" 设为 true 或 false',
++  'ui.customRequestAutoGenOnValue': '请求文件 {0}：已开启自动生成导入的场景',
++  'ui.customRequestAutoGenOffValue': '请求文件 {0}：已关闭自动生成导入的场景',
++  'ui.customAutoGen': '自动生成',
++  'ui.customAutoGenOnTitle':
++    '自动生成导入的场景：已开启 — 监视文件夹新增或更改的场景会立即各生成 1 张。点击关闭。',
++  'ui.customAutoGenOffTitle': '自动生成导入的场景：已关闭 — 监视文件夹的场景只导入。点击开启。',
+   'ui.customChangedTagsYellow': '黄色',
+   'ui.customChangedTagsLegend': '= 上次生成后改动的标签',
+   'ui.customRemovedTags': '已删除',
+diff --git a/src/shared/types.ts b/src/shared/types.ts
+index b12784b93e0b621aa1dd40d4506367d8b4792f4f..a4c59da0fb1831e18eaa65875ef81a038d486aab 100644
+--- a/src/shared/types.ts
++++ b/src/shared/types.ts
+@@ -528,6 +528,8 @@ export interface WatchRequestEvent {
+   ok: boolean
+   exports: TopSetResult[]
+   errors: string[]
++  /** `"action": "autoGenerate"` 요청으로 바뀐 불러온 씬 자동 생성 값 */
++  autoGenerate?: boolean
+ }
+ 
+ export interface IpcInvokeMap {
+diff --git a/tests/custom-autogen-toggle.test.ts b/tests/custom-autogen-toggle.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..3f8fda4abc220378824a272deb0eeb8979d4e36b
+--- /dev/null
++++ b/tests/custom-autogen-toggle.test.ts
+@@ -0,0 +1,131 @@
++// @vitest-environment happy-dom
++import { act, createElement as h } from 'react'
++import { createRoot, type Root } from 'react-dom/client'
++import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
++import type { NaisApi } from '../src/preload/index'
++import { WATCH_AUTOGEN_KEY } from '../src/shared/custom-watch'
++import { AutoGenToggle } from '../src/renderer/src/components/custom-autogen-toggle'
++import { useLanguageStore } from '../src/renderer/src/lib/i18n'
++import { useAutoGenStore } from '../src/renderer/src/stores/custom-autogen-store'
++import { bindSceneEvents } from '../src/renderer/src/stores/scenes-store'
++import { useToastStore } from '../src/renderer/src/stores/toast-store'
++
++// [custom] 불러온 씬 자동 생성: 타이틀바 버튼·설정·요청 파일이 한 값을 같이 쓴다
++
++const settings = new Map<string, string>()
++const listeners = new Map<string, (payload: never) => void>()
++let watchEnabled = true
++
++beforeEach(() => {
++  settings.clear()
++  listeners.clear()
++  watchEnabled = true
++  window.nais = {
++    invoke: vi.fn(async (channel: string, payload: { key: string; value?: string }) => {
++      if (channel === 'settings:get') return { value: settings.get(payload.key) ?? null }
++      if (channel === 'settings:set') settings.set(payload.key, payload.value ?? '')
++      if (channel === 'custom:watchGet') return { enabled: watchEnabled, dir: 'C:\\watch' }
++      return undefined
++    }),
++    on: (channel: string, listener: (payload: never) => void) => {
++      listeners.set(channel, listener)
++      return () => listeners.delete(channel)
++    }
++  } as unknown as NaisApi
++  useLanguageStore.setState({ lang: 'ko' })
++  useToastStore.setState({ toasts: [] })
++  useAutoGenStore.setState({ enabled: false, watching: false })
++})
++
++describe('custom: auto-generate switch', () => {
++  it('restores the saved value and whether the watch folder is on', async () => {
++    settings.set(WATCH_AUTOGEN_KEY, '1')
++    await useAutoGenStore.getState().hydrate()
++    expect(useAutoGenStore.getState()).toMatchObject({ enabled: true, watching: true })
++
++    settings.delete(WATCH_AUTOGEN_KEY)
++    watchEnabled = false
++    await useAutoGenStore.getState().hydrate()
++    expect(useAutoGenStore.getState()).toMatchObject({ enabled: false, watching: false })
++  })
++
++  it('follows a request file that turned it on or off, and says so', () => {
++    const unbind = bindSceneEvents()
++    try {
++      const done = listeners.get('custom:watchRequestDone')!
++      done({
++        file: '자동생성.request.json',
++        ok: true,
++        exports: [],
++        errors: [],
++        autoGenerate: true
++      } as never)
++      expect(useAutoGenStore.getState().enabled).toBe(true)
++      expect(useToastStore.getState().toasts.at(-1)?.message).toBe(
++        '요청 파일 자동생성.request.json: 불러온 씬 자동 생성을 켰습니다'
++      )
++      done({
++        file: 'b.request.json',
++        ok: true,
++        exports: [],
++        errors: [],
++        autoGenerate: false
++      } as never)
++      expect(useAutoGenStore.getState().enabled).toBe(false)
++      expect(settings.size).toBe(0) // 저장은 이미 요청을 처리한 쪽이 했다
++    } finally {
++      unbind()
++    }
++  })
++})
++
++describe('custom: titlebar auto-generate button', () => {
++  let root: Root
++  let container: HTMLDivElement
++
++  beforeEach(() => {
++    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
++    container = document.createElement('div')
++    document.body.append(container)
++    root = createRoot(container)
++  })
++
++  afterEach(async () => {
++    await act(async () => root.unmount())
++    container.remove()
++    vi.unstubAllGlobals()
++  })
++
++  const button = (): HTMLButtonElement | null =>
++    container.querySelector('button[aria-label="불러온 씬 자동 생성"]')
++
++  it('is hidden while the watch folder is off', async () => {
++    await act(async () => root.render(h(AutoGenToggle)))
++    expect(button()).toBeNull()
++    await act(async () => useAutoGenStore.setState({ watching: true }))
++    expect(button()?.textContent).toBe('자동 생성')
++  })
++
++  it('turns auto-generation on and off and saves it', async () => {
++    useAutoGenStore.setState({ watching: true })
++    await act(async () => root.render(h(AutoGenToggle)))
++    expect(button()!.getAttribute('aria-pressed')).toBe('false')
++    expect(button()!.title).toContain('꺼짐')
++
++    await act(async () => button()!.click())
++    expect(button()!.getAttribute('aria-pressed')).toBe('true')
++    expect(button()!.title).toContain('켜짐')
++    expect(settings.get(WATCH_AUTOGEN_KEY)).toBe('1')
++
++    await act(async () => button()!.click())
++    expect(button()!.getAttribute('aria-pressed')).toBe('false')
++    expect(settings.get(WATCH_AUTOGEN_KEY)).toBe('0')
++  })
++
++  it('shows a change made by a request file', async () => {
++    useAutoGenStore.setState({ watching: true })
++    await act(async () => root.render(h(AutoGenToggle)))
++    await act(async () => useAutoGenStore.getState().sync(true))
++    expect(button()!.getAttribute('aria-pressed')).toBe('true')
++  })
++})
+diff --git a/tests/custom-top-set.integration.ts b/tests/custom-top-set.integration.ts
+index 13facdf515a8e1eabd4c2d96f786948fd1c19c9c..a7ba99d49970b4fa18b24f4a261c15fabcd2e26e 100644
+--- a/tests/custom-top-set.integration.ts
++++ b/tests/custom-top-set.integration.ts
+@@ -13,9 +13,12 @@ import { tmpdir } from 'os'
+ import { join } from 'path'
+ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+ import { closeDb, getDb, initDb } from '../src/main/db'
++import { getSetting } from '../src/main/db/settings'
++import { WATCH_AUTOGEN_KEY } from '../src/shared/custom-watch'
+ import {
+   defaultTopSetDest,
+   exportTopSet,
++  parseAutoGenerateRequest,
+   parseTopSetRequest,
+   runWatchRequest,
+   safeFileName,
+@@ -232,6 +235,36 @@ describe('custom: cover set request files', () => {
+     expect(read(join(environment.directory, 'sets', 'P'), 's.png')).toBe('p')
+   })
+ 
++  it('turns auto-generation of imported scenes on and off, and keeps it when "enabled" is not a boolean', async () => {
++    expect(parseAutoGenerateRequest('{"action":"autoGenerate","enabled":true}')).toBe(true)
++    expect(parseAutoGenerateRequest('{"action":"exportTopSet","preset":"a"}')).toBeNull()
++    expect(parseAutoGenerateRequest('not json')).toBeNull()
++
++    request('자동생성.request.json', { action: 'autoGenerate', enabled: true })
++    const on = await runWatchRequest(watchDir(), '자동생성.request.json', { trash })
++    expect(on).toMatchObject({ ok: true, autoGenerate: true, exports: [], errors: [] })
++    expect(getSetting(WATCH_AUTOGEN_KEY)).toBe('1')
++    expect(result('자동생성.result.json')).toMatchObject({ ok: true, autoGenerate: true })
++
++    request('자동생성.request.json', { action: 'autoGenerate', enabled: false })
++    expect(
++      (await runWatchRequest(watchDir(), '자동생성.request.json', { trash })).autoGenerate
++    ).toBe(false)
++    expect(getSetting(WATCH_AUTOGEN_KEY)).toBe('0')
++
++    request('잘못.request.json', { action: 'autoGenerate', enabled: 'on' })
++    const bad = await runWatchRequest(watchDir(), '잘못.request.json', { trash })
++    expect(bad.ok).toBe(false)
++    expect(bad.autoGenerate).toBeUndefined()
++    expect(bad.errors).toHaveLength(1)
++    expect(getSetting(WATCH_AUTOGEN_KEY)).toBe('0') // 그대로
++
++    request('모름.request.json', { action: 'deleteEverything' })
++    expect((await runWatchRequest(watchDir(), '모름.request.json', { trash })).errors).toHaveLength(
++      1
++    )
++  })
++
+   it('hands request files to the handler, ignores result files, and never imports either as scenes', () => {
+     const since = Date.now() - 60_000
+     setWatchFolderDir(watchDir(), since)

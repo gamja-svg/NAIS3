@@ -13,9 +13,12 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { closeDb, getDb, initDb } from '../src/main/db'
+import { getSetting } from '../src/main/db/settings'
+import { WATCH_AUTOGEN_KEY } from '../src/shared/custom-watch'
 import {
   defaultTopSetDest,
   exportTopSet,
+  parseAutoGenerateRequest,
   parseTopSetRequest,
   runWatchRequest,
   safeFileName,
@@ -230,6 +233,36 @@ describe('custom: cover set request files', () => {
     const done = await runWatchRequest(watchDir(), 'r.request.json', { trash })
     expect(done.ok).toBe(true)
     expect(read(join(environment.directory, 'sets', 'P'), 's.png')).toBe('p')
+  })
+
+  it('turns auto-generation of imported scenes on and off, and keeps it when "enabled" is not a boolean', async () => {
+    expect(parseAutoGenerateRequest('{"action":"autoGenerate","enabled":true}')).toBe(true)
+    expect(parseAutoGenerateRequest('{"action":"exportTopSet","preset":"a"}')).toBeNull()
+    expect(parseAutoGenerateRequest('not json')).toBeNull()
+
+    request('자동생성.request.json', { action: 'autoGenerate', enabled: true })
+    const on = await runWatchRequest(watchDir(), '자동생성.request.json', { trash })
+    expect(on).toMatchObject({ ok: true, autoGenerate: true, exports: [], errors: [] })
+    expect(getSetting(WATCH_AUTOGEN_KEY)).toBe('1')
+    expect(result('자동생성.result.json')).toMatchObject({ ok: true, autoGenerate: true })
+
+    request('자동생성.request.json', { action: 'autoGenerate', enabled: false })
+    expect(
+      (await runWatchRequest(watchDir(), '자동생성.request.json', { trash })).autoGenerate
+    ).toBe(false)
+    expect(getSetting(WATCH_AUTOGEN_KEY)).toBe('0')
+
+    request('잘못.request.json', { action: 'autoGenerate', enabled: 'on' })
+    const bad = await runWatchRequest(watchDir(), '잘못.request.json', { trash })
+    expect(bad.ok).toBe(false)
+    expect(bad.autoGenerate).toBeUndefined()
+    expect(bad.errors).toHaveLength(1)
+    expect(getSetting(WATCH_AUTOGEN_KEY)).toBe('0') // 그대로
+
+    request('모름.request.json', { action: 'deleteEverything' })
+    expect((await runWatchRequest(watchDir(), '모름.request.json', { trash })).errors).toHaveLength(
+      1
+    )
   })
 
   it('hands request files to the handler, ignores result files, and never imports either as scenes', () => {

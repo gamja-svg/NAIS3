@@ -2,6 +2,12 @@
 export const WATCH_AUTOGEN_LIMIT = 30
 
 /**
+ * [custom] 불러온 씬 자동 생성 켜짐('1')/꺼짐('0') 설정 키.
+ * 설정 > 저장의 스위치, 타이틀바 `자동 생성` 버튼, 감시 폴더 요청 파일(`"action": "autoGenerate"`)이 함께 쓴다.
+ */
+export const WATCH_AUTOGEN_KEY = 'custom_watch_autogen'
+
+/**
  * 바뀐 씬을 자동으로 생성해도 되는지. 대기열에 이미 쌓인 것(손으로 건 것 포함)과 합쳐 한도를 넘으면
  * 하나도 넣지 않는다 — 일부만 넣으면 무엇이 빠졌는지 알기 어렵다.
  */

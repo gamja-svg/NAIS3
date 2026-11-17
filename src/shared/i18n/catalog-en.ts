@@ -248,11 +248,20 @@ export const EN = {
   'ui.customTopSetNoDefaultDir':
     'No default cover set folder. Choose one with Save cover set in the scene list, or put a "to" folder in the request.',
   'ui.customRequestBadJson': 'The request file is not valid JSON',
-  'ui.customRequestUnknownAction': 'Unknown request (only "action": "exportTopSet" is supported)',
+  'ui.customRequestUnknownAction':
+    'Unknown request ("action" must be "exportTopSet" or "autoGenerate")',
   'ui.customRequestNoPreset': 'The request names no preset',
   'ui.customRequestPresetNotFoundValue': 'Preset "{0}" not found',
   'ui.customRequestDoneValue': 'Request {0}: cover set saved — {1}',
   'ui.customRequestFailedValue': 'Request {0}: failed — {1}',
+  'ui.customRequestAutoGenEnabled': 'Set "enabled" to true or false',
+  'ui.customRequestAutoGenOnValue': 'Request {0}: auto-generation of imported scenes turned on',
+  'ui.customRequestAutoGenOffValue': 'Request {0}: auto-generation of imported scenes turned off',
+  'ui.customAutoGen': 'Auto-gen',
+  'ui.customAutoGenOnTitle':
+    'Auto-generating imported scenes — new or changed scenes from the watch folder get one image each right away. Click to turn off.',
+  'ui.customAutoGenOffTitle':
+    'Auto-generation of imported scenes is off — scenes from the watch folder are only imported. Click to turn on.',
   'ui.customChangedTagsYellow': 'Yellow',
   'ui.customChangedTagsLegend': '= changed since the last image',
   'ui.customRemovedTags': 'Removed',

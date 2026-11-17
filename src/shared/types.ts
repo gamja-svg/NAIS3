@@ -528,6 +528,8 @@ export interface WatchRequestEvent {
   ok: boolean
   exports: TopSetResult[]
   errors: string[]
+  /** `"action": "autoGenerate"` 요청으로 바뀐 불러온 씬 자동 생성 값 */
+  autoGenerate?: boolean
 }
 
 export interface IpcInvokeMap {

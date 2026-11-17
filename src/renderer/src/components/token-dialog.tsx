@@ -59,6 +59,7 @@ import { Switch } from './ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs'
 import { TOUCH_MODE_KEY, applyTouchMode } from '../lib/custom-touch-mode'
 import { useParallelStore } from '../stores/custom-parallel-store'
+import { useAutoGenStore } from '../stores/custom-autogen-store'
 
 type SectionId = 'appearance' | 'generation' | 'storage' | 'shortcuts' | 'account' | 'about'
 
@@ -617,11 +618,17 @@ function SaveDirRow({
 /** [custom] 감시 폴더 — 켜고 끄기 + 폴더 고르기 */
 function WatchFolderRow(): React.JSX.Element {
   const t = useT()
-  const [config, setConfig] = useState<WatchFolderConfig>({ enabled: false, dir: '' })
-  const [autoGenerate, setAutoGenerate] = useBoolSetting('custom_watch_autogen', false)
+  const [config, setWatchConfig] = useState<WatchFolderConfig>({ enabled: false, dir: '' })
+  // 타이틀바 `자동 생성` 버튼·요청 파일과 같은 값
+  const autoGenerate = useAutoGenStore((s) => s.enabled)
+  const setAutoGenerate = useAutoGenStore((s) => s.setEnabled)
+  const setConfig = useCallback((next: WatchFolderConfig) => {
+    setWatchConfig(next)
+    useAutoGenStore.getState().setWatching(next.enabled)
+  }, [])
   useEffect(() => {
     void window.nais.invoke('custom:watchGet', undefined).then(setConfig)
-  }, [])
+  }, [setConfig])
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex items-center justify-between gap-6">

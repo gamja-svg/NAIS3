@@ -53,6 +53,7 @@ import { useFolderGroupsStore } from './stores/custom-folder-groups-store'
 import { bindParallelEvents, useParallelStore } from './stores/custom-parallel-store'
 import { ClaudePanel } from './components/custom-claude-panel'
 import { useClaudePanelStore } from './stores/custom-claude-panel-store'
+import { useAutoGenStore } from './stores/custom-autogen-store'
 
 // 좌우 패널 접기/펴기 — 페이지 넘김(SidePageHost)과 같은 연출 (lib/page-turn).
 // 메인 영역이 가장자리 그림자를 달고 넓어지며 패널을 덮고, 패널은 바깥쪽으로 조금 밀리며 작아지고 흐려진다.
@@ -112,6 +113,7 @@ export default function App(): React.JSX.Element {
         useFolderGroupsStore.getState().load(), // [custom] 상위 폴더
         useParallelStore.getState().load(), // [custom] 여러 계정으로 동시 생성
         useClaudePanelStore.getState().hydrate(), // [custom] Claude 창
+        useAutoGenStore.getState().hydrate(), // [custom] 불러온 씬 자동 생성
         useFragmentsStore.getState().load(),
         useVibesStore.getState().load(),
         useCharRefsStore.getState().load(),

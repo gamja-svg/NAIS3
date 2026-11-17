@@ -1,5 +1,6 @@
 import { copyFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'fs'
 import { dirname, extname, isAbsolute, join, resolve } from 'path'
+import { WATCH_AUTOGEN_KEY } from '../../shared/custom-watch'
 import type { TopSetResult, WatchRequestEvent } from '../../shared/types'
 import { getSetting, setSetting } from '../db/settings'
 import { t } from '../i18n'
@@ -165,13 +166,8 @@ interface TopSetRequest {
   subfolders: boolean | null
 }
 
-/**
- * 요청 파일 내용:
- * `{ "action": "exportTopSet", "preset": "이름" | "presets": ["이름", ...], "to": "폴더", "subfolders": true }`
- * - to가 없으면 기본 폴더 안 프리셋 이름 폴더로 (한 번 누르기와 같다). 상대 경로는 요청 파일 기준.
- * - to가 있으면 프리셋이 하나일 때 그 폴더에 바로, 여럿이면 그 안에 프리셋 이름 폴더로 (subfolders로 바꿀 수 있다).
- */
-export function parseTopSetRequest(raw: string): TopSetRequest | string {
+/** 요청 파일을 JSON 객체로 읽는다 — 읽을 수 없으면 알림 문구 */
+function requestBody(raw: string): Record<string, unknown> | string {
   let data: unknown
   try {
     data = JSON.parse(raw.replace(/^\uFEFF/, ''))
@@ -180,7 +176,28 @@ export function parseTopSetRequest(raw: string): TopSetRequest | string {
   }
   if (typeof data !== 'object' || data === null || Array.isArray(data))
     return t('ui.customRequestBadJson')
-  const body = data as Record<string, unknown>
+  return data as Record<string, unknown>
+}
+
+/**
+ * 불러온 씬 자동 생성 켜기·끄기 요청: `{ "action": "autoGenerate", "enabled": true | false }`.
+ * 이 요청이 아니면 null, enabled가 true·false가 아니면 알림 문구.
+ */
+export function parseAutoGenerateRequest(raw: string): boolean | string | null {
+  const body = requestBody(raw)
+  if (typeof body === 'string' || body.action !== 'autoGenerate') return null
+  return typeof body.enabled === 'boolean' ? body.enabled : t('ui.customRequestAutoGenEnabled')
+}
+
+/**
+ * 요청 파일 내용:
+ * `{ "action": "exportTopSet", "preset": "이름" | "presets": ["이름", ...], "to": "폴더", "subfolders": true }`
+ * - to가 없으면 기본 폴더 안 프리셋 이름 폴더로 (한 번 누르기와 같다). 상대 경로는 요청 파일 기준.
+ * - to가 있으면 프리셋이 하나일 때 그 폴더에 바로, 여럿이면 그 안에 프리셋 이름 폴더로 (subfolders로 바꿀 수 있다).
+ */
+export function parseTopSetRequest(raw: string): TopSetRequest | string {
+  const body = requestBody(raw)
+  if (typeof body === 'string') return body
   if (body.action !== 'exportTopSet') return t('ui.customRequestUnknownAction')
   const names = [
     ...(typeof body.preset === 'string' ? [body.preset] : []),
@@ -215,7 +232,14 @@ export async function runWatchRequest(
   } catch {
     event.errors.push(t('ui.customWatchReadError'))
   }
-  const request = raw ? parseTopSetRequest(raw) : null
+  const autoGenerate = raw ? parseAutoGenerateRequest(raw) : null
+  if (typeof autoGenerate === 'string') event.errors.push(autoGenerate)
+  else if (autoGenerate !== null) {
+    // 설정 > 저장의 스위치·타이틀바 `자동 생성` 버튼과 같은 값 — 화면은 알림을 받고 맞춘다
+    setSetting(WATCH_AUTOGEN_KEY, autoGenerate ? '1' : '0')
+    event.autoGenerate = autoGenerate
+  }
+  const request = raw && autoGenerate === null ? parseTopSetRequest(raw) : null
   if (typeof request === 'string') event.errors.push(request)
   else if (request) {
     const presets = listPresets()

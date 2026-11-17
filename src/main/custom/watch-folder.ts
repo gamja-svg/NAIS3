@@ -20,7 +20,7 @@ import { isWatchRequestFile, isWatchResultFile } from './top-set'
  *   파일 이름만으로는 프리셋을 새로 만들지 않는다.
  * - fs.watch 대신 주기 확인: 동기화 폴더에서도 같게 동작하고, 쓰는 도중인 파일을 크기·수정 시각이
  *   두 번 연속 같을 때까지 기다리기 쉽다.
- * - `*.request.json`은 씬이 아니라 요청(대표 세트 받기 등)으로 넘기고, 그 결과로 남기는
+ * - `*.request.json`은 씬이 아니라 요청(대표 세트 받기, 자동 생성 켜기·끄기)으로 넘기고, 그 결과로 남기는
  *   `*.result.json`은 읽지 않는다.
  */
 

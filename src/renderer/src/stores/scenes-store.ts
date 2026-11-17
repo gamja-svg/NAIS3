@@ -1,7 +1,8 @@
 import { create } from 'zustand'
 import { applySceneRequest } from '@shared/scene-request'
-import { WATCH_AUTOGEN_LIMIT, canAutoGenerate } from '@shared/custom-watch'
+import { WATCH_AUTOGEN_KEY, WATCH_AUTOGEN_LIMIT, canAutoGenerate } from '@shared/custom-watch'
 import { toast } from './toast-store'
+import { useAutoGenStore } from './custom-autogen-store'
 import { t } from '../lib/i18n'
 import { topSetSummary } from '../lib/custom-top-set'
 import { recordNav } from '../lib/nav-history'
@@ -740,7 +741,7 @@ async function autoGenerateWatched(
 ): Promise<void> {
   if (presetId == null || sceneIds.length === 0) return
   try {
-    const { value } = await window.nais.invoke('settings:get', { key: 'custom_watch_autogen' })
+    const { value } = await window.nais.invoke('settings:get', { key: WATCH_AUTOGEN_KEY })
     if (value !== '1') return
     const status = await window.nais.invoke('queue:status', undefined)
     const pending = status.items.filter((i) => i.state === 'pending' || i.state === 'generating')
@@ -828,6 +829,17 @@ export function bindSceneEvents(): () => void {
         t('ui.customRequestDoneValue', event.file, topSetSummary(result)),
         result.failed > 0 ? 'error' : 'success'
       )
+    // 요청 파일로 자동 생성을 켜거나 끔 — 값은 이미 저장됐으니 버튼·설정 화면만 맞춘다
+    if (event.autoGenerate !== undefined) {
+      useAutoGenStore.getState().sync(event.autoGenerate)
+      toast(
+        t(
+          event.autoGenerate ? 'ui.customRequestAutoGenOnValue' : 'ui.customRequestAutoGenOffValue',
+          event.file
+        ),
+        'info'
+      )
+    }
     if (event.errors.length > 0)
       toast(t('ui.customRequestFailedValue', event.file, event.errors.join(' / ')), 'error')
   })

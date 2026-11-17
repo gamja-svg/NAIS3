@@ -30,6 +30,7 @@ import { inpaintingModelFor, modelCapabilities } from '@shared/nai-models'
 import { snapNaiResolution } from '@shared/nai-resolution'
 import { PageNav } from './page-nav'
 import { useClaudePanelStore } from '../stores/custom-claude-panel-store'
+import { AutoGenToggle } from './custom-autogen-toggle'
 import { ThemeToggle } from './theme-toggle'
 
 const isMac = typeof navigator !== 'undefined' && navigator.platform.toLowerCase().includes('mac')
@@ -385,6 +386,7 @@ export function Titlebar(): React.JSX.Element {
       {isMac && <OpusUsageChip />}
       {isMac && <AnlasChips balance={anlasBalance} cost={anlasCost} />}
 
+      <AutoGenToggle />
       <ClaudeToggle />
       <PanelToggle side="right" />
       {isMac && (

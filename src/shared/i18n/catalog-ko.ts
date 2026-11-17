@@ -244,11 +244,20 @@ export const KO = {
   'ui.customTopSetNoDefaultDir':
     '대표 세트 기본 폴더가 정해져 있지 않습니다. 씬 목록의 대표 세트 받기로 먼저 고르거나 요청에 "to" 폴더를 적어 주세요.',
   'ui.customRequestBadJson': '요청 파일을 읽을 수 없습니다 (JSON 형식이 아님)',
-  'ui.customRequestUnknownAction': '알 수 없는 요청입니다 ("action": "exportTopSet"만 됩니다)',
+  'ui.customRequestUnknownAction':
+    '알 수 없는 요청입니다 ("action"은 "exportTopSet" 또는 "autoGenerate")',
   'ui.customRequestNoPreset': '요청에 프리셋 이름이 없습니다',
   'ui.customRequestPresetNotFoundValue': '프리셋 "{0}"을(를) 찾을 수 없습니다',
   'ui.customRequestDoneValue': '요청 파일 {0}: 대표 세트 받음 — {1}',
   'ui.customRequestFailedValue': '요청 파일 {0}: 처리하지 못함 — {1}',
+  'ui.customRequestAutoGenEnabled': '"enabled"에 true 또는 false를 적어 주세요',
+  'ui.customRequestAutoGenOnValue': '요청 파일 {0}: 불러온 씬 자동 생성을 켰습니다',
+  'ui.customRequestAutoGenOffValue': '요청 파일 {0}: 불러온 씬 자동 생성을 껐습니다',
+  'ui.customAutoGen': '자동 생성',
+  'ui.customAutoGenOnTitle':
+    '불러온 씬 자동 생성 켜짐 — 감시 폴더로 들어온 새 씬·바뀐 씬을 바로 1장씩 생성합니다. 누르면 끕니다.',
+  'ui.customAutoGenOffTitle':
+    '불러온 씬 자동 생성 꺼짐 — 감시 폴더로 들어온 씬은 불러오기만 합니다. 누르면 켭니다.',
   'ui.customChangedTagsYellow': '노란색',
   'ui.customChangedTagsLegend': '= 마지막으로 뽑은 뒤 바뀐 태그',
   'ui.customRemovedTags': '빠진 태그',

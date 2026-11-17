@@ -1,4 +1,4 @@
-import { ArrowLeft, Loader2, Minus, Play, Plus, Star, Trash2 } from 'lucide-react'
+import { ArrowLeft, Loader2, Minus, Play, Plus, Star, StickyNote, Trash2 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Scene } from '@shared/types'
 import { isMediumEffortModel, promptTokenLimit } from '@shared/nai-models'
@@ -44,6 +44,7 @@ export function SceneDetail({ scene }: { scene: Scene }): React.JSX.Element {
   const favoritesOnly = useScenesStore((s) => s.favoritesOnly)
   const setFavoritesOnly = useScenesStore((s) => s.setFavoritesOnly)
   const deleteNonFavorites = useScenesStore((s) => s.deleteNonFavorites)
+  const setMemo = useScenesStore((s) => s.setMemo) // [custom] 씬 메모
 
   const source = useGenerationStore((s) => s.source)
   const basePrompt = useGenerationStore((s) => s.request.prompt)
@@ -225,6 +226,18 @@ export function SceneDetail({ scene }: { scene: Scene }): React.JSX.Element {
           </button>
         </div>
       </div>
+      {/* [custom] 씬 메모(별명) — 카드·검수 화면에 이름과 함께 보인다 (파일 이름은 그대로) */}
+      <label className="flex items-center gap-2 border-b border-line px-3 py-1.5">
+        <StickyNote size={14} className="shrink-0 text-muted" />
+        <input
+          className="min-w-0 flex-1 rounded-md bg-transparent px-2 py-1 text-[13px] outline-none placeholder:text-faint focus:bg-surface-2"
+          value={scene.memo ?? ''}
+          placeholder={t('ui.customSceneMemoPlaceholder')}
+          aria-label={t('ui.customSceneMemo')}
+          maxLength={200}
+          onChange={(e) => void setMemo(scene.id, e.target.value)}
+        />
+      </label>
 
       {source && (
         <p className="border-b border-line bg-surface-2 px-3 py-1 text-[11px] text-muted">

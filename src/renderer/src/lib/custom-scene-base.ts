@@ -18,7 +18,9 @@ export function useSceneBase(
       window.nais
         .invoke('custom:sceneBase', { id: scene.id })
         .then((value) => {
-          if (!cancelled) setBase({ id: scene.id, value })
+          if (cancelled) return
+          const ok = typeof value?.prompt === 'string' && typeof value.negativePrompt === 'string'
+          setBase({ id: scene.id, value: ok ? value : null })
         })
         .catch(() => {})
     }, 400)

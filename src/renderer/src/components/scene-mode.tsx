@@ -22,7 +22,8 @@ import {
   SlidersHorizontal,
   Square,
   Trash2,
-  UsersRound
+  UsersRound,
+  StickyNote
 } from 'lucide-react'
 import {
   closestCenter,
@@ -947,6 +948,16 @@ const SceneCard = memo(function SceneCard({
     const name = await askText(t('ui.sceneName'), scene.name)
     if (name) void update(scene.id, { name })
   }
+  // [custom] 씬 메모(별명)
+  const setMemo = useScenesStore((s) => s.setMemo)
+  const editMemo = async (): Promise<void> => {
+    const memo = await askText(
+      t('ui.customSceneMemoTitleValue', scene.name),
+      scene.memo ?? '',
+      t('ui.customSceneMemoPlaceholder')
+    )
+    if (memo !== null) void setMemo(scene.id, memo)
+  }
   const openFolder = async (): Promise<void> => {
     const { ok } = await window.nais.invoke('scenes:openFolder', { sceneId: scene.id })
     if (!ok) toast(t('ui.noGeneratedImageFolderYet'), 'info')
@@ -1092,6 +1103,11 @@ const SceneCard = memo(function SceneCard({
                   onClick={() => void renameScene()}
                 />
                 <MenuItem
+                  icon={<StickyNote size={13} />}
+                  label={t('ui.customSceneMemoEdit')}
+                  onClick={() => void editMemo()}
+                />
+                <MenuItem
                   icon={<Copy size={13} />}
                   label={t('ui.duplicate')}
                   onClick={() => void duplicate(scene.id)}
@@ -1127,6 +1143,15 @@ const SceneCard = memo(function SceneCard({
                 ) : (
                   <div className="truncate text-[13px] font-semibold text-white drop-shadow">
                     {scene.name}
+                  </div>
+                )}
+                {/* [custom] 씬 메모 — 어떤 장면인지 한눈에 */}
+                {scene.memo && (
+                  <div
+                    className="truncate text-[11.5px] leading-tight text-white/85 drop-shadow"
+                    title={scene.memo}
+                  >
+                    {scene.memo}
                   </div>
                 )}
               </div>
@@ -1176,6 +1201,14 @@ const SceneCard = memo(function SceneCard({
         <ContextMenuItem onSelect={() => void renameScene()}>
           <Pencil size={13} /> {t('ui.rename')}
         </ContextMenuItem>
+        <ContextMenuItem onSelect={() => void editMemo()}>
+          <StickyNote size={13} /> {t('ui.customSceneMemoEdit')}
+        </ContextMenuItem>
+        {scene.memo && (
+          <ContextMenuItem onSelect={() => void setMemo(scene.id, '')}>
+            <StickyNote size={13} className="opacity-50" /> {t('ui.customSceneMemoClear')}
+          </ContextMenuItem>
+        )}
         <ContextMenuItem onSelect={() => void duplicate(scene.id)}>
           <Copy size={13} /> {t('ui.duplicate')}
         </ContextMenuItem>

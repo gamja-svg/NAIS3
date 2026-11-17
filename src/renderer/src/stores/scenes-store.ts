@@ -140,6 +140,8 @@ interface ScenesState {
   regenerateScene: (sceneId: number) => Promise<void>
   /** [custom] 일괄 확인 — 이 씬들의 미생성 표시를 한 번에 끈다 (남은 게 없으면 미생성만 보기도 끈다) */
   ackPendingScenes: (ids: number[]) => Promise<void>
+  /** [custom] 씬 메모(별명) — 화면은 바로 바꾸고 저장은 뒤따른다. 빈 글자면 지운다 */
+  setMemo: (id: number, memo: string) => Promise<void>
 }
 
 /**
@@ -623,6 +625,13 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
         pendingOnly: st.pendingOnly && scenes.some((s) => s.pending)
       }
     })
+  },
+
+  setMemo: async (id, memo) => {
+    set((st) => ({
+      scenes: st.scenes.map((s) => (s.id === id ? { ...s, memo: memo || undefined } : s))
+    }))
+    await window.nais.invoke('custom:sceneMemo', { id, memo })
   },
 
   // ── 출연(Cast) ──────────────────────────────────────────

@@ -272,6 +272,11 @@ export function SceneReview({ scenes }: { scenes: Scene[] }): React.JSX.Element 
           <div className="truncate text-[12px] opacity-70">{presetName}</div>
           <div className="flex min-w-0 items-baseline gap-2">
             <span className="truncate text-[19px] font-semibold">{scene.name}</span>
+            {scene.memo && (
+              <span className="min-w-0 truncate text-[14px] opacity-80" title={scene.memo}>
+                {scene.memo}
+              </span>
+            )}
             {scene.pending && (
               <span className="shrink-0 rounded-full bg-accent px-1.5 py-0.5 text-[11px] font-bold leading-none text-on-accent">
                 {t('ui.notGenerated')}

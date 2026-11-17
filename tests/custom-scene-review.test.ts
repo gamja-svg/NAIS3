@@ -284,6 +284,18 @@ describe('custom: scene review double tap and fixed list', () => {
     expect(useScenesStore.getState().reviewSceneId).toBeNull()
   })
 
+  it('shows the scene memo next to its name', async () => {
+    useScenesStore.setState({ scenes: [pending(1), scene(2, { memo: '침대 위 미소' })] })
+    await act(async () =>
+      root.render(h(SceneReview, { scenes: [pending(1), scene(2, { memo: '침대 위 미소' })] }))
+    )
+    expect(document.body.querySelector('header')?.textContent).not.toContain('침대')
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { code: 'ArrowRight', key: 'ArrowRight' }))
+    })
+    expect(document.body.querySelector('header')?.textContent).toContain('침대 위 미소')
+  })
+
   it('keeps a scene in the review after it stops being pending', async () => {
     await act(async () => root.render(h(SceneReview, { scenes: [pending(1), pending(2)] })))
     // 다시 뽑기가 끝나 미생성이 풀림 → 미생성만 보기 목록에서는 빠진다

@@ -5,6 +5,8 @@ export interface ImportedScene {
   negativePrompt?: string
   width?: number
   height?: number
+  /** [custom] 씬 메모(별명) — 있으면 그 씬의 메모를 이 글로 (빈 글자면 지움) */
+  memo?: string
 }
 
 type Obj = Record<string, unknown>
@@ -46,7 +48,8 @@ export function parseSceneImport(raw: string): ImportedScene[] | null {
       prompt: str(s.prompt) ?? str(s.scenePrompt) ?? '', // NAIS2 파일은 scenePrompt
       negativePrompt: str(s.negativePrompt),
       width: num(s.width),
-      height: num(s.height)
+      height: num(s.height),
+      ...(str(s.memo) !== undefined ? { memo: str(s.memo) } : {}) // [custom]
     }))
   }
 

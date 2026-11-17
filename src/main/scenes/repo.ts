@@ -30,6 +30,7 @@ interface Row {
   reserve_count: number
   reserve_json?: string | null
   pending?: number
+  memo?: string | null
 }
 
 /** 출연별 예약 내역 파싱 (키 '' = 사이드바) */
@@ -86,7 +87,8 @@ function toScene(
     thumbnailPath: r.thumb_path ?? '',
     imageCount: r.image_count,
     hasFavorite: r.has_favorite === 1,
-    pending: r.pending === 1
+    pending: r.pending === 1,
+    ...(r.memo ? { memo: r.memo } : {}) // [custom] 씬 메모
   }
 }
 
@@ -105,6 +107,13 @@ function marksDb(): ReturnType<typeof getDb> {
          acked INTEGER NOT NULL DEFAULT 0,
          base_prompt TEXT,
          base_negative TEXT
+       )`
+    )
+    // 씬 메모(별명) — 카드·검수 화면에 이름과 함께 보인다. 파일 이름에는 쓰지 않는다
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS custom_scene_memos (
+         scene_id INTEGER PRIMARY KEY,
+         memo TEXT NOT NULL
        )`
     )
     // 기준 칸이 없던 때 만든 표에 더한다
@@ -170,6 +179,30 @@ export function getSceneBase(id: number): { prompt: string; negativePrompt: stri
   if (!row || row.pending !== 1 || row.prompt === null) return null
   return { prompt: row.prompt, negativePrompt: row.negative ?? '' }
 }
+
+const MEMO_MAX = 200
+
+/** [custom] 씬 메모(별명) 저장 — 한 줄로 줄이고, 비우면 지운다. 내용 변경이 아니라 미생성 표시는 건드리지 않는다 */
+export function setSceneMemo(id: number, memo: string): void {
+  const text = memo.replace(/\s+/g, ' ').trim().slice(0, MEMO_MAX)
+  const db = marksDb()
+  if (!text) db.prepare('DELETE FROM custom_scene_memos WHERE scene_id = ?').run(id)
+  else
+    db.prepare(
+      `INSERT INTO custom_scene_memos (scene_id, memo) VALUES (?, ?)
+       ON CONFLICT(scene_id) DO UPDATE SET memo = excluded.memo`
+    ).run(id, text)
+}
+
+// [custom] 지운 씬의 메모·미생성 표시를 치운다 — 씬 번호(id)는 새 씬에 다시 쓰일 수 있다.
+// 씬을 지우는 모든 길(하나·여럿·프리셋째·백업 복원)이 이 알림을 낸다.
+sceneEvents.on('deleted', (ids: number[]) => {
+  if (ids.length === 0) return
+  const db = marksDb()
+  const list = placeholders(ids.length)
+  db.prepare(`DELETE FROM custom_scene_memos WHERE scene_id IN (${list})`).run(...ids)
+  db.prepare(`DELETE FROM custom_scene_marks WHERE scene_id IN (${list})`).run(...ids)
+})
 
 /** '변경 후 미생성' 표시를 수동으로 끈다. 다음 내용 변경 때 다시 켜진다. */
 export function clearScenePending(id: number): void {
@@ -264,6 +297,7 @@ export function listScenes(presetId: number): Scene[] {
       `SELECT s.id, s.preset_id, s.name, s.prompt, s.negative_prompt, s.width, s.height, s.reserve_count, s.reserve_json,
               (SELECT COUNT(*) FROM images WHERE scene_id = s.id) AS image_count,
               ${pendingSql('s')} AS pending,
+              (SELECT memo FROM custom_scene_memos WHERE scene_id = s.id) AS memo,
               cover.id AS thumb_id,
               cover.created_at AS thumb_created_at,
               length(cover.thumbnail) AS thumb_size,
@@ -307,7 +341,8 @@ export function getScene(id: number): Scene | null {
     .prepare(
       `SELECT id, preset_id, name, prompt, negative_prompt, width, height, reserve_count, reserve_json,
               (SELECT COUNT(*) FROM images WHERE scene_id = ?) AS image_count,
-              ${pendingSql('gen_scenes')} AS pending
+              ${pendingSql('gen_scenes')} AS pending,
+              (SELECT memo FROM custom_scene_memos WHERE scene_id = gen_scenes.id) AS memo
        FROM gen_scenes WHERE id = ?`
     )
     .get(id, id) as (Row & { image_count: number }) | undefined
@@ -704,9 +739,11 @@ export function deleteImage(id: number, deleteFile: boolean): void {
 
 // ── JSON / ZIP ──────────────────────────────────────────
 export async function exportScenesJson(presetId: number): Promise<boolean> {
-  const scenes = getDb()
+  const scenes = marksDb() // [custom] 메모 표가 있게
     .prepare(
-      'SELECT name, prompt, negative_prompt, width, height FROM gen_scenes WHERE preset_id = ? ORDER BY sort_order, id'
+      `SELECT name, prompt, negative_prompt, width, height,
+              (SELECT memo FROM custom_scene_memos WHERE scene_id = gen_scenes.id) AS memo
+       FROM gen_scenes WHERE preset_id = ? ORDER BY sort_order, id`
     )
     .all(presetId) as Row[]
   const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
@@ -721,7 +758,8 @@ export async function exportScenesJson(presetId: number): Promise<boolean> {
     prompt: s.prompt,
     negativePrompt: s.negative_prompt,
     width: s.width,
-    height: s.height
+    height: s.height,
+    ...(s.memo ? { memo: s.memo } : {}) // [custom] 씬 메모
   }))
   // [custom] 프리셋 이름을 같이 적는다 — 감시 폴더가 이 이름으로 넣을 프리셋을 정한다
   const preset = getPresetName(presetId)
@@ -810,6 +848,8 @@ export function applyImportedScenes(presetId: number, scenes: ImportedScene[]): 
           outcome.updated++
           outcome.sceneIds.push(existing.id)
         } else outcome.unchanged++
+        // [custom] 메모가 적혀 있으면 바꾼다 (빈 글자면 지움, 칸이 없으면 그대로) — 다시 뽑을 일은 아니다
+        if (s.memo !== undefined) setSceneMemo(existing.id, s.memo)
         continue
       }
       outcome.added++
@@ -823,6 +863,7 @@ export function applyImportedScenes(presetId: number, scenes: ImportedScene[]): 
         ++order
       )
       outcome.sceneIds.push(Number(inserted.lastInsertRowid))
+      if (s.memo) setSceneMemo(Number(inserted.lastInsertRowid), s.memo) // [custom]
     }
   })()
   return outcome

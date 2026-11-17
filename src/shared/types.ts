@@ -434,6 +434,8 @@ export interface Scene {
   hasFavorite: boolean
   /** [custom] 내용(프롬프트·네거티브·크기) 변경 뒤 아직 한 장도 생성하지 않았거나, 이미지가 0장인 씬 */
   pending?: boolean
+  /** [custom] 씬 메모(별명) — 어떤 장면인지 한눈에 보이게. 파일 이름에는 쓰지 않는다 */
+  memo?: string
 }
 
 /** 씬 상세의 생성 이미지 (페이지네이션 단위) */
@@ -875,6 +877,8 @@ export interface IpcInvokeMap {
     res: TopSetResult | { canceled: true }
   }
   'custom:topSetGetDir': { req: void; res: { dir: string } }
+  /** [custom] 씬 메모(별명) 저장 — 빈 글자면 지운다 */
+  'custom:sceneMemo': { req: { id: number; memo: string }; res: void }
   /** [custom] 미생성인 씬이 바뀌기 전 내용 — 바뀐 태그를 노랗게 칠하는 기준 (없으면 null) */
   'custom:sceneBase': {
     req: { id: number }

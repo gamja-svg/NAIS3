@@ -102,6 +102,7 @@ import {
   clearScenePending,
   clearScenesPending,
   getSceneBase,
+  setSceneMemo,
   deleteScene,
   reorderScenes,
   setReserveAll,
@@ -636,6 +637,7 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
   }
   handle('custom:topSetGetDir', () => ({ dir: getTopSetDir() }))
   handle('custom:sceneBase', ({ id }) => getSceneBase(id))
+  handle('custom:sceneMemo', ({ id, memo }) => setSceneMemo(id, memo))
   handle('custom:topSetPickDir', async () => {
     const dir = await pickTopSetDir()
     return dir ? { dir } : { dir: getTopSetDir(), canceled: true }

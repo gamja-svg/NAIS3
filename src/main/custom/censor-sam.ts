@@ -6,7 +6,8 @@ import {
   readFileSync,
   renameSync,
   rmSync,
-  statSync
+  statSync,
+  type WriteStream
 } from 'fs'
 import { createRequire } from 'node:module'
 import { join } from 'path'
@@ -85,28 +86,43 @@ export async function ensureModels(deps: SamDeps): Promise<void> {
     const model = SAM_MODELS[key]
     const path = join(deps.dir, model.file)
     const tmp = `${path}.part`
+    let out: WriteStream | null = null
     try {
       const res = await get(`${MODEL_BASE}/${model.file}`, { redirect: 'follow' })
       if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`)
-      const out = createWriteStream(tmp)
+      const file = (out = createWriteStream(tmp))
       const reader = res.body.getReader()
       for (;;) {
         const { done: end, value } = await reader.read()
         if (end) break
-        if (!out.write(value)) await new Promise<void>((r) => out.once('drain', () => r()))
+        if (!file.write(value)) await new Promise<void>((r) => file.once('drain', () => r()))
         done += value.length
         const percent = Math.min(99, Math.floor((done / total) * 100))
         if (percent !== shown) deps.progress?.((shown = percent))
       }
+      // 파일이 완전히 닫힌 뒤에 확인·이름 바꾸기를 한다 — Windows에서는 열려 있는 파일을 옮기거나 지울 수 없다
       await new Promise<void>((resolve, reject) => {
-        out.once('error', reject)
-        out.end(() => resolve())
+        file.once('error', reject)
+        file.once('close', () => resolve())
+        file.end()
       })
       if (statSync(tmp).size !== model.size || sha256(tmp) !== model.sha256)
         throw new Error('checksum')
       renameSync(tmp, path)
     } catch (e) {
-      rmSync(tmp, { force: true })
+      // 받다 만 파일은 닫고 나서 지운다 (지우지 못해도 다음에 다시 받으면 덮어쓴다)
+      if (out && !out.closed) {
+        const open = out
+        await new Promise<void>((resolve) => {
+          open.once('close', () => resolve())
+          open.destroy()
+        })
+      }
+      try {
+        rmSync(tmp, { force: true, maxRetries: 5, retryDelay: 100 })
+      } catch {
+        // 남아도 해가 없다
+      }
       throw new Error(
         t('ui.customCensorModelFailedValue', e instanceof Error ? e.message : String(e))
       )

@@ -298,6 +298,17 @@ export const KO = {
   'ui.customCensorModelFailedValue':
     '콕 찍기 모델을 받지 못했습니다 ({0}). 인터넷 연결을 확인한 뒤 검열을 다시 켜 주세요.',
   'ui.customCensorNoImage': '이 그림의 기록을 찾을 수 없어 저장하지 못했습니다',
+  'ui.customPresetFolder': '폴더',
+  'ui.customPresetFolderMove': '폴더에 넣기',
+  'ui.customPresetFolderNew': '새 폴더…',
+  'ui.customPresetFolderRemove': '폴더에서 빼기',
+  'ui.customPresetFolderName': '폴더 이름',
+  'ui.customPresetFolderDissolve': '폴더 풀기 (프리셋은 그대로 남습니다)',
+  'ui.customPresetFolderAuto': '이름으로 자동 묶기',
+  'ui.customPresetFolderAutoHint':
+    '이름의 첫 낱말이 같은 프리셋끼리 폴더로 묶습니다 (예: "윤초아 n5", "윤초아 D3" → 윤초아). 이미 폴더에 든 프리셋은 그대로 둡니다.',
+  'ui.customPresetFolderAutoDoneValue': '프리셋 {0}개를 폴더로 묶었습니다',
+  'ui.customPresetFolderAutoNone': '이름 첫 낱말이 같은 프리셋이 없어 묶을 것이 없습니다',
   'ui.customCensorUndoShort': '되돌리기',
   'ui.customCensorFitShort': '맞춤',
   'ui.customCensorSmart': '색 맞춤',

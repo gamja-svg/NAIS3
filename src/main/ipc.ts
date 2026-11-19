@@ -141,6 +141,7 @@ import {
 } from './custom/top-set'
 import { openCensor, readCensorBase, saveCensor } from './custom/censor'
 import { pickShape, warmSam } from './custom/censor-sam'
+import { getPresetFolders, renamePresetFolder, setPresetFolder } from './custom/preset-folders'
 import {
   arrangeFolderGroups,
   createFolderGroup,
@@ -647,6 +648,9 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
     dir: join(app.getPath('userData'), 'custom-models'),
     progress: (percent: number) => broadcast('custom:censorModel', { percent })
   }
+  handle('custom:presetFolders', () => ({ folders: getPresetFolders() }))
+  handle('custom:presetFolderSet', ({ presetIds, folder }) => setPresetFolder(presetIds, folder))
+  handle('custom:presetFolderRename', ({ from, to }) => renamePresetFolder(from, to))
   handle('custom:censorOpen', ({ filePath }) => openCensor(filePath))
   handle('custom:censorSave', async ({ filePath, maskBase64 }) => {
     const saved = await saveCensor(filePath, maskBase64)

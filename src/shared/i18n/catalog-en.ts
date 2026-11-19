@@ -302,6 +302,17 @@ export const EN = {
   'ui.customCensorModelFailedValue':
     'Could not download the tap-to-shape model ({0}). Check your connection, then turn Censor on again.',
   'ui.customCensorNoImage': 'Could not save: no record of this image was found',
+  'ui.customPresetFolder': 'Folder',
+  'ui.customPresetFolderMove': 'Move to folder',
+  'ui.customPresetFolderNew': 'New folder…',
+  'ui.customPresetFolderRemove': 'Remove from folder',
+  'ui.customPresetFolderName': 'Folder name',
+  'ui.customPresetFolderDissolve': 'Dissolve folder (presets are kept)',
+  'ui.customPresetFolderAuto': 'Group by name',
+  'ui.customPresetFolderAutoHint':
+    'Groups presets whose names start with the same word into a folder (e.g. "Luna n5", "Luna D3" → Luna). Presets already in a folder are left alone.',
+  'ui.customPresetFolderAutoDoneValue': 'Grouped {0} {0|preset|presets} into folders',
+  'ui.customPresetFolderAutoNone': 'No presets share a first word, so there is nothing to group',
   'ui.customCensorUndoShort': 'Undo',
   'ui.customCensorFitShort': 'Fit',
   'ui.customCensorSmart': 'Match color',

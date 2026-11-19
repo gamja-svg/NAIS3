@@ -4,7 +4,11 @@ import {
   CalendarPlus,
   CalendarX,
   ChevronDown,
+  ChevronRight,
   ChevronUp,
+  Folder,
+  FolderMinus,
+  FolderPlus,
   Copy,
   Download,
   FileDown,
@@ -39,6 +43,7 @@ import {
 import { arrayMove, rectSortingStrategy, SortableContext, useSortable } from '@dnd-kit/sortable'
 import { AnimatePresence, motion } from 'motion/react'
 import {
+  Fragment,
   memo,
   useEffect,
   useLayoutEffect,
@@ -61,6 +66,9 @@ import { SceneCastDialog } from './scene-cast-dialog'
 import { SceneDetail } from './scene-detail'
 import { SceneReview } from './custom-scene-review'
 import { useTouchMode } from '../lib/custom-touch-mode'
+import { groupPresets } from '../lib/custom-preset-folders'
+import { usePresetFolderStore } from '../stores/custom-preset-folder-store'
+import { PresetFolderPicker } from './custom-preset-folder-picker'
 import { TopSetButton } from './custom-top-set'
 import { noteSceneCardClick, useSceneCardDoubleClick } from '../lib/custom-scene-double-click'
 import { SortableList, SortableRow } from './sortable-list'
@@ -99,15 +107,23 @@ export function SceneMode(): React.JSX.Element {
 }
 
 /** NAIS2식 프리셋 드롭다운 — 현재 프리셋 표시 + 전환/추가/이름변경/삭제 */
-function PresetDropdown(): React.JSX.Element {
+export function PresetDropdown(): React.JSX.Element {
   const presets = useScenesStore((s) => s.presets)
   const activePresetId = useScenesStore((s) => s.activePresetId)
   const setActivePreset = useScenesStore((s) => s.setActivePreset)
   const createPreset = useScenesStore((s) => s.createPreset)
   const renamePreset = useScenesStore((s) => s.renamePreset)
   const deletePreset = useScenesStore((s) => s.deletePreset)
-  const reorderPresets = useScenesStore((s) => s.reorderPresets)
-  const movePreset = useScenesStore((s) => s.movePreset)
+  // [custom] 폴더 — 같은 폴더의 프리셋을 한 묶음으로 보여 준다
+  const folders = usePresetFolderStore((s) => s.folders)
+  const collapsed = usePresetFolderStore((s) => s.collapsed)
+  const toggleFolder = usePresetFolderStore((s) => s.toggle)
+  const setFolder = usePresetFolderStore((s) => s.setFolder)
+  const renameFolder = usePresetFolderStore((s) => s.rename)
+  const moveInList = usePresetFolderStore((s) => s.move)
+  const reorderInFolders = usePresetFolderStore((s) => s.reorder)
+  const autoGroup = usePresetFolderStore((s) => s.autoGroup)
+  const groups = groupPresets(presets, folders)
   const stepPreset = useScenesStore((s) => s.stepPreset)
   const touchMode = useTouchMode()
   const [open, setOpen] = useState(false)
@@ -141,82 +157,180 @@ function PresetDropdown(): React.JSX.Element {
           align="start"
           className="w-max min-w-[var(--radix-popover-trigger-width)] max-w-[min(40rem,90vw)] p-1"
         >
-          <div className="max-h-64 overflow-y-auto overflow-x-hidden no-scrollbar">
+          <div className="max-h-[min(26rem,60vh)] overflow-y-auto overflow-x-hidden no-scrollbar">
             {/* 드래그로 순서 변경 */}
             <SortableList
               ids={presets.map((p) => p.id)}
-              onReorder={(ids) => void reorderPresets(ids)}
+              onReorder={(ids) => void reorderInFolders(ids)}
             >
-              {presets.map((p, index) => (
-                <SortableRow
-                  key={p.id}
-                  id={p.id}
-                  className="group gap-1"
-                  onTap={() => choose(p.id)}
-                >
-                  <div
-                    onClick={() => choose(p.id)}
-                    className={cn(
-                      'flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px]',
-                      p.id === activePresetId && 'font-semibold text-accent-ink'
-                    )}
+              {groups.map((group, groupIndex) => {
+                const row = (
+                  p: (typeof presets)[number],
+                  first: boolean,
+                  last: boolean,
+                  inFolder: boolean
+                ): React.JSX.Element => (
+                  <SortableRow
+                    key={p.id}
+                    id={p.id}
+                    className={cn('group gap-1', inFolder && 'pl-4')}
+                    onTap={() => choose(p.id)}
                   >
-                    <span className="truncate" title={p.name}>
-                      {p.name}
-                    </span>
-                  </div>
-                  {/* [custom] 한 칸씩 자리 옮기기 — 끌기 어려운 화면(터치·원격)에서는 늘 보인다 */}
-                  {presets.length > 1 &&
-                    ([-1, 1] as const).map((dir) => (
+                    <div
+                      onClick={() => choose(p.id)}
+                      className={cn(
+                        'flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px]',
+                        p.id === activePresetId && 'font-semibold text-accent-ink'
+                      )}
+                    >
+                      <span className="truncate" title={p.name}>
+                        {p.name}
+                      </span>
+                    </div>
+                    {/* [custom] 한 칸씩 자리 옮기기 — 끌기 어려운 화면(터치·원격)에서는 늘 보인다 */}
+                    {presets.length > 1 &&
+                      ([-1, 1] as const).map((dir) => (
+                        <button
+                          key={dir}
+                          className={cn(
+                            'shrink-0 rounded p-1 text-faint hover:text-ink disabled:pointer-events-none',
+                            touchMode
+                              ? 'disabled:opacity-25'
+                              : 'opacity-0 focus-visible:opacity-100 group-hover:opacity-100 group-hover:disabled:opacity-25'
+                          )}
+                          disabled={dir < 0 ? first : last}
+                          onClick={() => void moveInList(p.id, dir)}
+                          title={t(dir < 0 ? 'ui.customPresetMoveUp' : 'ui.customPresetMoveDown')}
+                          aria-label={t(
+                            dir < 0 ? 'ui.customPresetMoveUp' : 'ui.customPresetMoveDown'
+                          )}
+                        >
+                          {dir < 0 ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                        </button>
+                      ))}
+                    <PresetFolderPicker presetId={p.id} always={touchMode} />
+                    <button
+                      className="shrink-0 rounded p-1 text-faint opacity-0 hover:text-ink group-hover:opacity-100"
+                      onClick={async () => {
+                        const name = await askText(t('ui.presetName'), p.name)
+                        if (name) void renamePreset(p.id, name)
+                      }}
+                      title={t('ui.rename')}
+                      aria-label={t('ui.rename')}
+                    >
+                      <Pencil size={12} />
+                    </button>
+                    {presets.length > 1 && (
                       <button
-                        key={dir}
+                        className="shrink-0 rounded p-1 text-faint opacity-0 hover:text-danger-ink group-hover:opacity-100"
+                        onClick={async () => {
+                          if (
+                            await askConfirm(t('ui.deletePreset'), {
+                              message: t('ui.deletesTheValuePresetAndAllScenesInIt', p.name),
+                              confirmLabel: t('ui.delete'),
+                              danger: true
+                            })
+                          )
+                            void deletePreset(p.id)
+                        }}
+                        title={t('ui.delete')}
+                        aria-label={t('ui.delete')}
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    )}
+                  </SortableRow>
+                )
+                if (group.folder === null)
+                  return row(
+                    group.presets[0],
+                    groupIndex === 0,
+                    groupIndex === groups.length - 1,
+                    false
+                  )
+                const folder = group.folder
+                const closed = collapsed.includes(folder)
+                const holdsActive = group.presets.some((p) => p.id === activePresetId)
+                return (
+                  <Fragment key={`folder:${folder}`}>
+                    {/* [custom] 폴더 줄 — 누르면 접고 편다 */}
+                    <div className="group flex items-center gap-1 rounded-md hover:bg-surface-2">
+                      <button
                         className={cn(
-                          'shrink-0 rounded p-1 text-faint hover:text-ink disabled:pointer-events-none disabled:opacity-25',
+                          'flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1.5 text-left text-[13px] font-semibold',
+                          holdsActive && closed ? 'text-accent-ink' : 'text-muted'
+                        )}
+                        aria-expanded={!closed}
+                        onClick={() => toggleFolder(folder)}
+                      >
+                        {closed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
+                        <Folder size={13} className="shrink-0" />
+                        <span className="truncate" title={folder}>
+                          {folder}
+                        </span>
+                        <span className="shrink-0 font-mono text-[11px] font-normal opacity-70">
+                          {group.presets.length}
+                        </span>
+                      </button>
+                      {([-1, 1] as const).map((dir) => (
+                        <button
+                          key={dir}
+                          className={cn(
+                            'shrink-0 rounded p-1 text-faint hover:text-ink disabled:pointer-events-none',
+                            touchMode
+                              ? 'disabled:opacity-25'
+                              : 'opacity-0 focus-visible:opacity-100 group-hover:opacity-100 group-hover:disabled:opacity-25'
+                          )}
+                          disabled={dir < 0 ? groupIndex === 0 : groupIndex === groups.length - 1}
+                          onClick={() => void moveInList(folder, dir)}
+                          title={t(dir < 0 ? 'ui.customPresetMoveUp' : 'ui.customPresetMoveDown')}
+                          aria-label={t(
+                            dir < 0 ? 'ui.customPresetMoveUp' : 'ui.customPresetMoveDown'
+                          )}
+                        >
+                          {dir < 0 ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                        </button>
+                      ))}
+                      <button
+                        className={cn(
+                          'shrink-0 rounded p-1 text-faint hover:text-ink',
                           !touchMode &&
                             'opacity-0 focus-visible:opacity-100 group-hover:opacity-100'
                         )}
-                        disabled={dir < 0 ? index === 0 : index === presets.length - 1}
-                        onClick={() => void movePreset(p.id, dir)}
-                        title={t(dir < 0 ? 'ui.customPresetMoveUp' : 'ui.customPresetMoveDown')}
-                        aria-label={t(
-                          dir < 0 ? 'ui.customPresetMoveUp' : 'ui.customPresetMoveDown'
-                        )}
+                        onClick={async () => {
+                          const name = await askText(t('ui.customPresetFolderName'), folder)
+                          if (name) void renameFolder(folder, name)
+                        }}
+                        title={t('ui.rename')}
+                        aria-label={t('ui.rename')}
                       >
-                        {dir < 0 ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                        <Pencil size={12} />
                       </button>
-                    ))}
-                  <button
-                    className="shrink-0 rounded p-1 text-faint opacity-0 hover:text-ink group-hover:opacity-100"
-                    onClick={async () => {
-                      const name = await askText(t('ui.presetName'), p.name)
-                      if (name) void renamePreset(p.id, name)
-                    }}
-                    title={t('ui.rename')}
-                    aria-label={t('ui.rename')}
-                  >
-                    <Pencil size={12} />
-                  </button>
-                  {presets.length > 1 && (
-                    <button
-                      className="shrink-0 rounded p-1 text-faint opacity-0 hover:text-danger-ink group-hover:opacity-100"
-                      onClick={async () => {
-                        if (
-                          await askConfirm(t('ui.deletePreset'), {
-                            message: t('ui.deletesTheValuePresetAndAllScenesInIt', p.name),
-                            confirmLabel: t('ui.delete'),
-                            danger: true
-                          })
-                        )
-                          void deletePreset(p.id)
-                      }}
-                      title={t('ui.delete')}
-                      aria-label={t('ui.delete')}
-                    >
-                      <Trash2 size={12} />
-                    </button>
-                  )}
-                </SortableRow>
-              ))}
+                      <button
+                        className={cn(
+                          'shrink-0 rounded p-1 text-faint hover:text-ink',
+                          !touchMode &&
+                            'opacity-0 focus-visible:opacity-100 group-hover:opacity-100'
+                        )}
+                        onClick={() =>
+                          void setFolder(
+                            group.presets.map((p) => p.id),
+                            null
+                          )
+                        }
+                        title={t('ui.customPresetFolderDissolve')}
+                        aria-label={t('ui.customPresetFolderDissolve')}
+                      >
+                        <FolderMinus size={12} />
+                      </button>
+                    </div>
+                    {!closed &&
+                      group.presets.map((p, i) =>
+                        row(p, i === 0, i === group.presets.length - 1, true)
+                      )}
+                  </Fragment>
+                )
+              })}
             </SortableList>
           </div>
           <div className="my-1 h-px bg-line" />
@@ -228,6 +342,22 @@ function PresetDropdown(): React.JSX.Element {
             }}
           >
             <Plus size={14} /> {t('ui.newPreset')}
+          </button>
+          {/* [custom] 이름의 첫 낱말이 같은 프리셋끼리 폴더로 */}
+          <button
+            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] text-muted hover:bg-surface-2 hover:text-ink"
+            title={t('ui.customPresetFolderAutoHint')}
+            onClick={async () => {
+              const count = await autoGroup()
+              toast(
+                count > 0
+                  ? t('ui.customPresetFolderAutoDoneValue', count)
+                  : t('ui.customPresetFolderAutoNone'),
+                count > 0 ? 'success' : 'info'
+              )
+            }}
+          >
+            <FolderPlus size={14} /> {t('ui.customPresetFolderAuto')}
           </button>
         </PopoverContent>
       </Popover>
@@ -312,7 +442,7 @@ function CastSelector(): React.JSX.Element {
             {t('ui.sidebarSettings')}
           </button>
           {/* 많아져도 화면을 뚫지 않게 스크롤 + 드래그 정렬 (프리셋 드롭다운과 동일 패턴) */}
-          <div className="max-h-64 overflow-y-auto overflow-x-hidden no-scrollbar">
+          <div className="max-h-[min(26rem,60vh)] overflow-y-auto overflow-x-hidden no-scrollbar">
             <SortableList ids={casts.map((c) => c.id)} onReorder={reorderCasts}>
               {casts.map((c) => (
                 <SortableRow

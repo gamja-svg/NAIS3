@@ -565,6 +565,10 @@ export interface IpcInvokeMap {
   'custom:censorSave': { req: { filePath: string; maskBase64: string }; res: CensorSaveResult }
   'custom:censorPick': { req: { filePath: string; x: number; y: number }; res: CensorPickResult }
   'custom:censorWarm': { req: void; res: void }
+  /** [custom] 씬 프리셋 폴더: 프리셋 id → 폴더 이름 · 폴더에 넣기(folder가 null이면 빼기) · 폴더 이름 바꾸기 */
+  'custom:presetFolders': { req: void; res: { folders: Record<number, string> } }
+  'custom:presetFolderSet': { req: { presetIds: number[]; folder: string | null }; res: void }
+  'custom:presetFolderRename': { req: { from: string; to: string }; res: void }
   /** [custom] 바탕 그림의 픽셀을 읽을 수 있게 data: 주소로 (색 맞춤 붓) */
   'custom:censorBase': { req: { filePath: string }; res: { dataUrl: string } }
   'db:status': { req: void; res: { version: number; path: string } }

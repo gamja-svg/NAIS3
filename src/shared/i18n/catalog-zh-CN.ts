@@ -239,6 +239,11 @@ export const ZH_CN = {
   'ui.customTopSetEmpty': '没有可保存的封面图片',
   'ui.customTopSetNothingToOpen': '还没有保存的文件夹',
   'ui.customTopSetPresetMissing': '找不到预设',
+  'ui.customTopSetSmall': '缩小保存（WebP）',
+  'ui.customTopSetSmallHint':
+    '把 PNG 图片转成 WebP 保存，体积约为五分之一，原文件不变。文件夹中同名的 PNG 会移到回收站。',
+  'ui.customTopSetSmallOn': '代表套图将缩小（WebP）保存',
+  'ui.customTopSetSmallOff': '代表套图将按原文件保存',
   'ui.customTopSetNoDefaultDir':
     '尚未设置封面集默认文件夹。请先在场景列表中用“保存封面集”选择，或在请求中填写 "to" 文件夹。',
   'ui.customRequestBadJson': '请求文件不是有效的 JSON',

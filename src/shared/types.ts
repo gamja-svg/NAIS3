@@ -929,7 +929,9 @@ export interface IpcInvokeMap {
     req: { presetId: number; pick?: boolean }
     res: TopSetResult | { canceled: true }
   }
-  'custom:topSetGetDir': { req: void; res: { dir: string } }
+  'custom:topSetGetDir': { req: void; res: { dir: string; format: 'original' | 'webp' } }
+  /** [custom] 대표 세트 받는 형식 — webp = 줄여서 받기 */
+  'custom:topSetFormat': { req: { format: 'original' | 'webp' }; res: void }
   /** [custom] 씬 메모(별명) 저장 — 빈 글자면 지운다 */
   'custom:sceneMemo': { req: { id: number; memo: string }; res: void }
   /** [custom] 미생성인 씬이 바뀌기 전 내용 — 바뀐 태그를 노랗게 칠하는 기준 (없으면 null) */

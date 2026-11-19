@@ -136,8 +136,10 @@ import {
   defaultTopSetDest,
   exportTopSet,
   getTopSetDir,
+  getTopSetFormat,
   runWatchRequest,
-  setTopSetDir
+  setTopSetDir,
+  setTopSetFormat
 } from './custom/top-set'
 import { openCensor, readCensorBase, saveCensor } from './custom/censor'
 import { pickShape, warmSam } from './custom/censor-sam'
@@ -638,7 +640,8 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
     setTopSetDir(dir)
     return dir
   }
-  handle('custom:topSetGetDir', () => ({ dir: getTopSetDir() }))
+  handle('custom:topSetGetDir', () => ({ dir: getTopSetDir(), format: getTopSetFormat() }))
+  handle('custom:topSetFormat', ({ format }) => setTopSetFormat(format))
   handle('custom:sceneBase', ({ id }) => getSceneBase(id))
   handle('custom:sceneMemo', ({ id, memo }) => {
     setSceneMemo(id, memo)

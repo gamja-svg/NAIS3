@@ -241,6 +241,11 @@ export const KO = {
   'ui.customTopSetEmpty': '받을 대표 이미지가 없습니다',
   'ui.customTopSetNothingToOpen': '아직 받은 폴더가 없습니다',
   'ui.customTopSetPresetMissing': '프리셋을 찾을 수 없습니다',
+  'ui.customTopSetSmall': '줄여서 받기 (WebP)',
+  'ui.customTopSetSmallHint':
+    'PNG 그림을 WebP로 바꿔 받습니다. 용량이 1/5쯤으로 줄고, 원본 파일은 그대로입니다. 폴더에 같은 이름의 PNG가 남아 있으면 휴지통으로 보냅니다.',
+  'ui.customTopSetSmallOn': '대표 세트를 줄여서(WebP) 받습니다',
+  'ui.customTopSetSmallOff': '대표 세트를 원본 그대로 받습니다',
   'ui.customTopSetNoDefaultDir':
     '대표 세트 기본 폴더가 정해져 있지 않습니다. 씬 목록의 대표 세트 받기로 먼저 고르거나 요청에 "to" 폴더를 적어 주세요.',
   'ui.customRequestBadJson': '요청 파일을 읽을 수 없습니다 (JSON 형식이 아님)',

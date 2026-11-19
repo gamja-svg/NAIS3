@@ -6,6 +6,7 @@ import { getSetting, setSetting } from '../db/settings'
 import { t } from '../i18n'
 import { getMemoryImage, isMemoryPath } from '../images/storage'
 import { getPresetName, listPresets, listScenes } from '../scenes/repo'
+import sharp from '../sharp'
 
 /**
  * [custom] 대표 세트 받기 — 프리셋의 씬마다 카드에 보이는 대표 이미지(최신 즐겨찾기, 없으면 최신)를
@@ -15,12 +16,29 @@ import { getPresetName, listPresets, listScenes } from '../scenes/repo'
  * - 같은 이름의 다른 그림이 있으면 그 파일을 휴지통으로 보내고 새 그림을 넣는다 (되살릴 수 있게).
  * - 폴더에 있던 다른 파일은 건드리지 않는다.
  *
+ * 받는 형식을 `webp`(줄여서 받기)로 두면 PNG 그림을 WebP로 바꿔 받는다 (용량이 훨씬 작다. 원본 파일은 그대로).
+ * 그때 폴더에 같은 이름의 `.png`가 남아 있으면 휴지통으로 보낸다 (두 벌이 남지 않게).
+ *
  * 한 번 누르기: 기본 폴더 안의 `<프리셋 이름>` 폴더로 받는다. 감시 폴더에 요청 파일
  * (`*.request.json`)을 넣어도 받을 수 있다 — Claude가 원하는 폴더로 받아 줄 때 쓴다.
  */
 
 const DIR_KEY = 'custom_topset_dir'
+const FORMAT_KEY = 'custom_topset_format'
 const MAX_NAME = 120
+/** 줄여서 받기의 WebP 품질 — 눈으로 구분하기 어려운 선에서 용량을 1/5쯤으로 */
+const WEBP_QUALITY = 90
+
+/** 받는 형식 — original = 원본 그대로, webp = 줄여서 */
+export type TopSetFormat = 'original' | 'webp'
+
+export function getTopSetFormat(): TopSetFormat {
+  return getSetting(FORMAT_KEY) === 'webp' ? 'webp' : 'original'
+}
+
+export function setTopSetFormat(format: TopSetFormat): void {
+  setSetting(FORMAT_KEY, format === 'webp' ? 'webp' : 'original')
+}
 
 export function getTopSetDir(): string {
   return getSetting(DIR_KEY) ?? ''
@@ -54,12 +72,19 @@ export function defaultTopSetDest(presetId: number): string | null {
 
 interface TopSetFile {
   name: string
+  /** 줄여서 받을 때, 전에 원본으로 받아 둔 같은 이름의 PNG — 있으면 치운다 */
+  sibling: string | null
   source: string
+  /** WebP로 바꿔 받는다 */
+  convert: boolean
   pending: boolean
 }
 
 /** 받을 그림 목록 — 프리셋의 씬 순서대로, 이름이 겹치면 (2)·(3) (Windows는 대소문자를 가리지 않는다) */
-function topSetFiles(presetId: number): { files: TopSetFile[]; noImage: number } {
+function topSetFiles(
+  presetId: number,
+  format: TopSetFormat
+): { files: TopSetFile[]; noImage: number } {
   const used = new Set<string>()
   const files: TopSetFile[] = []
   let noImage = 0
@@ -68,14 +93,26 @@ function topSetFiles(presetId: number): { files: TopSetFile[]; noImage: number }
       noImage++
       continue
     }
-    const ext = isMemoryPath(scene.thumbnailPath)
+    const sourceExt = isMemoryPath(scene.thumbnailPath)
       ? '.png'
       : extname(scene.thumbnailPath).toLowerCase() || '.png'
+    const convert = format === 'webp' && sourceExt === '.png'
+    const ext = convert ? '.webp' : sourceExt
     const base = safeFileName(scene.name, `scene-${scene.id}`)
     let name = `${base}${ext}`
-    for (let n = 2; used.has(name.toLowerCase()); n++) name = `${base} (${n})${ext}`
+    let stem = base
+    for (let n = 2; used.has(name.toLowerCase()); n++) {
+      stem = `${base} (${n})`
+      name = `${stem}${ext}`
+    }
     used.add(name.toLowerCase())
-    files.push({ name, source: scene.thumbnailPath, pending: scene.pending === true })
+    files.push({
+      name,
+      sibling: convert ? `${stem}.png` : null,
+      source: scene.thumbnailPath,
+      convert,
+      pending: scene.pending === true
+    })
   }
   return { files, noImage }
 }
@@ -88,6 +125,8 @@ function sameBytes(source: string, target: string): boolean {
 export interface TopSetDeps {
   /** 바꿀 파일을 휴지통으로 — 기본은 Electron shell.trashItem */
   trash?: (path: string) => Promise<void>
+  /** 받는 형식 — 없으면 저장된 설정 */
+  format?: TopSetFormat
 }
 
 async function trashItem(path: string): Promise<void> {
@@ -99,11 +138,11 @@ async function trashItem(path: string): Promise<void> {
 export async function exportTopSet(
   presetId: number,
   dest: string,
-  { trash = trashItem }: TopSetDeps = {}
+  { trash = trashItem, format = getTopSetFormat() }: TopSetDeps = {}
 ): Promise<TopSetResult> {
   const presetName = getPresetName(presetId)
   if (presetName == null) throw new Error(t('ui.customTopSetPresetMissing'))
-  const { files, noImage } = topSetFiles(presetId)
+  const { files, noImage } = topSetFiles(presetId, format)
   mkdirSync(dest, { recursive: true })
   const result: TopSetResult = {
     presetId,
@@ -120,8 +159,13 @@ export async function exportTopSet(
   for (const file of files) {
     const target = join(dest, file.name)
     try {
-      const memory = isMemoryPath(file.source) ? getMemoryImage(file.source) : null
+      let memory = isMemoryPath(file.source) ? getMemoryImage(file.source) : null
       if (isMemoryPath(file.source) && !memory) throw new Error('expired')
+      // 줄여서 받기 — 같은 그림은 늘 같은 바이트가 나와, 아래의 '똑같으면 건너뛰기'가 그대로 통한다
+      if (file.convert)
+        memory = await sharp(memory ?? file.source)
+          .webp({ quality: WEBP_QUALITY, effort: 4 })
+          .toBuffer()
       let exists = false
       try {
         const st = statSync(target)
@@ -141,6 +185,18 @@ export async function exportTopSet(
       }
       if (memory) writeFileSync(target, memory)
       else copyFileSync(file.source, target)
+      // 줄여서 받았으면 전에 원본으로 받아 둔 같은 이름의 PNG는 휴지통으로 (두 벌이 남지 않게)
+      if (file.sibling) {
+        const old = join(dest, file.sibling)
+        try {
+          if (statSync(old).isFile()) {
+            await trash(old)
+            exists = true
+          }
+        } catch {
+          // 없으면 그만
+        }
+      }
       if (exists) result.replaced++
       else result.written++
     } catch {
@@ -164,6 +220,8 @@ interface TopSetRequest {
   presets: string[]
   to: string | null
   subfolders: boolean | null
+  /** 이 요청만 이 형식으로 (없으면 저장된 설정) */
+  format: TopSetFormat | null
 }
 
 /** 요청 파일을 JSON 객체로 읽는다 — 읽을 수 없으면 알림 문구 */
@@ -193,6 +251,7 @@ export function parseAutoGenerateRequest(raw: string): boolean | string | null {
  * 요청 파일 내용:
  * `{ "action": "exportTopSet", "preset": "이름" | "presets": ["이름", ...], "to": "폴더", "subfolders": true }`
  * - to가 없으면 기본 폴더 안 프리셋 이름 폴더로 (한 번 누르기와 같다). 상대 경로는 요청 파일 기준.
+ * - format: "webp" = 줄여서 받기, "original" = 원본 그대로. 없으면 버튼에서 고른 형식.
  * - to가 있으면 프리셋이 하나일 때 그 폴더에 바로, 여럿이면 그 안에 프리셋 이름 폴더로 (subfolders로 바꿀 수 있다).
  */
 export function parseTopSetRequest(raw: string): TopSetRequest | string {
@@ -209,7 +268,8 @@ export function parseTopSetRequest(raw: string): TopSetRequest | string {
   return {
     presets: [...new Set(names)],
     to: typeof body.to === 'string' && body.to.trim() ? body.to.trim() : null,
-    subfolders: typeof body.subfolders === 'boolean' ? body.subfolders : null
+    subfolders: typeof body.subfolders === 'boolean' ? body.subfolders : null,
+    format: body.format === 'webp' || body.format === 'original' ? body.format : null
   }
 }
 
@@ -266,7 +326,13 @@ export async function runWatchRequest(
           ? join(base, safeFileName(preset.name, `preset-${preset.id}`))
           : base
       try {
-        event.exports.push(await exportTopSet(preset.id, dest, deps))
+        event.exports.push(
+          await exportTopSet(
+            preset.id,
+            dest,
+            request.format ? { ...deps, format: request.format } : deps
+          )
+        )
       } catch (e) {
         event.errors.push(`${preset.name}: ${e instanceof Error ? e.message : String(e)}`)
       }

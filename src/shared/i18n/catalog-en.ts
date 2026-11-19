@@ -245,6 +245,11 @@ export const EN = {
   'ui.customTopSetEmpty': 'No cover images to save',
   'ui.customTopSetNothingToOpen': 'No saved folder yet',
   'ui.customTopSetPresetMissing': 'Preset not found',
+  'ui.customTopSetSmall': 'Smaller files (WebP)',
+  'ui.customTopSetSmallHint':
+    'Saves PNG pictures as WebP, about a fifth of the size. The originals are untouched. A PNG of the same name left in the folder goes to the Recycle Bin.',
+  'ui.customTopSetSmallOn': 'Cover sets are now saved smaller (WebP)',
+  'ui.customTopSetSmallOff': 'Cover sets are now saved as the original files',
   'ui.customTopSetNoDefaultDir':
     'No default cover set folder. Choose one with Save cover set in the scene list, or put a "to" folder in the request.',
   'ui.customRequestBadJson': 'The request file is not valid JSON',

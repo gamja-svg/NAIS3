@@ -14,15 +14,18 @@ import { join } from 'path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { closeDb, getDb, initDb } from '../src/main/db'
 import { getSetting } from '../src/main/db/settings'
+import sharp from '../src/main/sharp'
 import { WATCH_AUTOGEN_KEY } from '../src/shared/custom-watch'
 import {
   defaultTopSetDest,
   exportTopSet,
+  getTopSetFormat,
   parseAutoGenerateRequest,
   parseTopSetRequest,
   runWatchRequest,
   safeFileName,
-  setTopSetDir
+  setTopSetDir,
+  setTopSetFormat
 } from '../src/main/custom/top-set'
 import {
   scanWatchFolder,
@@ -80,6 +83,58 @@ const read = (dir: string, name: string): string => readFileSync(join(dir, name)
 const names = (dir: string): string[] => readdirSync(dir).sort()
 
 describe('custom: cover set export', () => {
+  it('saves PNG covers as smaller WebP when asked, and clears the PNG it replaces', async () => {
+    const preset = createPreset('줄이기')
+    const a = createScene(preset, 'a')
+    const b = createScene(preset, 'b')
+    const noise = Buffer.from(Array.from({ length: 64 * 64 * 3 }, (_, i) => (i * 37) % 251))
+    const png = await sharp(noise, { raw: { width: 64, height: 64, channels: 3 } })
+      .png({ compressionLevel: 0 })
+      .toBuffer()
+    const source = addImage(a, '')
+    writeFileSync(source, png)
+    addImage(b, 'already-webp', false, '.webp')
+    const dest = join(environment.directory, 'out')
+
+    expect(getTopSetFormat()).toBe('original')
+    await exportTopSet(preset, dest, { trash })
+    expect(names(dest)).toEqual(['a.png', 'b.webp'])
+
+    setTopSetFormat('webp')
+    expect(getTopSetFormat()).toBe('webp')
+    const small = await exportTopSet(preset, dest, { trash })
+    expect(small).toMatchObject({ written: 0, replaced: 1, same: 1, failed: 0 })
+    expect(names(dest)).toEqual(['a.webp', 'b.webp'])
+    expect(trashed).toEqual([join(dest, 'a.png')])
+    const out = readFileSync(join(dest, 'a.webp'))
+    expect((await sharp(out).metadata()).format).toBe('webp')
+    expect(out.length).toBeLessThan(png.length)
+    expect(readFileSync(source).equals(png)).toBe(true) // 원본은 그대로
+    expect(read(dest, 'b.webp')).toBe('already-webp')
+
+    // 다시 받으면 똑같아서 건너뛴다
+    const again = await exportTopSet(preset, dest, { trash })
+    expect(again).toMatchObject({ written: 0, replaced: 0, same: 2 })
+
+    // 원본 형식으로 되돌려도 WebP는 건드리지 않는다
+    const back = await exportTopSet(preset, dest, { trash, format: 'original' })
+    expect(back).toMatchObject({ written: 1, replaced: 0, same: 1 })
+    expect(names(dest)).toEqual(['a.png', 'a.webp', 'b.webp'])
+  })
+
+  it('takes the format from a request file', () => {
+    expect(
+      parseTopSetRequest('{"action":"exportTopSet","preset":"a","format":"webp"}')
+    ).toMatchObject({
+      format: 'webp'
+    })
+    expect(
+      parseTopSetRequest('{"action":"exportTopSet","preset":"a","format":"gif"}')
+    ).toMatchObject({
+      format: null
+    })
+  })
+
   it('copies the cover of each scene — latest favorite, else latest — named after the scene', async () => {
     const preset = createPreset('루나_교복_01')
     const a = createScene(preset, '01 인사')
@@ -179,13 +234,14 @@ describe('custom: cover set request files', () => {
     expect(parseTopSetRequest('{"action":"exportTopSet","preset":"a","to":"C:\\\\x"}')).toEqual({
       presets: ['a'],
       to: 'C:\\x',
-      subfolders: null
+      subfolders: null,
+      format: null
     })
     expect(
       parseTopSetRequest(
         JSON.stringify({ action: 'exportTopSet', presets: ['a', 'b', 'a'], subfolders: false })
       )
-    ).toEqual({ presets: ['a', 'b'], to: null, subfolders: false })
+    ).toEqual({ presets: ['a', 'b'], to: null, subfolders: false, format: null })
     expect(typeof parseTopSetRequest('{"preset":"a"}')).toBe('string') // action 없음
     expect(typeof parseTopSetRequest('{"action":"exportTopSet"}')).toBe('string')
     expect(typeof parseTopSetRequest('not json')).toBe('string')

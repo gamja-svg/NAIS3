@@ -5,6 +5,7 @@ import { useT } from '../lib/i18n'
 import { toast } from '../stores/toast-store'
 import {
   ContextMenu,
+  ContextMenuCheckboxItem,
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
@@ -20,6 +21,7 @@ export function TopSetButton({ presetId }: { presetId: number | null }): React.J
   const t = useT()
   const [busy, setBusy] = useState(false)
   const [baseDir, setBaseDir] = useState<string | null>(null)
+  const [small, setSmall] = useState(false)
 
   const run = async (pick: boolean): Promise<void> => {
     if (presetId == null || busy) return
@@ -54,9 +56,10 @@ export function TopSetButton({ presetId }: { presetId: number | null }): React.J
     <ContextMenu
       onOpenChange={(open) => {
         if (open)
-          void window.nais
-            .invoke('custom:topSetGetDir', undefined)
-            .then(({ dir }) => setBaseDir(dir))
+          void window.nais.invoke('custom:topSetGetDir', undefined).then(({ dir, format }) => {
+            setBaseDir(dir)
+            setSmall(format === 'webp')
+          })
       }}
     >
       <Tooltip>
@@ -96,6 +99,22 @@ export function TopSetButton({ presetId }: { presetId: number | null }): React.J
         <ContextMenuItem onSelect={() => void changeDefault()}>
           <FolderCog size={13} /> {t('ui.customTopSetChangeDefault')}
         </ContextMenuItem>
+        <ContextMenuSeparator />
+        {/* 줄여서 받기 — PNG를 WebP로 바꿔 받는다 */}
+        <ContextMenuCheckboxItem
+          checked={small}
+          title={t('ui.customTopSetSmallHint')}
+          onCheckedChange={(on) => {
+            setSmall(on)
+            void window.nais
+              .invoke('custom:topSetFormat', { format: on ? 'webp' : 'original' })
+              .then(() =>
+                toast(t(on ? 'ui.customTopSetSmallOn' : 'ui.customTopSetSmallOff'), 'success')
+              )
+          }}
+        >
+          {t('ui.customTopSetSmall')}
+        </ContextMenuCheckboxItem>
       </ContextMenuContent>
     </ContextMenu>
   )

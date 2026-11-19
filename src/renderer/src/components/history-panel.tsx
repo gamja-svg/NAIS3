@@ -28,6 +28,8 @@ export function HistoryPanel(): React.JSX.Element {
     await window.nais.invoke('images:delete', { id })
     if (viewingFilePath === filePath) view(null)
     void refreshHistory()
+    // [custom] 씬의 대표 그림을 지웠을 수 있다 — 씬 카드도 바로 맞춘다
+    void useScenesStore.getState().load()
   }
 
   const clearAll = async (): Promise<void> => {

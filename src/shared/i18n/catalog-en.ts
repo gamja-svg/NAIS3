@@ -247,7 +247,7 @@ export const EN = {
   'ui.customTopSetPresetMissing': 'Preset not found',
   'ui.customTopSetSmall': 'Smaller files (WebP)',
   'ui.customTopSetSmallHint':
-    'Saves PNG pictures as WebP, about a fifth of the size. The originals are untouched. A PNG of the same name left in the folder goes to the Recycle Bin.',
+    'Saves pictures as WebP at quality 85, around a fifth of the size. The originals are untouched. Saving a single cover image follows this too. A PNG of the same name left in the folder goes to the Recycle Bin.',
   'ui.customTopSetSmallOn': 'Cover sets are now saved smaller (WebP)',
   'ui.customTopSetSmallOff': 'Cover sets are now saved as the original files',
   'ui.customTopSetNoDefaultDir':

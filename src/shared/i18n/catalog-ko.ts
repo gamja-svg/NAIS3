@@ -243,7 +243,7 @@ export const KO = {
   'ui.customTopSetPresetMissing': '프리셋을 찾을 수 없습니다',
   'ui.customTopSetSmall': '줄여서 받기 (WebP)',
   'ui.customTopSetSmallHint':
-    'PNG 그림을 WebP로 바꿔 받습니다. 용량이 1/5쯤으로 줄고, 원본 파일은 그대로입니다. 폴더에 같은 이름의 PNG가 남아 있으면 휴지통으로 보냅니다.',
+    '그림을 WebP(품질 85)로 줄여서 받습니다. 용량이 1/5 안팎으로 줄고, 원본 파일은 그대로입니다. 대표 이미지 저장도 같이 따릅니다. 폴더에 같은 이름의 PNG가 남아 있으면 휴지통으로 보냅니다.',
   'ui.customTopSetSmallOn': '대표 세트를 줄여서(WebP) 받습니다',
   'ui.customTopSetSmallOff': '대표 세트를 원본 그대로 받습니다',
   'ui.customTopSetNoDefaultDir':

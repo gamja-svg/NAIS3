@@ -139,7 +139,8 @@ import {
   getTopSetFormat,
   runWatchRequest,
   setTopSetDir,
-  setTopSetFormat
+  setTopSetFormat,
+  shrinkImage
 } from './custom/top-set'
 import { openCensor, readCensorBase, saveCensor } from './custom/censor'
 import { pickShape, warmSam } from './custom/censor-sam'
@@ -786,7 +787,10 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
           .join('')
           .trim()
       : ''
-    const ext = memory ? '.png' : (/\.[^.\\/]+$/.exec(filePath)?.[0] ?? '.png')
+    const sourceExt = memory ? '.png' : (/\.[^.\\/]+$/.exec(filePath)?.[0] ?? '.png')
+    // [custom] 대표 이미지 저장(이름을 정해 주는 저장)은 `줄여서 받기`를 따른다 — WebP로 줄여서
+    const small = !!named && getTopSetFormat() === 'webp' && /^\.(png|webp)$/i.test(sourceExt)
+    const ext = small ? '.webp' : sourceExt
     const result = await showSaveDialog(win, {
       title: t('ui.saveAs'),
       defaultPath: named
@@ -794,10 +798,13 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
         : memory
           ? `NAIS3_${Date.now()}.png`
           : basename(filePath),
-      filters: [{ name: 'PNG', extensions: ['png'] }]
+      filters: small
+        ? [{ name: 'WebP', extensions: ['webp'] }]
+        : [{ name: 'PNG', extensions: ['png'] }]
     })
     if (result.canceled || !result.filePath) return { saved: false }
-    if (memBuf) writeFileSync(result.filePath, memBuf)
+    if (small) writeFileSync(result.filePath, await shrinkImage(memBuf ?? readFileSync(filePath)))
+    else if (memBuf) writeFileSync(result.filePath, memBuf)
     else copyFileSync(filePath, result.filePath)
     return { saved: true }
   })

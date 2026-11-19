@@ -570,6 +570,8 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
     // 씬 상세의 명시적 삭제 — 파일까지 삭제 (히스토리 삭제와 달리)
     await window.nais.invoke('images:delete', { id: imageId, deleteFile: true })
     void gen.refreshHistory()
+    // [custom] 지운 그림이 대표 그림이었을 수 있다 — 카드의 그림·장수를 바로 맞춘다 (F5 없이)
+    void get().load()
   },
   setFavoritesOnly: (v) => {
     if (v === get().favoritesOnly) return

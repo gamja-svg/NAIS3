@@ -26,8 +26,8 @@ import sharp from '../sharp'
 const DIR_KEY = 'custom_topset_dir'
 const FORMAT_KEY = 'custom_topset_format'
 const MAX_NAME = 120
-/** 줄여서 받기의 WebP 품질 — 눈으로 구분하기 어려운 선에서 용량을 1/5쯤으로 */
-const WEBP_QUALITY = 90
+/** 줄여서 받기의 WebP 품질 — 원래 크기로 보면 구분하기 어려운 선에서 용량을 1/5 안팎으로 */
+const WEBP_QUALITY = 85
 
 /** 받는 형식 — original = 원본 그대로, webp = 줄여서 */
 export type TopSetFormat = 'original' | 'webp'
@@ -70,6 +70,16 @@ export function defaultTopSetDest(presetId: number): string | null {
   return join(base, safeFileName(name, `preset-${presetId}`))
 }
 
+/**
+ * 줄인 그림 — WebP 품질 85. 같은 그림은 늘 같은 바이트가 나온다.
+ * 이미 작은 WebP라 줄여도 작아지지 않으면 원래 것을 그대로 돌려준다.
+ */
+export async function shrinkImage(image: Buffer): Promise<Buffer> {
+  const small = await sharp(image).webp({ quality: WEBP_QUALITY, effort: 4 }).toBuffer()
+  const isWebp = image.subarray(0, 4).toString('latin1') === 'RIFF'
+  return isWebp && small.length >= image.length ? image : small
+}
+
 interface TopSetFile {
   name: string
   /** 줄여서 받을 때, 전에 원본으로 받아 둔 같은 이름의 PNG — 있으면 치운다 */
@@ -96,7 +106,8 @@ function topSetFiles(
     const sourceExt = isMemoryPath(scene.thumbnailPath)
       ? '.png'
       : extname(scene.thumbnailPath).toLowerCase() || '.png'
-    const convert = format === 'webp' && sourceExt === '.png'
+    // PNG도, 크게 저장된(무손실) WebP도 줄인다
+    const convert = format === 'webp' && (sourceExt === '.png' || sourceExt === '.webp')
     const ext = convert ? '.webp' : sourceExt
     const base = safeFileName(scene.name, `scene-${scene.id}`)
     let name = `${base}${ext}`
@@ -108,7 +119,7 @@ function topSetFiles(
     used.add(name.toLowerCase())
     files.push({
       name,
-      sibling: convert ? `${stem}.png` : null,
+      sibling: convert && sourceExt === '.png' ? `${stem}.png` : null,
       source: scene.thumbnailPath,
       convert,
       pending: scene.pending === true
@@ -162,10 +173,7 @@ export async function exportTopSet(
       let memory = isMemoryPath(file.source) ? getMemoryImage(file.source) : null
       if (isMemoryPath(file.source) && !memory) throw new Error('expired')
       // 줄여서 받기 — 같은 그림은 늘 같은 바이트가 나와, 아래의 '똑같으면 건너뛰기'가 그대로 통한다
-      if (file.convert)
-        memory = await sharp(memory ?? file.source)
-          .webp({ quality: WEBP_QUALITY, effort: 4 })
-          .toBuffer()
+      if (file.convert) memory = await shrinkImage(memory ?? readFileSync(file.source))
       let exists = false
       try {
         const st = statSync(target)

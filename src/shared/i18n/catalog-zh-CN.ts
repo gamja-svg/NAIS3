@@ -241,7 +241,7 @@ export const ZH_CN = {
   'ui.customTopSetPresetMissing': '找不到预设',
   'ui.customTopSetSmall': '缩小保存（WebP）',
   'ui.customTopSetSmallHint':
-    '把 PNG 图片转成 WebP 保存，体积约为五分之一，原文件不变。文件夹中同名的 PNG 会移到回收站。',
+    '把图片转成 WebP（质量 85）保存，体积约为五分之一，原文件不变。保存单张代表图片也遵循此设置。文件夹中同名的 PNG 会移到回收站。',
   'ui.customTopSetSmallOn': '代表套图将缩小（WebP）保存',
   'ui.customTopSetSmallOff': '代表套图将按原文件保存',
   'ui.customTopSetNoDefaultDir':

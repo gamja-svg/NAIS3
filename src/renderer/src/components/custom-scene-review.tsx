@@ -24,6 +24,7 @@ import { useGenerationStore } from '../stores/generation-store'
 import { useLayoutStore } from '../stores/layout-store'
 import { useScenesStore } from '../stores/scenes-store'
 import { toast } from '../stores/toast-store'
+import { AnlasChips, OpusUsageChip } from './titlebar'
 import { CensorStage, RailButton } from './custom-censor-stage'
 import { ImageContextMenu } from './image-context-menu'
 
@@ -79,6 +80,7 @@ export function SceneReview({ scenes }: { scenes: Scene[] }): React.JSX.Element 
   const toggleClaude = useClaudePanelStore((s) => s.toggle)
   // 히스토리 패널도 열려 있으면 그 자리를 비워 둔다 (검수하면서 방금 뽑힌 그림을 볼 수 있게)
   const historyOpen = useLayoutStore((s) => s.rightOpen)
+  const anlasBalance = useGenerationStore((s) => s.anlasBalance)
   const toggleHistory = useLayoutStore((s) => s.toggleRight)
   // 검열(흰칠) — 켜 두면 씬·프리셋을 넘겨도 유지된다
   const censor = useCensorStore((s) => s.on)
@@ -366,6 +368,9 @@ export function SceneReview({ scenes }: { scenes: Scene[] }): React.JSX.Element 
             )}
           </div>
         </div>
+        {/* 타이틀 바가 가려지니 계정의 남은 한도(Opus 게이지)·Anlas를 여기에도 보여 준다 */}
+        <OpusUsageChip />
+        <AnlasChips balance={anlasBalance} cost={0} />
         <button
           className="flex h-10 items-center gap-1.5 rounded-full bg-accent px-3.5 text-[13px] font-medium text-on-accent hover:opacity-90"
           title={t('ui.customReviewRegenHint')}

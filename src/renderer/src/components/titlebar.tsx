@@ -80,7 +80,7 @@ function UpdateButton(): React.JSX.Element | null {
 }
 
 /** Anlas 잔액 + 예상 소모(-N). 토큰 미설정(잔액 없음)이면 표시하지 않음 */
-function AnlasChips({
+export function AnlasChips({
   balance,
   cost
 }: {
@@ -110,7 +110,7 @@ function AnlasChips({
   )
 }
 
-function OpusUsageChip(): React.JSX.Element | null {
+export function OpusUsageChip(): React.JSX.Element | null {
   const t = useT()
   const usage = useGenerationStore((s) => s.opusUsage)
   const subscriptionTier = useGenerationStore((s) => s.subscriptionTier)

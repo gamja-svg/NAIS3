@@ -5,6 +5,8 @@ import {
   ChevronRight,
   ChevronUp,
   Download,
+  MessageCircle,
+  PanelRight,
   Plus,
   RefreshCw,
   X
@@ -19,6 +21,7 @@ import { bindCensorEvents, useCensorStore, withCensorRev } from '../stores/custo
 import { useClaudePanelStore } from '../stores/custom-claude-panel-store'
 import { useSceneFrame, useSceneGenerating } from '../stores/custom-parallel-store'
 import { useGenerationStore } from '../stores/generation-store'
+import { useLayoutStore } from '../stores/layout-store'
 import { useScenesStore } from '../stores/scenes-store'
 import { toast } from '../stores/toast-store'
 import { CensorStage, RailButton } from './custom-censor-stage'
@@ -48,6 +51,9 @@ function insidePicture(img: HTMLImageElement, x: number, y: number): boolean {
   return x >= left && x <= left + width && y >= top && y <= top + height
 }
 
+/** 히스토리 패널 폭 (App의 RightPanel과 같은 값) */
+const HISTORY_WIDTH = 240
+
 /**
  * [custom] 검수 모드 — 프리셋의 씬 대표 이미지(카드에 보이는 그림)를 크게 한 장씩 넘겨 본다.
  * ←/→·휠·스와이프·화면 버튼으로 넘기고, G·그림 더블탭으로 그 씬을 바로 다시 뽑기(1장),
@@ -68,7 +74,12 @@ export function SceneReview({ scenes }: { scenes: Scene[] }): React.JSX.Element 
     (s) => s.presets.find((p) => p.id === s.activePresetId)?.name ?? ''
   )
   // Claude 창이 열려 있으면 그 자리는 비워 둔다 (검수하면서 대화할 수 있게)
+  const claudeOpen = useClaudePanelStore((s) => s.open)
   const claudeWidth = useClaudePanelStore((s) => (s.open ? s.width : 0))
+  const toggleClaude = useClaudePanelStore((s) => s.toggle)
+  // 히스토리 패널도 열려 있으면 그 자리를 비워 둔다 (검수하면서 방금 뽑힌 그림을 볼 수 있게)
+  const historyOpen = useLayoutStore((s) => s.rightOpen)
+  const toggleHistory = useLayoutStore((s) => s.toggleRight)
   // 검열(흰칠) — 켜 두면 씬·프리셋을 넘겨도 유지된다
   const censor = useCensorStore((s) => s.on)
   const toggleCensor = useCensorStore((s) => s.toggle)
@@ -239,7 +250,7 @@ export function SceneReview({ scenes }: { scenes: Scene[] }): React.JSX.Element 
     <div
       ref={overlayRef}
       className="fixed inset-0 z-50 flex select-none flex-col bg-black/90 text-white backdrop-blur-sm"
-      style={{ right: claudeWidth }}
+      style={{ right: claudeWidth + (historyOpen ? HISTORY_WIDTH : 0) }}
       onPointerDown={(e) => {
         closeOnClick.current = false
         // 검열 중에는 넘기기·다시 뽑기·그림 밖 닫기를 받지 않는다 (칠하다가 잘못 눌리지 않게)
@@ -379,6 +390,31 @@ export function SceneReview({ scenes }: { scenes: Scene[] }): React.JSX.Element 
           onClick={save}
         >
           <Download size={17} />
+        </button>
+        {/* 검수 화면이 타이틀 바를 덮으니, 옆 창 켜고 끄기를 여기에도 둔다 */}
+        <button
+          className={cn(
+            'grid size-10 place-items-center rounded-full hover:bg-white/20',
+            historyOpen ? 'bg-white text-black hover:bg-white/85' : 'bg-white/10'
+          )}
+          title={t('ui.history')}
+          aria-label={t('ui.history')}
+          aria-pressed={historyOpen}
+          onClick={toggleHistory}
+        >
+          <PanelRight size={17} />
+        </button>
+        <button
+          className={cn(
+            'grid size-10 place-items-center rounded-full hover:bg-white/20',
+            claudeOpen ? 'bg-white text-black hover:bg-white/85' : 'bg-white/10'
+          )}
+          title={t('ui.customClaudePanel')}
+          aria-label={t('ui.customClaudePanel')}
+          aria-pressed={claudeOpen}
+          onClick={toggleClaude}
+        >
+          <MessageCircle size={17} />
         </button>
         <button
           className="grid size-10 place-items-center rounded-full bg-white/10 hover:bg-white/20"

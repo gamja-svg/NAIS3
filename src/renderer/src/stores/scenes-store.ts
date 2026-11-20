@@ -221,6 +221,8 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
   },
   focusSceneId: null,
   goToScene: async (presetId, sceneId) => {
+    // [custom] 검수 중에 히스토리에서 고르면 검수 화면이 그 씬으로 간다
+    const reviewing = get().reviewSceneId != null
     useLayoutStore.getState().setCenterMode('scene')
     if (get().activePresetId !== presetId) await get().setActivePreset(presetId)
     else if (get().selectedId != null) get().select(null) // 씬 상세를 닫고 목록으로
@@ -233,6 +235,7 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
     // 미생성만 보는 중이라 안 보이는 씬이면 필터를 끈다
     if (get().pendingOnly && !target.pending) set({ pendingOnly: false })
     set({ focusSceneId: sceneId })
+    if (reviewing && target.thumbnailPath) set({ reviewSceneId: sceneId })
   },
   pendingOnly: false,
   setPendingOnly: (on) => set({ pendingOnly: on }),

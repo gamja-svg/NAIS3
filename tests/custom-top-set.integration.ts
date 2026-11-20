@@ -356,4 +356,66 @@ describe('custom: cover set request files', () => {
     expect(handled).toEqual(['a.request.json']) // 바뀌기 전에는 다시 하지 않는다
     expect(existsSync(join(watchDir(), 'a.request.json'))).toBe(true) // 요청 파일은 그대로 둔다
   })
+
+  it('edits and reads fragments from a request file', async () => {
+    const { listFragments } = await import('../src/main/fragments/repo')
+    request('f.request.json', {
+      action: 'fragments',
+      set: [
+        { name: '초아 얼굴', content: 'blue eyes', folder: '윤초아' },
+        { name: '배경', content: ['room', 'park'] }
+      ]
+    })
+    const made = await runWatchRequest(watchDir(), 'f.request.json', { trash })
+    expect(made.ok).toBe(true)
+    expect(made.fragments).toEqual({ created: 2, updated: 0, unchanged: 0, missing: [] })
+    expect(made.exports).toEqual([])
+    const state = listFragments()
+    expect(state.folders.map((f) => f.name)).toContain('윤초아')
+    const mine = state.items.filter((f) => ['초아 얼굴', '배경'].includes(f.name))
+    expect(mine.map((f) => [f.name, f.content, f.folderId != null])).toEqual([
+      ['초아 얼굴', 'blue eyes', true],
+      ['배경', 'room\npark', false]
+    ])
+    expect(result('f.result.json').fragmentItems).toEqual([
+      { name: '초아 얼굴', content: 'blue eyes', folder: '윤초아' },
+      { name: '배경', content: 'room\npark' }
+    ])
+
+    // 같은 이름(대소문자 무시)은 내용만 바꾸고, 같으면 그대로. 폴더는 옮기지 않는다
+    request('f.request.json', {
+      action: 'fragments',
+      set: [
+        { name: '초아 얼굴', content: 'green eyes', folder: '다른 폴더' },
+        { name: '배경', content: 'room\npark' }
+      ],
+      read: ['초아 얼굴', '없는 조각']
+    })
+    const changed = await runWatchRequest(watchDir(), 'f.request.json', { trash })
+    expect(changed.fragments).toEqual({
+      created: 0,
+      updated: 1,
+      unchanged: 1,
+      missing: ['없는 조각']
+    })
+    expect(listFragments().folders.map((f) => f.name)).not.toContain('다른 폴더')
+    expect(result('f.result.json').fragmentItems).toEqual([
+      { name: '초아 얼굴', content: 'green eyes', folder: '윤초아' }
+    ])
+
+    // 읽기만: 전부
+    request('f.request.json', { action: 'fragments', read: true })
+    const all = await runWatchRequest(watchDir(), 'f.request.json', { trash })
+    expect(all.fragments).toEqual({ created: 0, updated: 0, unchanged: 0, missing: [] })
+    expect(result('f.result.json').fragmentItems).toHaveLength(state.items.length)
+
+    // 잘못 적은 요청은 아무것도 바꾸지 않는다
+    request('f.request.json', { action: 'fragments', set: [{ name: '', content: 'x' }] })
+    const bad = await runWatchRequest(watchDir(), 'f.request.json', { trash })
+    expect(bad.ok).toBe(false)
+    expect(bad.fragments).toBeUndefined()
+    request('f.request.json', { action: 'fragments' })
+    expect((await runWatchRequest(watchDir(), 'f.request.json', { trash })).ok).toBe(false)
+    expect(listFragments().items).toHaveLength(state.items.length)
+  })
 })

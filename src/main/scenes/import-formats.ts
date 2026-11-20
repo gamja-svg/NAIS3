@@ -11,6 +11,8 @@ export interface ImportedScene {
   height?: number
   /** [custom] 씬 메모(별명) — 있으면 그 씬의 메모를 이 글로 (빈 글자면 지움) */
   memo?: string
+  /** [custom] 씬별 투명 배경 — true면 켜고 false면 끈다 (칸이 없으면 그대로) */
+  transparent?: boolean
 }
 
 type Obj = Record<string, unknown>
@@ -54,7 +56,8 @@ export function parseSceneImport(raw: string): ImportedScene[] | null {
       negativePrompt: str(s.negativePrompt),
       width: num(s.width),
       height: num(s.height),
-      ...(str(s.memo) !== undefined ? { memo: str(s.memo) } : {}) // [custom]
+      ...(str(s.memo) !== undefined ? { memo: str(s.memo) } : {}), // [custom]
+      ...(typeof s.transparent === 'boolean' ? { transparent: s.transparent } : {}) // [custom]
     }))
   }
 

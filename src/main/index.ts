@@ -39,7 +39,7 @@ import { prepareCharRefs, prepareVibes } from './refs/prepare'
 import { GenerationQueue } from './queue/generation-queue'
 import { laneSelection, parallelLanes, parallelTarget, refreshLaneBalance } from './custom/parallel'
 import { guardClaudeChatGuest } from './custom/claude-chat'
-import { getPresetName, getScene } from './scenes/repo'
+import { getPresetName, getScene, isSceneTransparent } from './scenes/repo'
 
 // 앱 이름 (dev 메뉴바·dock에서 'Electron' 대신 표시). 패키징 앱은 productName 사용
 app.setName('NAIS3')
@@ -226,6 +226,9 @@ const startup = app.whenReady().then(async () => {
     // 주석 제거가 반드시 먼저 — 주석 줄이 조각을 소모하거나(순차 카운터),
     // 와일드카드 처리의 재조립이 개행을 지워 주석 범위가 전체로 번지는 것 방지 (NAIS2와 동일 순서)
     let request = preprocessRequest(rawRequest, fragmentSource())
+    // [custom] 씬별 투명 배경 — 켠 씬은 사이드바 설정이 꺼져 있어도 투명 배경으로 (V5가 아니면 payload가 무시)
+    if (rawRequest.sceneId !== undefined && isSceneTransparent(rawRequest.sceneId))
+      request = { ...request, transparentBackground: true }
 
     // 바이브/캐릭레퍼 준비 — 요청이 id를 지정하면(출연 예약) 그것으로, 아니면 DB enabled 항목
     // (바이브는 필요 시 인코딩 — 2 Anlas, 캐시됨)

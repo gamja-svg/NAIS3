@@ -16,6 +16,7 @@ import type {
   WatchFolderFailure
 } from '@shared/types'
 import { enabledCharacters, useCharactersStore } from './characters-store'
+import { useFragmentsStore } from './fragments-store'
 import { randomSeed, useGenerationStore } from './generation-store'
 import { useLayoutStore } from './layout-store'
 
@@ -150,6 +151,8 @@ interface ScenesState {
   ackPendingScenes: (ids: number[]) => Promise<void>
   /** [custom] 씬 메모(별명) — 화면은 바로 바꾸고 저장은 뒤따른다. 빈 글자면 지운다 */
   setMemo: (id: number, memo: string) => Promise<void>
+  /** [custom] 씬별 투명 배경 켜기·끄기 */
+  setTransparent: (id: number, on: boolean) => Promise<void>
 }
 
 /**
@@ -682,6 +685,13 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
     await window.nais.invoke('custom:sceneMemo', { id, memo })
   },
 
+  setTransparent: async (id, on) => {
+    set((st) => ({
+      scenes: st.scenes.map((s) => (s.id === id ? { ...s, transparent: on || undefined } : s))
+    }))
+    await window.nais.invoke('custom:sceneTransparent', { id, on })
+  },
+
   // ── 출연(Cast) ──────────────────────────────────────────
   casts: [],
   activeCastId: localStorage.getItem('scene_active_cast') ?? '',
@@ -886,6 +896,17 @@ export function bindSceneEvents(): () => void {
         ),
         'info'
       )
+    }
+    // 요청 파일로 조각을 고침 — 조각 화면을 새로 읽는다
+    if (event.fragments) {
+      const f = event.fragments
+      if (f.created + f.updated > 0) void useFragmentsStore.getState().load()
+      toast(
+        t('ui.customRequestFragmentsDoneValue', event.file, f.updated, f.created, f.unchanged),
+        'success'
+      )
+      if (f.missing.length > 0)
+        toast(t('ui.customRequestFragmentsMissingValue', event.file, f.missing.join(', ')), 'info')
     }
     if (event.errors.length > 0)
       toast(t('ui.customRequestFailedValue', event.file, event.errors.join(' / ')), 'error')

@@ -436,6 +436,8 @@ export interface Scene {
   pending?: boolean
   /** [custom] 씬 메모(별명) — 어떤 장면인지 한눈에 보이게. 파일 이름에는 쓰지 않는다 */
   memo?: string
+  /** [custom] 씬별 투명 배경 — 켠 씬은 사이드바 설정과 상관없이 투명 배경으로 뽑는다 (V5 모델) */
+  transparent?: boolean
 }
 
 /** 씬 상세의 생성 이미지 (페이지네이션 단위) */
@@ -557,6 +559,24 @@ export interface WatchRequestEvent {
   errors: string[]
   /** `"action": "autoGenerate"` 요청으로 바뀐 불러온 씬 자동 생성 값 */
   autoGenerate?: boolean
+  /** `"action": "fragments"` 요청의 결과 — 조각 내용 자체는 결과 파일의 fragmentItems에만 담는다 */
+  fragments?: FragmentRequestOutcome
+}
+
+/** [custom] 조각 고치기 요청의 결과 수 */
+export interface FragmentRequestOutcome {
+  created: number
+  updated: number
+  unchanged: number
+  /** 읽어 달라고 했지만 없는 조각 이름 */
+  missing: string[]
+}
+
+/** [custom] 조각 고치기 요청의 결과 파일에 담는 조각 하나 */
+export interface FragmentRequestItem {
+  name: string
+  content: string
+  folder?: string
 }
 
 export interface IpcInvokeMap {
@@ -936,6 +956,8 @@ export interface IpcInvokeMap {
   'custom:topSetFormat': { req: { format: 'original' | 'webp' }; res: void }
   /** [custom] 씬 메모(별명) 저장 — 빈 글자면 지운다 */
   'custom:sceneMemo': { req: { id: number; memo: string }; res: void }
+  /** [custom] 씬별 투명 배경 켜기·끄기 */
+  'custom:sceneTransparent': { req: { id: number; on: boolean }; res: void }
   /** [custom] 미생성인 씬이 바뀌기 전 내용 — 바뀐 태그를 노랗게 칠하는 기준 (없으면 null) */
   'custom:sceneBase': {
     req: { id: number }

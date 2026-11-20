@@ -254,8 +254,15 @@ export const EN = {
     'No default cover set folder. Choose one with Save cover set in the scene list, or put a "to" folder in the request.',
   'ui.customRequestBadJson': 'The request file is not valid JSON',
   'ui.customRequestUnknownAction':
-    'Unknown request ("action" must be "exportTopSet" or "autoGenerate")',
+    'Unknown request ("action" must be "exportTopSet", "autoGenerate" or "fragments")',
   'ui.customRequestNoPreset': 'The request names no preset',
+  'ui.customRequestFragmentsBadSet':
+    '"set" needs items like { "name": "fragment name", "content": "text" }',
+  'ui.customRequestFragmentsEmpty':
+    'The fragment request has neither "set" (fragments to change) nor "read" (fragments to read)',
+  'ui.customRequestFragmentsDoneValue':
+    'Request file {0}: fragments — {1} updated · {2} created · {3} unchanged',
+  'ui.customRequestFragmentsMissingValue': 'Request file {0}: no such fragment — {1}',
   'ui.customRequestPresetNotFoundValue': 'Preset "{0}" not found',
   'ui.customRequestDoneValue': 'Request {0}: cover set saved — {1}',
   'ui.customRequestFailedValue': 'Request {0}: failed — {1}',
@@ -272,6 +279,10 @@ export const EN = {
   'ui.customRemovedTags': 'Removed',
   'ui.customSceneMemo': 'Scene memo',
   'ui.customSceneMemoEdit': 'Memo…',
+  'ui.customSceneTransparentOn': 'Turn on transparent background',
+  'ui.customSceneTransparentOff': 'Turn off transparent background',
+  'ui.customSceneTransparentHint':
+    'This scene is always generated with a transparent background, whatever the sidebar setting (V5 models only).',
   'ui.customSceneMemoClear': 'Clear memo',
   'ui.customSceneMemoTitleValue': 'Memo for {0}',
   'ui.customSceneMemoPlaceholder': 'Memo — what this scene shows (shown on the card and in review)',

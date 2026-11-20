@@ -31,6 +31,7 @@ interface Row {
   reserve_json?: string | null
   pending?: number
   memo?: string | null
+  transparent?: number | null
 }
 
 /** 출연별 예약 내역 파싱 (키 '' = 사이드바) */
@@ -88,7 +89,8 @@ function toScene(
     imageCount: r.image_count,
     hasFavorite: r.has_favorite === 1,
     pending: r.pending === 1,
-    ...(r.memo ? { memo: r.memo } : {}) // [custom] 씬 메모
+    ...(r.memo ? { memo: r.memo } : {}), // [custom] 씬 메모
+    ...(r.transparent ? { transparent: true } : {}) // [custom] 씬별 투명 배경
   }
 }
 
@@ -116,6 +118,8 @@ function marksDb(): ReturnType<typeof getDb> {
          memo TEXT NOT NULL
        )`
     )
+    // 씬별 투명 배경 — 줄이 있으면 그 씬은 늘 투명 배경으로 뽑는다
+    db.exec('CREATE TABLE IF NOT EXISTS custom_scene_transparent (scene_id INTEGER PRIMARY KEY)')
     // 기준 칸이 없던 때 만든 표에 더한다
     const cols = db.prepare('PRAGMA table_info(custom_scene_marks)').all() as { name: string }[]
     for (const col of ['base_prompt', 'base_negative'])
@@ -201,6 +205,25 @@ export function setSceneMemo(id: number, memo: string): boolean {
   return true
 }
 
+/**
+ * [custom] 씬별 투명 배경 켜기·끄기 — 켠 씬은 사이드바 설정과 상관없이 투명 배경으로 뽑는다 (V5 모델).
+ * 값이 실제로 바뀌었으면 true.
+ */
+export function setSceneTransparent(id: number, on: boolean): boolean {
+  const db = marksDb()
+  if (isSceneTransparent(id) === on) return false
+  if (on) db.prepare('INSERT OR IGNORE INTO custom_scene_transparent (scene_id) VALUES (?)').run(id)
+  else db.prepare('DELETE FROM custom_scene_transparent WHERE scene_id = ?').run(id)
+  return true
+}
+
+export function isSceneTransparent(id: number): boolean {
+  return (
+    marksDb().prepare('SELECT 1 FROM custom_scene_transparent WHERE scene_id = ?').get(id) !==
+    undefined
+  )
+}
+
 // [custom] 지운 씬의 메모·미생성 표시를 치운다 — 씬 번호(id)는 새 씬에 다시 쓰일 수 있다.
 // 씬을 지우는 모든 길(하나·여럿·프리셋째·백업 복원)이 이 알림을 낸다.
 sceneEvents.on('deleted', (ids: number[]) => {
@@ -208,6 +231,7 @@ sceneEvents.on('deleted', (ids: number[]) => {
   const db = marksDb()
   const list = placeholders(ids.length)
   db.prepare(`DELETE FROM custom_scene_memos WHERE scene_id IN (${list})`).run(...ids)
+  db.prepare(`DELETE FROM custom_scene_transparent WHERE scene_id IN (${list})`).run(...ids)
   db.prepare(`DELETE FROM custom_scene_marks WHERE scene_id IN (${list})`).run(...ids)
 })
 
@@ -305,6 +329,7 @@ export function listScenes(presetId: number): Scene[] {
               (SELECT COUNT(*) FROM images WHERE scene_id = s.id) AS image_count,
               ${pendingSql('s')} AS pending,
               (SELECT memo FROM custom_scene_memos WHERE scene_id = s.id) AS memo,
+              (SELECT 1 FROM custom_scene_transparent WHERE scene_id = s.id) AS transparent,
               cover.id AS thumb_id,
               cover.created_at AS thumb_created_at,
               length(cover.thumbnail) AS thumb_size,
@@ -349,7 +374,8 @@ export function getScene(id: number): Scene | null {
       `SELECT id, preset_id, name, prompt, negative_prompt, width, height, reserve_count, reserve_json,
               (SELECT COUNT(*) FROM images WHERE scene_id = ?) AS image_count,
               ${pendingSql('gen_scenes')} AS pending,
-              (SELECT memo FROM custom_scene_memos WHERE scene_id = gen_scenes.id) AS memo
+              (SELECT memo FROM custom_scene_memos WHERE scene_id = gen_scenes.id) AS memo,
+              (SELECT 1 FROM custom_scene_transparent WHERE scene_id = gen_scenes.id) AS transparent
        FROM gen_scenes WHERE id = ?`
     )
     .get(id, id) as (Row & { image_count: number }) | undefined
@@ -749,7 +775,8 @@ export async function exportScenesJson(presetId: number): Promise<boolean> {
   const scenes = marksDb() // [custom] 메모 표가 있게
     .prepare(
       `SELECT name, prompt, negative_prompt, width, height,
-              (SELECT memo FROM custom_scene_memos WHERE scene_id = gen_scenes.id) AS memo
+              (SELECT memo FROM custom_scene_memos WHERE scene_id = gen_scenes.id) AS memo,
+              (SELECT 1 FROM custom_scene_transparent WHERE scene_id = gen_scenes.id) AS transparent
        FROM gen_scenes WHERE preset_id = ? ORDER BY sort_order, id`
     )
     .all(presetId) as Row[]
@@ -766,7 +793,8 @@ export async function exportScenesJson(presetId: number): Promise<boolean> {
     negativePrompt: s.negative_prompt,
     width: s.width,
     height: s.height,
-    ...(s.memo ? { memo: s.memo } : {}) // [custom] 씬 메모
+    ...(s.memo ? { memo: s.memo } : {}), // [custom] 씬 메모
+    ...(s.transparent ? { transparent: true } : {}) // [custom] 씬별 투명 배경
   }))
   // [custom] 프리셋 이름을 같이 적는다 — 감시 폴더가 이 이름으로 넣을 프리셋을 정한다
   const preset = getPresetName(presetId)
@@ -826,6 +854,11 @@ export function applyImportedScenes(presetId: number, scenes: ImportedScene[]): 
     memos: 0,
     skipped: 0
   }
+  // [custom] 씬별 투명 배경 — 칸이 있을 때만 맞춘다. 바뀌면 다시 뽑을 씬으로 친다 (그림이 달라진다)
+  const applyTransparent = (sceneId: number, value: boolean | undefined): void => {
+    if (value === undefined || !setSceneTransparent(sceneId, value)) return
+    if (!outcome.sceneIds.includes(sceneId)) outcome.sceneIds.push(sceneId)
+  }
   const db = getDb()
   const max = db
     .prepare('SELECT COALESCE(MAX(sort_order), 0) AS m FROM gen_scenes WHERE preset_id = ?')
@@ -856,6 +889,7 @@ export function applyImportedScenes(presetId: number, scenes: ImportedScene[]): 
         }
         outcome.unchanged++
         if (s.memo !== undefined && setSceneMemo(target.id, s.memo)) outcome.memos++
+        applyTransparent(target.id, s.transparent)
         continue
       }
       const name = s.name ?? t('ui.scene')
@@ -888,6 +922,7 @@ export function applyImportedScenes(presetId: number, scenes: ImportedScene[]): 
         } else outcome.unchanged++
         // [custom] 메모가 적혀 있으면 바꾼다 (빈 글자면 지움, 칸이 없으면 그대로) — 다시 뽑을 일은 아니다
         if (s.memo !== undefined && setSceneMemo(existing.id, s.memo)) outcome.memos++
+        applyTransparent(existing.id, s.transparent)
         continue
       }
       outcome.added++
@@ -902,6 +937,7 @@ export function applyImportedScenes(presetId: number, scenes: ImportedScene[]): 
       )
       outcome.sceneIds.push(Number(inserted.lastInsertRowid))
       if (s.memo && setSceneMemo(Number(inserted.lastInsertRowid), s.memo)) outcome.memos++ // [custom]
+      if (s.transparent) setSceneTransparent(Number(inserted.lastInsertRowid), true) // [custom]
     }
   })()
   return outcome

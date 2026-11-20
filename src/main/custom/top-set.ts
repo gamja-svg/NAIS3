@@ -1,11 +1,12 @@
 import { copyFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'fs'
 import { dirname, extname, isAbsolute, join, resolve } from 'path'
 import { WATCH_AUTOGEN_KEY } from '../../shared/custom-watch'
-import type { TopSetResult, WatchRequestEvent } from '../../shared/types'
+import type { FragmentRequestItem, TopSetResult, WatchRequestEvent } from '../../shared/types'
 import { getSetting, setSetting } from '../db/settings'
 import { t } from '../i18n'
 import { getMemoryImage, isMemoryPath } from '../images/storage'
 import { getPresetName, listPresets, listScenes } from '../scenes/repo'
+import { parseFragmentRequest, runFragmentRequest } from './fragment-request'
 import sharp from '../sharp'
 
 /**
@@ -307,7 +308,22 @@ export async function runWatchRequest(
     setSetting(WATCH_AUTOGEN_KEY, autoGenerate ? '1' : '0')
     event.autoGenerate = autoGenerate
   }
-  const request = raw && autoGenerate === null ? parseTopSetRequest(raw) : null
+  // 조각 고치기·읽기 — 조각 내용은 결과 파일에만 담는다 (화면 알림에는 수만)
+  const body = raw && autoGenerate === null ? requestBody(raw) : null
+  const fragments = body && typeof body !== 'string' ? parseFragmentRequest(body) : null
+  let fragmentItems: FragmentRequestItem[] | undefined
+  if (typeof fragments === 'string') event.errors.push(fragments)
+  else if (fragments) {
+    try {
+      const done = runFragmentRequest(fragments)
+      event.fragments = done.outcome
+      fragmentItems = done.items
+    } catch (e) {
+      event.errors.push(e instanceof Error ? e.message : String(e))
+    }
+  }
+  const request =
+    raw && autoGenerate === null && fragments === null ? parseTopSetRequest(raw) : null
   if (typeof request === 'string') event.errors.push(request)
   else if (request) {
     const presets = listPresets()
@@ -351,7 +367,15 @@ export async function runWatchRequest(
     const out = path.slice(0, path.length - REQUEST_SUFFIX.length) + RESULT_SUFFIX
     writeFileSync(
       out,
-      JSON.stringify({ ...event, finishedAt: new Date().toISOString() }, null, 2) + '\n',
+      JSON.stringify(
+        {
+          ...event,
+          ...(fragmentItems ? { fragmentItems } : {}),
+          finishedAt: new Date().toISOString()
+        },
+        null,
+        2
+      ) + '\n',
       'utf-8'
     )
   } catch {

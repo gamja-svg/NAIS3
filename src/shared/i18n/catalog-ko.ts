@@ -250,8 +250,14 @@ export const KO = {
     '대표 세트 기본 폴더가 정해져 있지 않습니다. 씬 목록의 대표 세트 받기로 먼저 고르거나 요청에 "to" 폴더를 적어 주세요.',
   'ui.customRequestBadJson': '요청 파일을 읽을 수 없습니다 (JSON 형식이 아님)',
   'ui.customRequestUnknownAction':
-    '알 수 없는 요청입니다 ("action"은 "exportTopSet" 또는 "autoGenerate")',
+    '알 수 없는 요청입니다 ("action"은 "exportTopSet", "autoGenerate", "fragments" 중 하나)',
   'ui.customRequestNoPreset': '요청에 프리셋 이름이 없습니다',
+  'ui.customRequestFragmentsBadSet':
+    '"set"에는 { "name": "조각 이름", "content": "내용" }을 적어 주세요',
+  'ui.customRequestFragmentsEmpty': '조각 요청에 "set"(고칠 조각)이나 "read"(읽을 조각)가 없습니다',
+  'ui.customRequestFragmentsDoneValue':
+    '요청 파일 {0}: 조각 {1}개 고침 · {2}개 새로 만듦 · {3}개 그대로',
+  'ui.customRequestFragmentsMissingValue': '요청 파일 {0}: 없는 조각 — {1}',
   'ui.customRequestPresetNotFoundValue': '프리셋 "{0}"을(를) 찾을 수 없습니다',
   'ui.customRequestDoneValue': '요청 파일 {0}: 대표 세트 받음 — {1}',
   'ui.customRequestFailedValue': '요청 파일 {0}: 처리하지 못함 — {1}',
@@ -268,6 +274,10 @@ export const KO = {
   'ui.customRemovedTags': '빠진 태그',
   'ui.customSceneMemo': '씬 메모',
   'ui.customSceneMemoEdit': '메모…',
+  'ui.customSceneTransparentOn': '투명 배경 켜기',
+  'ui.customSceneTransparentOff': '투명 배경 끄기',
+  'ui.customSceneTransparentHint':
+    '이 씬은 사이드바 설정과 상관없이 투명 배경으로 뽑습니다 (V5 모델에서만).',
   'ui.customSceneMemoClear': '메모 지우기',
   'ui.customSceneMemoTitleValue': '{0} 메모',
   'ui.customSceneMemoPlaceholder': '메모 — 어떤 장면인지 (카드·검수 화면에 보여요)',

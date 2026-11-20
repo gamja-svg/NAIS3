@@ -7,6 +7,7 @@ import {
   ChevronRight,
   ChevronUp,
   Folder,
+  Grid2x2,
   FolderMinus,
   FolderPlus,
   Copy,
@@ -1142,6 +1143,7 @@ const SceneCard = memo(function SceneCard({
   }
   // [custom] 씬 메모(별명)
   const setMemo = useScenesStore((s) => s.setMemo)
+  const setTransparent = useScenesStore((s) => s.setTransparent)
   const editMemo = async (): Promise<void> => {
     const memo = await askText(
       t('ui.customSceneMemoTitleValue', scene.name),
@@ -1300,6 +1302,15 @@ const SceneCard = memo(function SceneCard({
                   onClick={() => void editMemo()}
                 />
                 <MenuItem
+                  icon={<Grid2x2 size={13} />}
+                  label={t(
+                    scene.transparent
+                      ? 'ui.customSceneTransparentOff'
+                      : 'ui.customSceneTransparentOn'
+                  )}
+                  onClick={() => void setTransparent(scene.id, !scene.transparent)}
+                />
+                <MenuItem
                   icon={<Copy size={13} />}
                   label={t('ui.duplicate')}
                   onClick={() => void duplicate(scene.id)}
@@ -1335,6 +1346,15 @@ const SceneCard = memo(function SceneCard({
                 ) : (
                   <div className="truncate text-[13px] font-semibold text-white drop-shadow">
                     {scene.name}
+                  </div>
+                )}
+                {/* [custom] 씬별 투명 배경 표시 */}
+                {scene.transparent && (
+                  <div
+                    className="mt-0.5 flex w-fit items-center gap-1 rounded bg-white/90 px-1 text-[10.5px] font-medium leading-4 text-black"
+                    title={t('ui.customSceneTransparentHint')}
+                  >
+                    <Grid2x2 size={10} /> {t('ui.transparentBackground')}
                   </div>
                 )}
                 {/* [custom] 씬 메모 — 어떤 장면인지 한눈에 */}
@@ -1395,6 +1415,10 @@ const SceneCard = memo(function SceneCard({
         </ContextMenuItem>
         <ContextMenuItem onSelect={() => void editMemo()}>
           <StickyNote size={13} /> {t('ui.customSceneMemoEdit')}
+        </ContextMenuItem>
+        <ContextMenuItem onSelect={() => void setTransparent(scene.id, !scene.transparent)}>
+          <Grid2x2 size={13} />{' '}
+          {t(scene.transparent ? 'ui.customSceneTransparentOff' : 'ui.customSceneTransparentOn')}
         </ContextMenuItem>
         {scene.memo && (
           <ContextMenuItem onSelect={() => void setMemo(scene.id, '')}>

@@ -247,8 +247,14 @@ export const ZH_CN = {
   'ui.customTopSetNoDefaultDir':
     '尚未设置封面集默认文件夹。请先在场景列表中用“保存封面集”选择，或在请求中填写 "to" 文件夹。',
   'ui.customRequestBadJson': '请求文件不是有效的 JSON',
-  'ui.customRequestUnknownAction': '未知请求（"action" 只能是 "exportTopSet" 或 "autoGenerate"）',
+  'ui.customRequestUnknownAction':
+    '未知请求（"action" 只能是 "exportTopSet"、"autoGenerate" 或 "fragments"）',
   'ui.customRequestNoPreset': '请求中没有预设名称',
+  'ui.customRequestFragmentsBadSet': '"set" 中请填写 { "name": "片段名称", "content": "内容" }',
+  'ui.customRequestFragmentsEmpty': '片段请求中没有 "set"（要修改的片段）或 "read"（要读取的片段）',
+  'ui.customRequestFragmentsDoneValue':
+    '请求文件 {0}：片段 — 修改 {1} 个 · 新建 {2} 个 · 未变 {3} 个',
+  'ui.customRequestFragmentsMissingValue': '请求文件 {0}：没有该片段 — {1}',
   'ui.customRequestPresetNotFoundValue': '找不到预设“{0}”',
   'ui.customRequestDoneValue': '请求文件 {0}：封面集已保存 — {1}',
   'ui.customRequestFailedValue': '请求文件 {0}：处理失败 — {1}',
@@ -264,6 +270,9 @@ export const ZH_CN = {
   'ui.customRemovedTags': '已删除',
   'ui.customSceneMemo': '场景备注',
   'ui.customSceneMemoEdit': '备注…',
+  'ui.customSceneTransparentOn': '开启透明背景',
+  'ui.customSceneTransparentOff': '关闭透明背景',
+  'ui.customSceneTransparentHint': '此场景无论侧边栏设置如何，都以透明背景生成（仅 V5 模型）。',
   'ui.customSceneMemoClear': '清除备注',
   'ui.customSceneMemoTitleValue': '{0} 的备注',
   'ui.customSceneMemoPlaceholder': '备注 — 这是什么场景（显示在卡片和检视画面）',

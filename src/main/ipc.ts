@@ -103,6 +103,7 @@ import {
   clearScenesPending,
   getSceneBase,
   setSceneMemo,
+  setSceneTransparent,
   deleteScene,
   reorderScenes,
   setReserveAll,
@@ -654,6 +655,9 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
   handle('custom:sceneBase', ({ id }) => getSceneBase(id))
   handle('custom:sceneMemo', ({ id, memo }) => {
     setSceneMemo(id, memo)
+  })
+  handle('custom:sceneTransparent', ({ id, on }) => {
+    setSceneTransparent(id, on)
   })
   // [custom] 검수 모드의 검열(흰칠) — 원본은 두고 칠한 그림을 같은 씬에 저장, 콕 찍기는 모양 따기 모델
   const samDeps = {

@@ -249,7 +249,8 @@ export function SceneReview({ scenes }: { scenes: Scene[] }): React.JSX.Element 
   return createPortal(
     <div
       ref={overlayRef}
-      className="fixed inset-0 z-50 flex select-none flex-col bg-black/90 text-white backdrop-blur-sm"
+      // no-drag: 검수 화면이 타이틀 바를 덮는다 — 창 끌기 영역이 그대로면 위쪽 버튼의 누르기를 창이 가져간다
+      className="no-drag fixed inset-0 z-50 flex select-none flex-col bg-black/90 text-white backdrop-blur-sm"
       style={{ right: claudeWidth + (historyOpen ? HISTORY_WIDTH : 0) }}
       onPointerDown={(e) => {
         closeOnClick.current = false

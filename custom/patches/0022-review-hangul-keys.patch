@@ -1,0 +1,28 @@
+diff --git a/src/renderer/src/components/custom-scene-review.tsx b/src/renderer/src/components/custom-scene-review.tsx
+index 50f60ae344c208a3881677ff898ba8354a46ba8d..f14ee4822f8765672c43b23783d509e8f87a1820 100644
+--- a/src/renderer/src/components/custom-scene-review.tsx
++++ b/src/renderer/src/components/custom-scene-review.tsx
+@@ -52,6 +52,11 @@ function insidePicture(img: HTMLImageElement, x: number, y: number): boolean {
+   return x >= left && x <= left + width && y >= top && y <= top + height
+ }
+ 
++/** 글쇠 자리(code)나 찍힌 글자(영문·한글 두벌식)로 같은 글쇠인지 */
++function isLetter(e: KeyboardEvent, code: string, latin: string, hangul: string): boolean {
++  return e.code === code || e.key.toLowerCase() === latin || e.key === hangul
++}
++
+ /** 히스토리 패널 폭 (App의 RightPanel과 같은 값) */
+ const HISTORY_WIDTH = 240
+ 
+@@ -157,8 +162,9 @@ export function SceneReview({ scenes }: { scenes: Scene[] }): React.JSX.Element
+       if (e.key === 'Escape') close()
+       else if (e.key === 'ArrowLeft') go(index - 1)
+       else if (e.key === 'ArrowRight') go(index + 1)
+-      else if (e.code === 'KeyR' && !e.repeat) queue()
+-      else if (e.code === 'KeyG' && !e.repeat) regenerate()
++      // 한글 입력 상태에서는 code가 비어 올 때가 있어 글자(ㄱ·ㅎ)로도 받는다
++      else if (isLetter(e, 'KeyR', 'r', 'ㄱ') && !e.repeat) queue()
++      else if (isLetter(e, 'KeyG', 'g', 'ㅎ') && !e.repeat) regenerate()
+       // 물결표(~) 키 — 검열 켜기·끄기 (Shift 없이 눌러도 된다)
+       else if (e.code === 'Backquote' && !e.repeat) toggleCensor()
+       else if (e.key === 'ArrowUp' && !e.repeat) void stepPreset(-1)

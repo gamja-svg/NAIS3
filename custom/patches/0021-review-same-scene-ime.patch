@@ -1,0 +1,135 @@
+diff --git a/src/main/ipc.ts b/src/main/ipc.ts
+index 6c345e855346a1cdf6eb8c9e0107240196981f0e..dc7480831a8a9ae9471ce0920879b6661faf6255 100644
+--- a/src/main/ipc.ts
++++ b/src/main/ipc.ts
+@@ -643,6 +643,14 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
+   }
+   handle('custom:topSetGetDir', () => ({ dir: getTopSetDir(), format: getTopSetFormat() }))
+   handle('custom:topSetFormat', ({ format }) => setTopSetFormat(format))
++  // [custom] Electron <webview>는 클릭으로 포커스를 받으면 Windows 입력기(한/영)가 붙지 않을 때가 있다.
++  // 창 포커스를 한 번 놓았다 다시 잡으면 입력기가 다시 붙는다
++  handle('custom:windowRefocus', () => {
++    const win = BrowserWindow.getFocusedWindow()
++    if (!win || win.isDestroyed()) return
++    win.blur()
++    win.focus()
++  })
+   handle('custom:sceneBase', ({ id }) => getSceneBase(id))
+   handle('custom:sceneMemo', ({ id, memo }) => {
+     setSceneMemo(id, memo)
+diff --git a/src/renderer/src/components/custom-claude-panel.tsx b/src/renderer/src/components/custom-claude-panel.tsx
+index ec0cfcaedb0d271f2fea1e430f8f93dbd27eb5f6..279529c1fb5190d39f0d076a646f86f1cd9af948 100644
+--- a/src/renderer/src/components/custom-claude-panel.tsx
++++ b/src/renderer/src/components/custom-claude-panel.tsx
+@@ -101,6 +101,29 @@ function ClaudePanelBody({ open }: { open: boolean }): React.JSX.Element {
+     }
+   }, [attached])
+ 
++  // 웹뷰가 포커스를 받으면 창 포커스를 한 번 다시 잡아 준다 — 클릭으로 들어온 웹뷰에는 Windows
++  // 입력기가 붙지 않아 한/영 키가 안 먹을 때가 있다. 다시 잡는 동안 포커스가 한 번 더 들어오므로
++  // 잠깐 동안은 되풀이하지 않는다
++  useEffect(() => {
++    const wv = webviewRef.current
++    if (!wv) return
++    let last = 0
++    const onFocus = (): void => {
++      const now = Date.now()
++      if (now - last < 1500) return
++      last = now
++      void window.nais
++        .invoke('custom:windowRefocus', undefined)
++        .then(() => {
++          last = Date.now()
++          wv.focus()
++        })
++        .catch(() => {})
++    }
++    wv.addEventListener('focus', onFocus)
++    return () => wv.removeEventListener('focus', onFocus)
++  }, [attached])
++
+   // 닫으면 키 입력이 숨은 창으로 가지 않게 포커스를 뺀다
+   useEffect(() => {
+     if (!open) webviewRef.current?.blur()
+diff --git a/src/renderer/src/stores/scenes-store.ts b/src/renderer/src/stores/scenes-store.ts
+index 3fc3e8b8f85ecb3c75babf9293986ea05194d02c..516e79f9e4715209e210f4ea48604a18c29fc45a 100644
+--- a/src/renderer/src/stores/scenes-store.ts
++++ b/src/renderer/src/stores/scenes-store.ts
+@@ -278,10 +278,25 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
+     const next = presets[presets.findIndex((p) => p.id === activePresetId) + dir]
+     if (!next || next.id === activePresetId) return
+     const reviewing = reviewSceneId != null
++    // 보던 씬의 자리 — 넘어간 프리셋에서도 같은 씬(같은 이름, 없으면 같은 순서)을 이어서 본다
++    const before = get().scenes
++    const at = Math.max(
++      0,
++      before.findIndex((s) => s.id === reviewSceneId)
++    )
++    const name = before[at]?.name
+     await get().setActivePreset(next.id) // 검수는 여기서 닫힌다 (씬 목록이 바뀐다)
+     if (!reviewing || get().activePresetId !== next.id) return
+     const { scenes, pendingOnly } = get()
+-    const first = scenes.find((s) => !!s.thumbnailPath && (!pendingOnly || s.pending))
++    const ok = (s: Scene | undefined): s is Scene =>
++      !!s && !!s.thumbnailPath && (!pendingOnly || s.pending === true)
++    let first = scenes.find((s) => s.name === name && ok(s))
++    // 그 자리에 그림이 없으면 가장 가까운 그림 있는 씬 (뒤쪽 먼저)
++    for (let d = 0; !first && d < scenes.length; d++) {
++      const after = scenes[at + d]
++      const earlier = scenes[at - d]
++      first = ok(after) ? after : ok(earlier) ? earlier : undefined
++    }
+     if (first) set({ reviewSceneId: first.id })
+     else toast(t('ui.customPresetNoPicturesValue', next.name), 'info')
+   },
+diff --git a/src/shared/types.ts b/src/shared/types.ts
+index 62720d74c5239eac56d3da80c9aa27c689eab904..8426ac339470087de2ad8bdb374e1cdaaba302b5 100644
+--- a/src/shared/types.ts
++++ b/src/shared/types.ts
+@@ -930,6 +930,8 @@ export interface IpcInvokeMap {
+     res: TopSetResult | { canceled: true }
+   }
+   'custom:topSetGetDir': { req: void; res: { dir: string; format: 'original' | 'webp' } }
++  /** [custom] 창 포커스를 한 번 놓았다 다시 잡는다 — 웹뷰(Claude 창)에서 한/영 전환이 안 먹는 것을 푸는 용도 */
++  'custom:windowRefocus': { req: void; res: void }
+   /** [custom] 대표 세트 받는 형식 — webp = 줄여서 받기 */
+   'custom:topSetFormat': { req: { format: 'original' | 'webp' }; res: void }
+   /** [custom] 씬 메모(별명) 저장 — 빈 글자면 지운다 */
+diff --git a/tests/custom-preset-step.test.ts b/tests/custom-preset-step.test.ts
+index 303d9fb900e0abe915e53d22fd11c9f6551c4c2a..5dcb39d9a4af5a44c1dd1ac57bb920e720c6069a 100644
+--- a/tests/custom-preset-step.test.ts
++++ b/tests/custom-preset-step.test.ts
+@@ -86,4 +86,33 @@ describe('custom: preset order and stepping', () => {
+       '프리셋 "C"에는 검수할 그림이 없습니다'
+     )
+   })
++
++  it('keeps the same scene when stepping presets in review: same name, else same position', async () => {
++    const pic = { thumbnailPath: 'p.png' }
++    scenesOf[1] = [
++      scene(10, 1, { name: '교복', ...pic }),
++      scene(11, 1, { name: '수영복', ...pic }),
++      scene(12, 1, { name: '잠옷', ...pic })
++    ]
++    scenesOf[2] = [
++      scene(20, 2, { name: '잠옷', ...pic }),
++      scene(21, 2, { name: '다른 옷', ...pic }),
++      scene(22, 2, { name: '빈 씬' }),
++      scene(23, 2, { name: '끝', ...pic })
++    ]
++    const go = async (from: number): Promise<number | null> => {
++      useScenesStore.setState({ activePresetId: 1, scenes: scenesOf[1], reviewSceneId: from })
++      await useScenesStore.getState().stepPreset(1)
++      return useScenesStore.getState().reviewSceneId
++    }
++    expect(await go(12)).toBe(20) // 같은 이름
++    expect(await go(11)).toBe(21) // 이름이 없으면 같은 순서
++    scenesOf[1].push(
++      scene(13, 1, { name: '넷째', ...pic }),
++      scene(14, 1, { name: '다섯째', ...pic })
++    )
++    expect(await go(14)).toBe(23) // 더 짧은 프리셋이면 가장 가까운 그림
++    scenesOf[1][2] = scene(12, 1, { name: '셋째', ...pic })
++    expect(await go(12)).toBe(23) // 그 자리에 그림이 없으면 가까운 쪽 (뒤 먼저)
++  })
+ })

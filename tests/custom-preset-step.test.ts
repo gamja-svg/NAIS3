@@ -86,4 +86,33 @@ describe('custom: preset order and stepping', () => {
       '프리셋 "C"에는 검수할 그림이 없습니다'
     )
   })
+
+  it('keeps the same scene when stepping presets in review: same name, else same position', async () => {
+    const pic = { thumbnailPath: 'p.png' }
+    scenesOf[1] = [
+      scene(10, 1, { name: '교복', ...pic }),
+      scene(11, 1, { name: '수영복', ...pic }),
+      scene(12, 1, { name: '잠옷', ...pic })
+    ]
+    scenesOf[2] = [
+      scene(20, 2, { name: '잠옷', ...pic }),
+      scene(21, 2, { name: '다른 옷', ...pic }),
+      scene(22, 2, { name: '빈 씬' }),
+      scene(23, 2, { name: '끝', ...pic })
+    ]
+    const go = async (from: number): Promise<number | null> => {
+      useScenesStore.setState({ activePresetId: 1, scenes: scenesOf[1], reviewSceneId: from })
+      await useScenesStore.getState().stepPreset(1)
+      return useScenesStore.getState().reviewSceneId
+    }
+    expect(await go(12)).toBe(20) // 같은 이름
+    expect(await go(11)).toBe(21) // 이름이 없으면 같은 순서
+    scenesOf[1].push(
+      scene(13, 1, { name: '넷째', ...pic }),
+      scene(14, 1, { name: '다섯째', ...pic })
+    )
+    expect(await go(14)).toBe(23) // 더 짧은 프리셋이면 가장 가까운 그림
+    scenesOf[1][2] = scene(12, 1, { name: '셋째', ...pic })
+    expect(await go(12)).toBe(23) // 그 자리에 그림이 없으면 가까운 쪽 (뒤 먼저)
+  })
 })

@@ -930,6 +930,8 @@ export interface IpcInvokeMap {
     res: TopSetResult | { canceled: true }
   }
   'custom:topSetGetDir': { req: void; res: { dir: string; format: 'original' | 'webp' } }
+  /** [custom] 창 포커스를 한 번 놓았다 다시 잡는다 — 웹뷰(Claude 창)에서 한/영 전환이 안 먹는 것을 푸는 용도 */
+  'custom:windowRefocus': { req: void; res: void }
   /** [custom] 대표 세트 받는 형식 — webp = 줄여서 받기 */
   'custom:topSetFormat': { req: { format: 'original' | 'webp' }; res: void }
   /** [custom] 씬 메모(별명) 저장 — 빈 글자면 지운다 */

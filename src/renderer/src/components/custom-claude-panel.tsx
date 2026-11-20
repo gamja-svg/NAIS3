@@ -101,6 +101,29 @@ function ClaudePanelBody({ open }: { open: boolean }): React.JSX.Element {
     }
   }, [attached])
 
+  // 웹뷰가 포커스를 받으면 창 포커스를 한 번 다시 잡아 준다 — 클릭으로 들어온 웹뷰에는 Windows
+  // 입력기가 붙지 않아 한/영 키가 안 먹을 때가 있다. 다시 잡는 동안 포커스가 한 번 더 들어오므로
+  // 잠깐 동안은 되풀이하지 않는다
+  useEffect(() => {
+    const wv = webviewRef.current
+    if (!wv) return
+    let last = 0
+    const onFocus = (): void => {
+      const now = Date.now()
+      if (now - last < 1500) return
+      last = now
+      void window.nais
+        .invoke('custom:windowRefocus', undefined)
+        .then(() => {
+          last = Date.now()
+          wv.focus()
+        })
+        .catch(() => {})
+    }
+    wv.addEventListener('focus', onFocus)
+    return () => wv.removeEventListener('focus', onFocus)
+  }, [attached])
+
   // 닫으면 키 입력이 숨은 창으로 가지 않게 포커스를 뺀다
   useEffect(() => {
     if (!open) webviewRef.current?.blur()

@@ -643,6 +643,14 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
   }
   handle('custom:topSetGetDir', () => ({ dir: getTopSetDir(), format: getTopSetFormat() }))
   handle('custom:topSetFormat', ({ format }) => setTopSetFormat(format))
+  // [custom] Electron <webview>는 클릭으로 포커스를 받으면 Windows 입력기(한/영)가 붙지 않을 때가 있다.
+  // 창 포커스를 한 번 놓았다 다시 잡으면 입력기가 다시 붙는다
+  handle('custom:windowRefocus', () => {
+    const win = BrowserWindow.getFocusedWindow()
+    if (!win || win.isDestroyed()) return
+    win.blur()
+    win.focus()
+  })
   handle('custom:sceneBase', ({ id }) => getSceneBase(id))
   handle('custom:sceneMemo', ({ id, memo }) => {
     setSceneMemo(id, memo)

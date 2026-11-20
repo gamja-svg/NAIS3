@@ -278,10 +278,25 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
     const next = presets[presets.findIndex((p) => p.id === activePresetId) + dir]
     if (!next || next.id === activePresetId) return
     const reviewing = reviewSceneId != null
+    // 보던 씬의 자리 — 넘어간 프리셋에서도 같은 씬(같은 이름, 없으면 같은 순서)을 이어서 본다
+    const before = get().scenes
+    const at = Math.max(
+      0,
+      before.findIndex((s) => s.id === reviewSceneId)
+    )
+    const name = before[at]?.name
     await get().setActivePreset(next.id) // 검수는 여기서 닫힌다 (씬 목록이 바뀐다)
     if (!reviewing || get().activePresetId !== next.id) return
     const { scenes, pendingOnly } = get()
-    const first = scenes.find((s) => !!s.thumbnailPath && (!pendingOnly || s.pending))
+    const ok = (s: Scene | undefined): s is Scene =>
+      !!s && !!s.thumbnailPath && (!pendingOnly || s.pending === true)
+    let first = scenes.find((s) => s.name === name && ok(s))
+    // 그 자리에 그림이 없으면 가장 가까운 그림 있는 씬 (뒤쪽 먼저)
+    for (let d = 0; !first && d < scenes.length; d++) {
+      const after = scenes[at + d]
+      const earlier = scenes[at - d]
+      first = ok(after) ? after : ok(earlier) ? earlier : undefined
+    }
     if (first) set({ reviewSceneId: first.id })
     else toast(t('ui.customPresetNoPicturesValue', next.name), 'info')
   },

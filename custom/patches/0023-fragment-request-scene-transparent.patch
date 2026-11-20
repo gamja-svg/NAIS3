@@ -1,0 +1,829 @@
+diff --git a/src/main/custom/fragment-request.ts b/src/main/custom/fragment-request.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..d9d2d817e030b7f660830cc62f2d94a9e65e73ec
+--- /dev/null
++++ b/src/main/custom/fragment-request.ts
+@@ -0,0 +1,112 @@
++import { normalizeFragmentPath } from '../../shared/fragment-path'
++import type { FragmentRequestItem, FragmentRequestOutcome } from '../../shared/types'
++import {
++  createFragment,
++  createFragmentFolder,
++  listFragments,
++  updateFragment
++} from '../fragments/repo'
++import { t } from '../i18n'
++
++/**
++ * [custom] 감시 폴더의 `조각 고치기` 요청 — Claude가 조각(프롬프트의 `<이름>`)을 읽고 고친다.
++ *
++ * ```json
++ * { "action": "fragments",
++ *   "set": [{ "name": "초아 얼굴", "content": "blue eyes, ...", "folder": "윤초아" }],
++ *   "read": true }
++ * ```
++ * - set: 같은 이름(대소문자 무시)의 조각이 있으면 내용을 바꾸고, 없으면 새로 만든다.
++ *   content는 글자 또는 줄 배열. folder는 새로 만들 때 넣을 폴더 이름(없으면 만든다) — 있는 조각의
++ *   폴더는 옮기지 않는다. 조각을 지우거나 이름을 바꾸지는 않는다.
++ * - read: true = 조각 전부, ["이름", ...] = 그 조각만, 없으면 set에 적은 조각만 — 결과 파일의
++ *   `fragmentItems`에 지금 내용이 담긴다 (고친 뒤의 내용).
++ */
++export interface FragmentRequest {
++  set: { name: string; content: string; folder: string | null }[]
++  read: true | string[] | null
++}
++
++/** 이 요청이 아니면 null, 잘못 적혔으면 알림 문구 */
++export function parseFragmentRequest(
++  body: Record<string, unknown>
++): FragmentRequest | string | null {
++  if (body.action !== 'fragments') return null
++  const set: FragmentRequest['set'] = []
++  if (body.set !== undefined) {
++    if (!Array.isArray(body.set)) return t('ui.customRequestFragmentsBadSet')
++    for (const raw of body.set as unknown[]) {
++      const item = raw as Record<string, unknown> | null
++      const name = typeof item?.name === 'string' ? item.name.trim() : ''
++      const content = Array.isArray(item?.content)
++        ? item.content.filter((l): l is string => typeof l === 'string').join('\n')
++        : item?.content
++      if (!name || typeof content !== 'string') return t('ui.customRequestFragmentsBadSet')
++      set.push({
++        name,
++        content,
++        folder: typeof item?.folder === 'string' && item.folder.trim() ? item.folder.trim() : null
++      })
++    }
++  }
++  const read =
++    body.read === true
++      ? true
++      : Array.isArray(body.read)
++        ? body.read.filter((n): n is string => typeof n === 'string' && n.trim() !== '')
++        : null
++  if (set.length === 0 && read === null) return t('ui.customRequestFragmentsEmpty')
++  return { set, read }
++}
++
++/** 요청대로 조각을 고치고, 읽어 달라는 조각의 지금 내용을 돌려준다 */
++export function runFragmentRequest(request: FragmentRequest): {
++  outcome: FragmentRequestOutcome
++  items: FragmentRequestItem[]
++} {
++  const outcome: FragmentRequestOutcome = { created: 0, updated: 0, unchanged: 0, missing: [] }
++  const key = normalizeFragmentPath
++  const before = listFragments()
++  const byName = new Map(before.items.map((f) => [key(f.name), f]))
++  const folderIds = new Map(before.folders.map((f) => [key(f.name), f.id]))
++  for (const item of request.set) {
++    const existing = byName.get(key(item.name))
++    if (existing) {
++      if (existing.content === item.content) outcome.unchanged++
++      else {
++        updateFragment(existing.id, { content: item.content })
++        existing.content = item.content
++        outcome.updated++
++      }
++      continue
++    }
++    let folderId: number | null = null
++    if (item.folder) {
++      folderId = folderIds.get(key(item.folder)) ?? createFragmentFolder(item.folder)
++      folderIds.set(key(item.folder), folderId)
++    }
++    const id = createFragment(item.name, folderId, item.content)
++    byName.set(key(item.name), { id, name: item.name, content: item.content, folderId })
++    outcome.created++
++  }
++
++  const after = listFragments()
++  const folderName = new Map(after.folders.map((f) => [f.id, f.name]))
++  const all = new Map(after.items.map((f) => [key(f.name), f]))
++  const wanted =
++    request.read === true
++      ? after.items
++      : (request.read ?? request.set.map((s) => s.name)).flatMap((name) => {
++          const found = all.get(key(name))
++          if (!found) outcome.missing.push(name)
++          return found ? [found] : []
++        })
++  const items = [...new Set(wanted)].map((f) => ({
++    name: f.name,
++    content: f.content,
++    ...(f.folderId != null && folderName.has(f.folderId)
++      ? { folder: folderName.get(f.folderId) as string }
++      : {})
++  }))
++  return { outcome, items }
++}
+diff --git a/src/main/custom/top-set.ts b/src/main/custom/top-set.ts
+index 18d90fc86667306b299762ae8ca147ba1f2e92d6..e44dda1b369933f309bacbb10d1079de6d73acff 100644
+--- a/src/main/custom/top-set.ts
++++ b/src/main/custom/top-set.ts
+@@ -1,11 +1,12 @@
+ import { copyFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'fs'
+ import { dirname, extname, isAbsolute, join, resolve } from 'path'
+ import { WATCH_AUTOGEN_KEY } from '../../shared/custom-watch'
+-import type { TopSetResult, WatchRequestEvent } from '../../shared/types'
++import type { FragmentRequestItem, TopSetResult, WatchRequestEvent } from '../../shared/types'
+ import { getSetting, setSetting } from '../db/settings'
+ import { t } from '../i18n'
+ import { getMemoryImage, isMemoryPath } from '../images/storage'
+ import { getPresetName, listPresets, listScenes } from '../scenes/repo'
++import { parseFragmentRequest, runFragmentRequest } from './fragment-request'
+ import sharp from '../sharp'
+ 
+ /**
+@@ -307,7 +308,22 @@ export async function runWatchRequest(
+     setSetting(WATCH_AUTOGEN_KEY, autoGenerate ? '1' : '0')
+     event.autoGenerate = autoGenerate
+   }
+-  const request = raw && autoGenerate === null ? parseTopSetRequest(raw) : null
++  // 조각 고치기·읽기 — 조각 내용은 결과 파일에만 담는다 (화면 알림에는 수만)
++  const body = raw && autoGenerate === null ? requestBody(raw) : null
++  const fragments = body && typeof body !== 'string' ? parseFragmentRequest(body) : null
++  let fragmentItems: FragmentRequestItem[] | undefined
++  if (typeof fragments === 'string') event.errors.push(fragments)
++  else if (fragments) {
++    try {
++      const done = runFragmentRequest(fragments)
++      event.fragments = done.outcome
++      fragmentItems = done.items
++    } catch (e) {
++      event.errors.push(e instanceof Error ? e.message : String(e))
++    }
++  }
++  const request =
++    raw && autoGenerate === null && fragments === null ? parseTopSetRequest(raw) : null
+   if (typeof request === 'string') event.errors.push(request)
+   else if (request) {
+     const presets = listPresets()
+@@ -351,7 +367,15 @@ export async function runWatchRequest(
+     const out = path.slice(0, path.length - REQUEST_SUFFIX.length) + RESULT_SUFFIX
+     writeFileSync(
+       out,
+-      JSON.stringify({ ...event, finishedAt: new Date().toISOString() }, null, 2) + '\n',
++      JSON.stringify(
++        {
++          ...event,
++          ...(fragmentItems ? { fragmentItems } : {}),
++          finishedAt: new Date().toISOString()
++        },
++        null,
++        2
++      ) + '\n',
+       'utf-8'
+     )
+   } catch {
+diff --git a/src/main/index.ts b/src/main/index.ts
+index c80a72bda724987c6c8897a77a9f310b8c304cf8..d5d38d738ce612442ee51a959f142a858164fd2c 100644
+--- a/src/main/index.ts
++++ b/src/main/index.ts
+@@ -39,7 +39,7 @@ import { prepareCharRefs, prepareVibes } from './refs/prepare'
+ import { GenerationQueue } from './queue/generation-queue'
+ import { laneSelection, parallelLanes, parallelTarget, refreshLaneBalance } from './custom/parallel'
+ import { guardClaudeChatGuest } from './custom/claude-chat'
+-import { getPresetName, getScene } from './scenes/repo'
++import { getPresetName, getScene, isSceneTransparent } from './scenes/repo'
+ 
+ // 앱 이름 (dev 메뉴바·dock에서 'Electron' 대신 표시). 패키징 앱은 productName 사용
+ app.setName('NAIS3')
+@@ -226,6 +226,9 @@ const startup = app.whenReady().then(async () => {
+     // 주석 제거가 반드시 먼저 — 주석 줄이 조각을 소모하거나(순차 카운터),
+     // 와일드카드 처리의 재조립이 개행을 지워 주석 범위가 전체로 번지는 것 방지 (NAIS2와 동일 순서)
+     let request = preprocessRequest(rawRequest, fragmentSource())
++    // [custom] 씬별 투명 배경 — 켠 씬은 사이드바 설정이 꺼져 있어도 투명 배경으로 (V5가 아니면 payload가 무시)
++    if (rawRequest.sceneId !== undefined && isSceneTransparent(rawRequest.sceneId))
++      request = { ...request, transparentBackground: true }
+ 
+     // 바이브/캐릭레퍼 준비 — 요청이 id를 지정하면(출연 예약) 그것으로, 아니면 DB enabled 항목
+     // (바이브는 필요 시 인코딩 — 2 Anlas, 캐시됨)
+diff --git a/src/main/ipc.ts b/src/main/ipc.ts
+index dc7480831a8a9ae9471ce0920879b6661faf6255..c9f331d9be99281fc9c6209f8c027eb0c5f0d882 100644
+--- a/src/main/ipc.ts
++++ b/src/main/ipc.ts
+@@ -103,6 +103,7 @@ import {
+   clearScenesPending,
+   getSceneBase,
+   setSceneMemo,
++  setSceneTransparent,
+   deleteScene,
+   reorderScenes,
+   setReserveAll,
+@@ -655,6 +656,9 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
+   handle('custom:sceneMemo', ({ id, memo }) => {
+     setSceneMemo(id, memo)
+   })
++  handle('custom:sceneTransparent', ({ id, on }) => {
++    setSceneTransparent(id, on)
++  })
+   // [custom] 검수 모드의 검열(흰칠) — 원본은 두고 칠한 그림을 같은 씬에 저장, 콕 찍기는 모양 따기 모델
+   const samDeps = {
+     dir: join(app.getPath('userData'), 'custom-models'),
+diff --git a/src/main/scenes/import-formats.ts b/src/main/scenes/import-formats.ts
+index c352d2f4c36e25f9861178153c2e7716e3df4ed7..ee91c954c5ebf9bc29c39f3024ec6eef6256001d 100644
+--- a/src/main/scenes/import-formats.ts
++++ b/src/main/scenes/import-formats.ts
+@@ -11,6 +11,8 @@ export interface ImportedScene {
+   height?: number
+   /** [custom] 씬 메모(별명) — 있으면 그 씬의 메모를 이 글로 (빈 글자면 지움) */
+   memo?: string
++  /** [custom] 씬별 투명 배경 — true면 켜고 false면 끈다 (칸이 없으면 그대로) */
++  transparent?: boolean
+ }
+ 
+ type Obj = Record<string, unknown>
+@@ -54,7 +56,8 @@ export function parseSceneImport(raw: string): ImportedScene[] | null {
+       negativePrompt: str(s.negativePrompt),
+       width: num(s.width),
+       height: num(s.height),
+-      ...(str(s.memo) !== undefined ? { memo: str(s.memo) } : {}) // [custom]
++      ...(str(s.memo) !== undefined ? { memo: str(s.memo) } : {}), // [custom]
++      ...(typeof s.transparent === 'boolean' ? { transparent: s.transparent } : {}) // [custom]
+     }))
+   }
+ 
+diff --git a/src/main/scenes/repo.ts b/src/main/scenes/repo.ts
+index a56708d1a0f2e4df8107c6bb600aa2deda91ed89..021824f141e126019ab04ffc88dffc6e71f54640 100644
+--- a/src/main/scenes/repo.ts
++++ b/src/main/scenes/repo.ts
+@@ -31,6 +31,7 @@ interface Row {
+   reserve_json?: string | null
+   pending?: number
+   memo?: string | null
++  transparent?: number | null
+ }
+ 
+ /** 출연별 예약 내역 파싱 (키 '' = 사이드바) */
+@@ -88,7 +89,8 @@ function toScene(
+     imageCount: r.image_count,
+     hasFavorite: r.has_favorite === 1,
+     pending: r.pending === 1,
+-    ...(r.memo ? { memo: r.memo } : {}) // [custom] 씬 메모
++    ...(r.memo ? { memo: r.memo } : {}), // [custom] 씬 메모
++    ...(r.transparent ? { transparent: true } : {}) // [custom] 씬별 투명 배경
+   }
+ }
+ 
+@@ -116,6 +118,8 @@ function marksDb(): ReturnType<typeof getDb> {
+          memo TEXT NOT NULL
+        )`
+     )
++    // 씬별 투명 배경 — 줄이 있으면 그 씬은 늘 투명 배경으로 뽑는다
++    db.exec('CREATE TABLE IF NOT EXISTS custom_scene_transparent (scene_id INTEGER PRIMARY KEY)')
+     // 기준 칸이 없던 때 만든 표에 더한다
+     const cols = db.prepare('PRAGMA table_info(custom_scene_marks)').all() as { name: string }[]
+     for (const col of ['base_prompt', 'base_negative'])
+@@ -201,6 +205,25 @@ export function setSceneMemo(id: number, memo: string): boolean {
+   return true
+ }
+ 
++/**
++ * [custom] 씬별 투명 배경 켜기·끄기 — 켠 씬은 사이드바 설정과 상관없이 투명 배경으로 뽑는다 (V5 모델).
++ * 값이 실제로 바뀌었으면 true.
++ */
++export function setSceneTransparent(id: number, on: boolean): boolean {
++  const db = marksDb()
++  if (isSceneTransparent(id) === on) return false
++  if (on) db.prepare('INSERT OR IGNORE INTO custom_scene_transparent (scene_id) VALUES (?)').run(id)
++  else db.prepare('DELETE FROM custom_scene_transparent WHERE scene_id = ?').run(id)
++  return true
++}
++
++export function isSceneTransparent(id: number): boolean {
++  return (
++    marksDb().prepare('SELECT 1 FROM custom_scene_transparent WHERE scene_id = ?').get(id) !==
++    undefined
++  )
++}
++
+ // [custom] 지운 씬의 메모·미생성 표시를 치운다 — 씬 번호(id)는 새 씬에 다시 쓰일 수 있다.
+ // 씬을 지우는 모든 길(하나·여럿·프리셋째·백업 복원)이 이 알림을 낸다.
+ sceneEvents.on('deleted', (ids: number[]) => {
+@@ -208,6 +231,7 @@ sceneEvents.on('deleted', (ids: number[]) => {
+   const db = marksDb()
+   const list = placeholders(ids.length)
+   db.prepare(`DELETE FROM custom_scene_memos WHERE scene_id IN (${list})`).run(...ids)
++  db.prepare(`DELETE FROM custom_scene_transparent WHERE scene_id IN (${list})`).run(...ids)
+   db.prepare(`DELETE FROM custom_scene_marks WHERE scene_id IN (${list})`).run(...ids)
+ })
+ 
+@@ -305,6 +329,7 @@ export function listScenes(presetId: number): Scene[] {
+               (SELECT COUNT(*) FROM images WHERE scene_id = s.id) AS image_count,
+               ${pendingSql('s')} AS pending,
+               (SELECT memo FROM custom_scene_memos WHERE scene_id = s.id) AS memo,
++              (SELECT 1 FROM custom_scene_transparent WHERE scene_id = s.id) AS transparent,
+               cover.id AS thumb_id,
+               cover.created_at AS thumb_created_at,
+               length(cover.thumbnail) AS thumb_size,
+@@ -349,7 +374,8 @@ export function getScene(id: number): Scene | null {
+       `SELECT id, preset_id, name, prompt, negative_prompt, width, height, reserve_count, reserve_json,
+               (SELECT COUNT(*) FROM images WHERE scene_id = ?) AS image_count,
+               ${pendingSql('gen_scenes')} AS pending,
+-              (SELECT memo FROM custom_scene_memos WHERE scene_id = gen_scenes.id) AS memo
++              (SELECT memo FROM custom_scene_memos WHERE scene_id = gen_scenes.id) AS memo,
++              (SELECT 1 FROM custom_scene_transparent WHERE scene_id = gen_scenes.id) AS transparent
+        FROM gen_scenes WHERE id = ?`
+     )
+     .get(id, id) as (Row & { image_count: number }) | undefined
+@@ -749,7 +775,8 @@ export async function exportScenesJson(presetId: number): Promise<boolean> {
+   const scenes = marksDb() // [custom] 메모 표가 있게
+     .prepare(
+       `SELECT name, prompt, negative_prompt, width, height,
+-              (SELECT memo FROM custom_scene_memos WHERE scene_id = gen_scenes.id) AS memo
++              (SELECT memo FROM custom_scene_memos WHERE scene_id = gen_scenes.id) AS memo,
++              (SELECT 1 FROM custom_scene_transparent WHERE scene_id = gen_scenes.id) AS transparent
+        FROM gen_scenes WHERE preset_id = ? ORDER BY sort_order, id`
+     )
+     .all(presetId) as Row[]
+@@ -766,7 +793,8 @@ export async function exportScenesJson(presetId: number): Promise<boolean> {
+     negativePrompt: s.negative_prompt,
+     width: s.width,
+     height: s.height,
+-    ...(s.memo ? { memo: s.memo } : {}) // [custom] 씬 메모
++    ...(s.memo ? { memo: s.memo } : {}), // [custom] 씬 메모
++    ...(s.transparent ? { transparent: true } : {}) // [custom] 씬별 투명 배경
+   }))
+   // [custom] 프리셋 이름을 같이 적는다 — 감시 폴더가 이 이름으로 넣을 프리셋을 정한다
+   const preset = getPresetName(presetId)
+@@ -826,6 +854,11 @@ export function applyImportedScenes(presetId: number, scenes: ImportedScene[]):
+     memos: 0,
+     skipped: 0
+   }
++  // [custom] 씬별 투명 배경 — 칸이 있을 때만 맞춘다. 바뀌면 다시 뽑을 씬으로 친다 (그림이 달라진다)
++  const applyTransparent = (sceneId: number, value: boolean | undefined): void => {
++    if (value === undefined || !setSceneTransparent(sceneId, value)) return
++    if (!outcome.sceneIds.includes(sceneId)) outcome.sceneIds.push(sceneId)
++  }
+   const db = getDb()
+   const max = db
+     .prepare('SELECT COALESCE(MAX(sort_order), 0) AS m FROM gen_scenes WHERE preset_id = ?')
+@@ -856,6 +889,7 @@ export function applyImportedScenes(presetId: number, scenes: ImportedScene[]):
+         }
+         outcome.unchanged++
+         if (s.memo !== undefined && setSceneMemo(target.id, s.memo)) outcome.memos++
++        applyTransparent(target.id, s.transparent)
+         continue
+       }
+       const name = s.name ?? t('ui.scene')
+@@ -888,6 +922,7 @@ export function applyImportedScenes(presetId: number, scenes: ImportedScene[]):
+         } else outcome.unchanged++
+         // [custom] 메모가 적혀 있으면 바꾼다 (빈 글자면 지움, 칸이 없으면 그대로) — 다시 뽑을 일은 아니다
+         if (s.memo !== undefined && setSceneMemo(existing.id, s.memo)) outcome.memos++
++        applyTransparent(existing.id, s.transparent)
+         continue
+       }
+       outcome.added++
+@@ -902,6 +937,7 @@ export function applyImportedScenes(presetId: number, scenes: ImportedScene[]):
+       )
+       outcome.sceneIds.push(Number(inserted.lastInsertRowid))
+       if (s.memo && setSceneMemo(Number(inserted.lastInsertRowid), s.memo)) outcome.memos++ // [custom]
++      if (s.transparent) setSceneTransparent(Number(inserted.lastInsertRowid), true) // [custom]
+     }
+   })()
+   return outcome
+diff --git a/src/renderer/src/components/scene-mode.tsx b/src/renderer/src/components/scene-mode.tsx
+index 47622236c8de707b3c46663a042b2556e09ea074..8bb7aba61d4cc4f3f2b97eb5a9cdc45250f6536c 100644
+--- a/src/renderer/src/components/scene-mode.tsx
++++ b/src/renderer/src/components/scene-mode.tsx
+@@ -7,6 +7,7 @@ import {
+   ChevronRight,
+   ChevronUp,
+   Folder,
++  Grid2x2,
+   FolderMinus,
+   FolderPlus,
+   Copy,
+@@ -1142,6 +1143,7 @@ const SceneCard = memo(function SceneCard({
+   }
+   // [custom] 씬 메모(별명)
+   const setMemo = useScenesStore((s) => s.setMemo)
++  const setTransparent = useScenesStore((s) => s.setTransparent)
+   const editMemo = async (): Promise<void> => {
+     const memo = await askText(
+       t('ui.customSceneMemoTitleValue', scene.name),
+@@ -1299,6 +1301,15 @@ const SceneCard = memo(function SceneCard({
+                   label={t('ui.customSceneMemoEdit')}
+                   onClick={() => void editMemo()}
+                 />
++                <MenuItem
++                  icon={<Grid2x2 size={13} />}
++                  label={t(
++                    scene.transparent
++                      ? 'ui.customSceneTransparentOff'
++                      : 'ui.customSceneTransparentOn'
++                  )}
++                  onClick={() => void setTransparent(scene.id, !scene.transparent)}
++                />
+                 <MenuItem
+                   icon={<Copy size={13} />}
+                   label={t('ui.duplicate')}
+@@ -1337,6 +1348,15 @@ const SceneCard = memo(function SceneCard({
+                     {scene.name}
+                   </div>
+                 )}
++                {/* [custom] 씬별 투명 배경 표시 */}
++                {scene.transparent && (
++                  <div
++                    className="mt-0.5 flex w-fit items-center gap-1 rounded bg-white/90 px-1 text-[10.5px] font-medium leading-4 text-black"
++                    title={t('ui.customSceneTransparentHint')}
++                  >
++                    <Grid2x2 size={10} /> {t('ui.transparentBackground')}
++                  </div>
++                )}
+                 {/* [custom] 씬 메모 — 어떤 장면인지 한눈에 */}
+                 {scene.memo && (
+                   <div
+@@ -1396,6 +1416,10 @@ const SceneCard = memo(function SceneCard({
+         <ContextMenuItem onSelect={() => void editMemo()}>
+           <StickyNote size={13} /> {t('ui.customSceneMemoEdit')}
+         </ContextMenuItem>
++        <ContextMenuItem onSelect={() => void setTransparent(scene.id, !scene.transparent)}>
++          <Grid2x2 size={13} />{' '}
++          {t(scene.transparent ? 'ui.customSceneTransparentOff' : 'ui.customSceneTransparentOn')}
++        </ContextMenuItem>
+         {scene.memo && (
+           <ContextMenuItem onSelect={() => void setMemo(scene.id, '')}>
+             <StickyNote size={13} className="opacity-50" /> {t('ui.customSceneMemoClear')}
+diff --git a/src/renderer/src/stores/scenes-store.ts b/src/renderer/src/stores/scenes-store.ts
+index 516e79f9e4715209e210f4ea48604a18c29fc45a..52d06fb7a363b90b7c33f3b96e1d411ad94da0b2 100644
+--- a/src/renderer/src/stores/scenes-store.ts
++++ b/src/renderer/src/stores/scenes-store.ts
+@@ -16,6 +16,7 @@ import type {
+   WatchFolderFailure
+ } from '@shared/types'
+ import { enabledCharacters, useCharactersStore } from './characters-store'
++import { useFragmentsStore } from './fragments-store'
+ import { randomSeed, useGenerationStore } from './generation-store'
+ import { useLayoutStore } from './layout-store'
+ 
+@@ -150,6 +151,8 @@ interface ScenesState {
+   ackPendingScenes: (ids: number[]) => Promise<void>
+   /** [custom] 씬 메모(별명) — 화면은 바로 바꾸고 저장은 뒤따른다. 빈 글자면 지운다 */
+   setMemo: (id: number, memo: string) => Promise<void>
++  /** [custom] 씬별 투명 배경 켜기·끄기 */
++  setTransparent: (id: number, on: boolean) => Promise<void>
+ }
+ 
+ /**
+@@ -682,6 +685,13 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
+     await window.nais.invoke('custom:sceneMemo', { id, memo })
+   },
+ 
++  setTransparent: async (id, on) => {
++    set((st) => ({
++      scenes: st.scenes.map((s) => (s.id === id ? { ...s, transparent: on || undefined } : s))
++    }))
++    await window.nais.invoke('custom:sceneTransparent', { id, on })
++  },
++
+   // ── 출연(Cast) ──────────────────────────────────────────
+   casts: [],
+   activeCastId: localStorage.getItem('scene_active_cast') ?? '',
+@@ -887,6 +897,17 @@ export function bindSceneEvents(): () => void {
+         'info'
+       )
+     }
++    // 요청 파일로 조각을 고침 — 조각 화면을 새로 읽는다
++    if (event.fragments) {
++      const f = event.fragments
++      if (f.created + f.updated > 0) void useFragmentsStore.getState().load()
++      toast(
++        t('ui.customRequestFragmentsDoneValue', event.file, f.updated, f.created, f.unchanged),
++        'success'
++      )
++      if (f.missing.length > 0)
++        toast(t('ui.customRequestFragmentsMissingValue', event.file, f.missing.join(', ')), 'info')
++    }
+     if (event.errors.length > 0)
+       toast(t('ui.customRequestFailedValue', event.file, event.errors.join(' / ')), 'error')
+   })
+diff --git a/src/shared/i18n/catalog-en.ts b/src/shared/i18n/catalog-en.ts
+index 281bb6087af547526916dc9fea57150fa8edc69c..67b0cf1071cc80d2be96e8875cada480a67f5fe5 100644
+--- a/src/shared/i18n/catalog-en.ts
++++ b/src/shared/i18n/catalog-en.ts
+@@ -254,8 +254,15 @@ export const EN = {
+     'No default cover set folder. Choose one with Save cover set in the scene list, or put a "to" folder in the request.',
+   'ui.customRequestBadJson': 'The request file is not valid JSON',
+   'ui.customRequestUnknownAction':
+-    'Unknown request ("action" must be "exportTopSet" or "autoGenerate")',
++    'Unknown request ("action" must be "exportTopSet", "autoGenerate" or "fragments")',
+   'ui.customRequestNoPreset': 'The request names no preset',
++  'ui.customRequestFragmentsBadSet':
++    '"set" needs items like { "name": "fragment name", "content": "text" }',
++  'ui.customRequestFragmentsEmpty':
++    'The fragment request has neither "set" (fragments to change) nor "read" (fragments to read)',
++  'ui.customRequestFragmentsDoneValue':
++    'Request file {0}: fragments — {1} updated · {2} created · {3} unchanged',
++  'ui.customRequestFragmentsMissingValue': 'Request file {0}: no such fragment — {1}',
+   'ui.customRequestPresetNotFoundValue': 'Preset "{0}" not found',
+   'ui.customRequestDoneValue': 'Request {0}: cover set saved — {1}',
+   'ui.customRequestFailedValue': 'Request {0}: failed — {1}',
+@@ -272,6 +279,10 @@ export const EN = {
+   'ui.customRemovedTags': 'Removed',
+   'ui.customSceneMemo': 'Scene memo',
+   'ui.customSceneMemoEdit': 'Memo…',
++  'ui.customSceneTransparentOn': 'Turn on transparent background',
++  'ui.customSceneTransparentOff': 'Turn off transparent background',
++  'ui.customSceneTransparentHint':
++    'This scene is always generated with a transparent background, whatever the sidebar setting (V5 models only).',
+   'ui.customSceneMemoClear': 'Clear memo',
+   'ui.customSceneMemoTitleValue': 'Memo for {0}',
+   'ui.customSceneMemoPlaceholder': 'Memo — what this scene shows (shown on the card and in review)',
+diff --git a/src/shared/i18n/catalog-ko.ts b/src/shared/i18n/catalog-ko.ts
+index 5c1e3b3ac5f16e6b744907e87385def80729f776..6434ee4c0cc810521ac7fb8181ee2b8b4963c714 100644
+--- a/src/shared/i18n/catalog-ko.ts
++++ b/src/shared/i18n/catalog-ko.ts
+@@ -250,8 +250,14 @@ export const KO = {
+     '대표 세트 기본 폴더가 정해져 있지 않습니다. 씬 목록의 대표 세트 받기로 먼저 고르거나 요청에 "to" 폴더를 적어 주세요.',
+   'ui.customRequestBadJson': '요청 파일을 읽을 수 없습니다 (JSON 형식이 아님)',
+   'ui.customRequestUnknownAction':
+-    '알 수 없는 요청입니다 ("action"은 "exportTopSet" 또는 "autoGenerate")',
++    '알 수 없는 요청입니다 ("action"은 "exportTopSet", "autoGenerate", "fragments" 중 하나)',
+   'ui.customRequestNoPreset': '요청에 프리셋 이름이 없습니다',
++  'ui.customRequestFragmentsBadSet':
++    '"set"에는 { "name": "조각 이름", "content": "내용" }을 적어 주세요',
++  'ui.customRequestFragmentsEmpty': '조각 요청에 "set"(고칠 조각)이나 "read"(읽을 조각)가 없습니다',
++  'ui.customRequestFragmentsDoneValue':
++    '요청 파일 {0}: 조각 {1}개 고침 · {2}개 새로 만듦 · {3}개 그대로',
++  'ui.customRequestFragmentsMissingValue': '요청 파일 {0}: 없는 조각 — {1}',
+   'ui.customRequestPresetNotFoundValue': '프리셋 "{0}"을(를) 찾을 수 없습니다',
+   'ui.customRequestDoneValue': '요청 파일 {0}: 대표 세트 받음 — {1}',
+   'ui.customRequestFailedValue': '요청 파일 {0}: 처리하지 못함 — {1}',
+@@ -268,6 +274,10 @@ export const KO = {
+   'ui.customRemovedTags': '빠진 태그',
+   'ui.customSceneMemo': '씬 메모',
+   'ui.customSceneMemoEdit': '메모…',
++  'ui.customSceneTransparentOn': '투명 배경 켜기',
++  'ui.customSceneTransparentOff': '투명 배경 끄기',
++  'ui.customSceneTransparentHint':
++    '이 씬은 사이드바 설정과 상관없이 투명 배경으로 뽑습니다 (V5 모델에서만).',
+   'ui.customSceneMemoClear': '메모 지우기',
+   'ui.customSceneMemoTitleValue': '{0} 메모',
+   'ui.customSceneMemoPlaceholder': '메모 — 어떤 장면인지 (카드·검수 화면에 보여요)',
+diff --git a/src/shared/i18n/catalog-zh-CN.ts b/src/shared/i18n/catalog-zh-CN.ts
+index 4687d2a149012059f03233f1e8d89e516135607b..5af05e05a700dfced6727f0b5650433b46d8f41c 100644
+--- a/src/shared/i18n/catalog-zh-CN.ts
++++ b/src/shared/i18n/catalog-zh-CN.ts
+@@ -247,8 +247,14 @@ export const ZH_CN = {
+   'ui.customTopSetNoDefaultDir':
+     '尚未设置封面集默认文件夹。请先在场景列表中用“保存封面集”选择，或在请求中填写 "to" 文件夹。',
+   'ui.customRequestBadJson': '请求文件不是有效的 JSON',
+-  'ui.customRequestUnknownAction': '未知请求（"action" 只能是 "exportTopSet" 或 "autoGenerate"）',
++  'ui.customRequestUnknownAction':
++    '未知请求（"action" 只能是 "exportTopSet"、"autoGenerate" 或 "fragments"）',
+   'ui.customRequestNoPreset': '请求中没有预设名称',
++  'ui.customRequestFragmentsBadSet': '"set" 中请填写 { "name": "片段名称", "content": "内容" }',
++  'ui.customRequestFragmentsEmpty': '片段请求中没有 "set"（要修改的片段）或 "read"（要读取的片段）',
++  'ui.customRequestFragmentsDoneValue':
++    '请求文件 {0}：片段 — 修改 {1} 个 · 新建 {2} 个 · 未变 {3} 个',
++  'ui.customRequestFragmentsMissingValue': '请求文件 {0}：没有该片段 — {1}',
+   'ui.customRequestPresetNotFoundValue': '找不到预设“{0}”',
+   'ui.customRequestDoneValue': '请求文件 {0}：封面集已保存 — {1}',
+   'ui.customRequestFailedValue': '请求文件 {0}：处理失败 — {1}',
+@@ -264,6 +270,9 @@ export const ZH_CN = {
+   'ui.customRemovedTags': '已删除',
+   'ui.customSceneMemo': '场景备注',
+   'ui.customSceneMemoEdit': '备注…',
++  'ui.customSceneTransparentOn': '开启透明背景',
++  'ui.customSceneTransparentOff': '关闭透明背景',
++  'ui.customSceneTransparentHint': '此场景无论侧边栏设置如何，都以透明背景生成（仅 V5 模型）。',
+   'ui.customSceneMemoClear': '清除备注',
+   'ui.customSceneMemoTitleValue': '{0} 的备注',
+   'ui.customSceneMemoPlaceholder': '备注 — 这是什么场景（显示在卡片和检视画面）',
+diff --git a/src/shared/types.ts b/src/shared/types.ts
+index 8426ac339470087de2ad8bdb374e1cdaaba302b5..553640caf0edfcf10d440ebed96a2d87ed016bce 100644
+--- a/src/shared/types.ts
++++ b/src/shared/types.ts
+@@ -436,6 +436,8 @@ export interface Scene {
+   pending?: boolean
+   /** [custom] 씬 메모(별명) — 어떤 장면인지 한눈에 보이게. 파일 이름에는 쓰지 않는다 */
+   memo?: string
++  /** [custom] 씬별 투명 배경 — 켠 씬은 사이드바 설정과 상관없이 투명 배경으로 뽑는다 (V5 모델) */
++  transparent?: boolean
+ }
+ 
+ /** 씬 상세의 생성 이미지 (페이지네이션 단위) */
+@@ -557,6 +559,24 @@ export interface WatchRequestEvent {
+   errors: string[]
+   /** `"action": "autoGenerate"` 요청으로 바뀐 불러온 씬 자동 생성 값 */
+   autoGenerate?: boolean
++  /** `"action": "fragments"` 요청의 결과 — 조각 내용 자체는 결과 파일의 fragmentItems에만 담는다 */
++  fragments?: FragmentRequestOutcome
++}
++
++/** [custom] 조각 고치기 요청의 결과 수 */
++export interface FragmentRequestOutcome {
++  created: number
++  updated: number
++  unchanged: number
++  /** 읽어 달라고 했지만 없는 조각 이름 */
++  missing: string[]
++}
++
++/** [custom] 조각 고치기 요청의 결과 파일에 담는 조각 하나 */
++export interface FragmentRequestItem {
++  name: string
++  content: string
++  folder?: string
+ }
+ 
+ export interface IpcInvokeMap {
+@@ -936,6 +956,8 @@ export interface IpcInvokeMap {
+   'custom:topSetFormat': { req: { format: 'original' | 'webp' }; res: void }
+   /** [custom] 씬 메모(별명) 저장 — 빈 글자면 지운다 */
+   'custom:sceneMemo': { req: { id: number; memo: string }; res: void }
++  /** [custom] 씬별 투명 배경 켜기·끄기 */
++  'custom:sceneTransparent': { req: { id: number; on: boolean }; res: void }
+   /** [custom] 미생성인 씬이 바뀌기 전 내용 — 바뀐 태그를 노랗게 칠하는 기준 (없으면 null) */
+   'custom:sceneBase': {
+     req: { id: number }
+diff --git a/tests/custom-scene-transparent.integration.ts b/tests/custom-scene-transparent.integration.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..366426e675ba5c42d02fe3199fe19e836fe83aae
+--- /dev/null
++++ b/tests/custom-scene-transparent.integration.ts
+@@ -0,0 +1,112 @@
++import { mkdtempSync, readFileSync, rmSync } from 'fs'
++import { tmpdir } from 'os'
++import { join } from 'path'
++import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
++import { closeDb, initDb } from '../src/main/db'
++import { parseSceneImport } from '../src/main/scenes/import-formats'
++import {
++  applyImportedScenes,
++  createPreset,
++  createScene,
++  deleteScene,
++  exportScenesJson,
++  getScene,
++  isSceneTransparent,
++  listScenes,
++  setSceneTransparent,
++  updateScene
++} from '../src/main/scenes/repo'
++
++// [custom] 씬별 투명 배경: 켠 씬만 투명 배경으로 뽑는다. 씬 JSON의 "transparent"로도 켜고 끈다
++const environment = vi.hoisted(() => ({ directory: '', file: '' }))
++vi.mock('electron', () => ({
++  app: { getPath: () => environment.directory, getLocale: () => 'ko' },
++  BrowserWindow: { getFocusedWindow: () => null, getAllWindows: () => [] },
++  dialog: {
++    showOpenDialog: async () => ({ canceled: false, filePaths: [environment.file] }),
++    showSaveDialog: async () => ({ canceled: false, filePath: environment.file })
++  }
++}))
++
++beforeEach(() => {
++  environment.directory = mkdtempSync(join(tmpdir(), 'nais3-custom-transparent-'))
++  environment.file = join(environment.directory, 'scenes.json')
++  initDb()
++})
++afterEach(() => {
++  closeDb()
++  rmSync(environment.directory, { recursive: true, force: true })
++})
++
++describe('custom: per-scene transparent background', () => {
++  it('turns on and off per scene and shows in lists', () => {
++    const preset = createPreset('p')
++    const a = createScene(preset, 'a')
++    const b = createScene(preset, 'b')
++    expect(isSceneTransparent(a)).toBe(false)
++    expect(setSceneTransparent(a, true)).toBe(true)
++    expect(setSceneTransparent(a, true)).toBe(false) // 이미 켜져 있음
++    expect(isSceneTransparent(a)).toBe(true)
++    expect(getScene(a)?.transparent).toBe(true)
++    expect(getScene(b)?.transparent).toBeUndefined()
++    expect(listScenes(preset).map((s) => !!s.transparent)).toEqual([true, false])
++    expect(setSceneTransparent(a, false)).toBe(true)
++    expect(getScene(a)?.transparent).toBeUndefined()
++  })
++
++  it('does not survive on a new scene that reuses a deleted scene id', () => {
++    const preset = createPreset('p')
++    const a = createScene(preset, 'a')
++    setSceneTransparent(a, true)
++    deleteScene(a)
++    expect(isSceneTransparent(a)).toBe(false)
++  })
++
++  it('follows "transparent" in a scene JSON, and counts a change as a scene to redo', () => {
++    const preset = createPreset('p')
++    const a = createScene(preset, 'a')
++    updateScene(a, { prompt: 'one' })
++    const parsed = parseSceneImport(
++      JSON.stringify({
++        scenes: [
++          { name: 'a', prompt: 'one', transparent: true }, // 내용은 같고 투명만 켬
++          { name: 'new', prompt: 'two', transparent: true },
++          { name: 'plain', prompt: 'three' }
++        ]
++      })
++    )
++    const first = applyImportedScenes(preset, parsed ?? [])
++    const byName = Object.fromEntries(listScenes(preset).map((s) => [s.name, s]))
++    expect(byName.a.transparent).toBe(true)
++    expect(byName.new.transparent).toBe(true)
++    expect(byName.plain.transparent).toBeUndefined()
++    expect(first.sceneIds).toContain(a)
++
++    // 칸이 없으면 그대로, false면 끈다 (prompt 없는 줄로도)
++    const second = applyImportedScenes(
++      preset,
++      parseSceneImport(
++        JSON.stringify({
++          scenes: [
++            { name: 'a', prompt: 'one' },
++            { name: 'new', transparent: false }
++          ]
++        })
++      ) ?? []
++    )
++    expect(getScene(a)?.transparent).toBe(true)
++    expect(getScene(byName.new.id)?.transparent).toBeUndefined()
++    expect(second.sceneIds).toEqual([byName.new.id])
++  })
++
++  it('is written to exported scene JSON', async () => {
++    const preset = createPreset('p')
++    setSceneTransparent(createScene(preset, 'a'), true)
++    createScene(preset, 'b')
++    await exportScenesJson(preset)
++    const saved = JSON.parse(readFileSync(environment.file, 'utf-8')) as {
++      scenes: { name: string; transparent?: boolean }[]
++    }
++    expect(saved.scenes.map((s) => s.transparent)).toEqual([true, undefined])
++  })
++})
+diff --git a/tests/custom-top-set.integration.ts b/tests/custom-top-set.integration.ts
+index ffb1c981c6cdc4cf85a37368efc2b24f4a5f4d1e..49e657122a7f5ee6ee9bedd4cc4d79f030d9cc24 100644
+--- a/tests/custom-top-set.integration.ts
++++ b/tests/custom-top-set.integration.ts
+@@ -356,4 +356,66 @@ describe('custom: cover set request files', () => {
+     expect(handled).toEqual(['a.request.json']) // 바뀌기 전에는 다시 하지 않는다
+     expect(existsSync(join(watchDir(), 'a.request.json'))).toBe(true) // 요청 파일은 그대로 둔다
+   })
++
++  it('edits and reads fragments from a request file', async () => {
++    const { listFragments } = await import('../src/main/fragments/repo')
++    request('f.request.json', {
++      action: 'fragments',
++      set: [
++        { name: '초아 얼굴', content: 'blue eyes', folder: '윤초아' },
++        { name: '배경', content: ['room', 'park'] }
++      ]
++    })
++    const made = await runWatchRequest(watchDir(), 'f.request.json', { trash })
++    expect(made.ok).toBe(true)
++    expect(made.fragments).toEqual({ created: 2, updated: 0, unchanged: 0, missing: [] })
++    expect(made.exports).toEqual([])
++    const state = listFragments()
++    expect(state.folders.map((f) => f.name)).toContain('윤초아')
++    const mine = state.items.filter((f) => ['초아 얼굴', '배경'].includes(f.name))
++    expect(mine.map((f) => [f.name, f.content, f.folderId != null])).toEqual([
++      ['초아 얼굴', 'blue eyes', true],
++      ['배경', 'room\npark', false]
++    ])
++    expect(result('f.result.json').fragmentItems).toEqual([
++      { name: '초아 얼굴', content: 'blue eyes', folder: '윤초아' },
++      { name: '배경', content: 'room\npark' }
++    ])
++
++    // 같은 이름(대소문자 무시)은 내용만 바꾸고, 같으면 그대로. 폴더는 옮기지 않는다
++    request('f.request.json', {
++      action: 'fragments',
++      set: [
++        { name: '초아 얼굴', content: 'green eyes', folder: '다른 폴더' },
++        { name: '배경', content: 'room\npark' }
++      ],
++      read: ['초아 얼굴', '없는 조각']
++    })
++    const changed = await runWatchRequest(watchDir(), 'f.request.json', { trash })
++    expect(changed.fragments).toEqual({
++      created: 0,
++      updated: 1,
++      unchanged: 1,
++      missing: ['없는 조각']
++    })
++    expect(listFragments().folders.map((f) => f.name)).not.toContain('다른 폴더')
++    expect(result('f.result.json').fragmentItems).toEqual([
++      { name: '초아 얼굴', content: 'green eyes', folder: '윤초아' }
++    ])
++
++    // 읽기만: 전부
++    request('f.request.json', { action: 'fragments', read: true })
++    const all = await runWatchRequest(watchDir(), 'f.request.json', { trash })
++    expect(all.fragments).toEqual({ created: 0, updated: 0, unchanged: 0, missing: [] })
++    expect(result('f.result.json').fragmentItems).toHaveLength(state.items.length)
++
++    // 잘못 적은 요청은 아무것도 바꾸지 않는다
++    request('f.request.json', { action: 'fragments', set: [{ name: '', content: 'x' }] })
++    const bad = await runWatchRequest(watchDir(), 'f.request.json', { trash })
++    expect(bad.ok).toBe(false)
++    expect(bad.fragments).toBeUndefined()
++    request('f.request.json', { action: 'fragments' })
++    expect((await runWatchRequest(watchDir(), 'f.request.json', { trash })).ok).toBe(false)
++    expect(listFragments().items).toHaveLength(state.items.length)
++  })
+ })

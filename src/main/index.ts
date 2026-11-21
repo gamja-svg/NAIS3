@@ -39,6 +39,7 @@ import { prepareCharRefs, prepareVibes } from './refs/prepare'
 import { GenerationQueue } from './queue/generation-queue'
 import { laneSelection, parallelLanes, parallelTarget, refreshLaneBalance } from './custom/parallel'
 import { guardClaudeChatGuest } from './custom/claude-chat'
+import { withFragmentNegatives } from './custom/fragment-negatives'
 import { getPresetName, getScene, isSceneTransparent } from './scenes/repo'
 
 // 앱 이름 (dev 메뉴바·dock에서 'Electron' 대신 표시). 패키징 앱은 productName 사용
@@ -225,7 +226,8 @@ const startup = app.whenReady().then(async () => {
     // 배치 항목마다 여기서 치환 — 매 장 다른 와일드카드 결과가 나온다.
     // 주석 제거가 반드시 먼저 — 주석 줄이 조각을 소모하거나(순차 카운터),
     // 와일드카드 처리의 재조립이 개행을 지워 주석 범위가 전체로 번지는 것 방지 (NAIS2와 동일 순서)
-    let request = preprocessRequest(rawRequest, fragmentSource())
+    // [custom] 네거 짝 — 프롬프트에 쓰인 조각의 네거 조각을 네거티브에 붙인 뒤 치환한다
+    let request = preprocessRequest(withFragmentNegatives(rawRequest), fragmentSource())
     // [custom] 씬별 투명 배경 — 켠 씬은 사이드바 설정이 꺼져 있어도 투명 배경으로 (V5가 아니면 payload가 무시)
     if (rawRequest.sceneId !== undefined && isSceneTransparent(rawRequest.sceneId))
       request = { ...request, transparentBackground: true }

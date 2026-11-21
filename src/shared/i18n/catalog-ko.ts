@@ -274,6 +274,19 @@ export const KO = {
   'ui.customRemovedTags': '빠진 태그',
   'ui.customSceneMemo': '씬 메모',
   'ui.customSceneMemoEdit': '메모…',
+  'ui.customFragmentNegativeSet': '네거 짝 지정',
+  'ui.customFragmentNegativeHintValue':
+    '네거 짝: {0} — 프롬프트에 이 조각이 있으면 뽑을 때 네거티브에 자동으로 붙습니다. 눌러서 바꾸기.',
+  'ui.customFragmentNegativeAbout':
+    '네거 짝으로 삼을 조각을 고르세요. 프롬프트에 이 조각이 있으면, 뽑을 때 짝이 네거티브에 자동으로 붙습니다 (네거티브 칸에는 적히지 않음).',
+  'ui.customFragmentNegativeClear': '짝 없애기',
+  'ui.customFragmentNegativeCountValue': '짝 {0}',
+  'ui.customFragmentNegativeOnlyHint': '네거 짝을 지어 둔 조각만 보기',
+  'ui.customSceneNegativeAuto': '뽑을 때 자동으로 붙는 네거:',
+  'ui.customSceneNegativeOff': '안 넣기',
+  'ui.customSceneNegativeOn': '다시 넣기',
+  'ui.customSceneNegativeOffNote': '이 씬에는 네거 짝을 넣지 않습니다.',
+  'ui.customSceneNegativeOffHint': '이 씬만 네거 짝 자동 붙이기를 끄거나 켭니다.',
   'ui.customFragmentInsert': '커서 자리에 넣기',
   'ui.customFragmentInsertHint':
     '{0} 을(를) 마지막으로 누른 프롬프트 칸의 커서 자리에 넣습니다. 끌어다 원하는 자리에 놓아도 됩니다.',

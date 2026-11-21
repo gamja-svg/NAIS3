@@ -54,6 +54,7 @@ import { bindParallelEvents, useParallelStore } from './stores/custom-parallel-s
 import { ClaudePanel } from './components/custom-claude-panel'
 import { useClaudePanelStore } from './stores/custom-claude-panel-store'
 import { useAutoGenStore } from './stores/custom-autogen-store'
+import { useFragmentNegativeStore } from './stores/custom-fragment-negative-store'
 import { usePresetFolderStore } from './stores/custom-preset-folder-store'
 
 // 좌우 패널 접기/펴기 — 페이지 넘김(SidePageHost)과 같은 연출 (lib/page-turn).
@@ -116,6 +117,7 @@ export default function App(): React.JSX.Element {
         useClaudePanelStore.getState().hydrate(), // [custom] Claude 창
         useAutoGenStore.getState().hydrate(), // [custom] 불러온 씬 자동 생성
         usePresetFolderStore.getState().hydrate(), // [custom] 씬 프리셋 폴더
+        useFragmentNegativeStore.getState().hydrate(), // [custom] 조각의 네거 짝
         useFragmentsStore.getState().load(),
         useVibesStore.getState().load(),
         useCharRefsStore.getState().load(),

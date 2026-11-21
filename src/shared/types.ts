@@ -577,6 +577,8 @@ export interface FragmentRequestItem {
   name: string
   content: string
   folder?: string
+  /** 네거 짝 조각 이름 */
+  negative?: string
 }
 
 export interface IpcInvokeMap {
@@ -956,6 +958,16 @@ export interface IpcInvokeMap {
   'custom:topSetFormat': { req: { format: 'original' | 'webp' }; res: void }
   /** [custom] 씬 메모(별명) 저장 — 빈 글자면 지운다 */
   'custom:sceneMemo': { req: { id: number; memo: string }; res: void }
+  /** [custom] 조각의 네거 짝(조각 id → 네거 조각 id)과, 네거 짝을 붙이지 않는 씬 */
+  'custom:fragmentNegatives': {
+    req: void
+    res: { pairs: Record<number, number>; offScenes: number[] }
+  }
+  'custom:fragmentNegativeSet': {
+    req: { fragmentId: number; negativeId: number | null }
+    res: void
+  }
+  'custom:sceneNegativeOff': { req: { id: number; off: boolean }; res: void }
   /** [custom] 씬별 투명 배경 켜기·끄기 */
   'custom:sceneTransparent': { req: { id: number; on: boolean }; res: void }
   /** [custom] 미생성인 씬이 바뀌기 전 내용 — 바뀐 태그를 노랗게 칠하는 기준 (없으면 null) */

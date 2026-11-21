@@ -7,6 +7,7 @@ import {
   updateFragment
 } from '../fragments/repo'
 import { t } from '../i18n'
+import { getFragmentNegatives, setFragmentNegative } from './fragment-negatives'
 
 /**
  * [custom] 감시 폴더의 `조각 고치기` 요청 — Claude가 조각(프롬프트의 `<이름>`)을 읽고 고친다.
@@ -19,11 +20,14 @@ import { t } from '../i18n'
  * - set: 같은 이름(대소문자 무시)의 조각이 있으면 내용을 바꾸고, 없으면 새로 만든다.
  *   content는 글자 또는 줄 배열. folder는 새로 만들 때 넣을 폴더 이름(없으면 만든다) — 있는 조각의
  *   폴더는 옮기지 않는다. 조각을 지우거나 이름을 바꾸지는 않는다.
+ *   negative: 네거 짝으로 삼을 조각 이름 (null이면 짝을 없앤다, 칸이 없으면 그대로) — 프롬프트에
+ *   이 조각이 있으면 뽑을 때 네거 짝이 네거티브에 자동으로 붙는다.
  * - read: true = 조각 전부, ["이름", ...] = 그 조각만, 없으면 set에 적은 조각만 — 결과 파일의
  *   `fragmentItems`에 지금 내용이 담긴다 (고친 뒤의 내용).
  */
 export interface FragmentRequest {
-  set: { name: string; content: string; folder: string | null }[]
+  /** negative: undefined = 그대로, null = 짝 없애기, 이름 = 그 조각을 네거 짝으로 */
+  set: { name: string; content: string; folder: string | null; negative?: string | null }[]
   read: true | string[] | null
 }
 
@@ -45,7 +49,12 @@ export function parseFragmentRequest(
       set.push({
         name,
         content,
-        folder: typeof item?.folder === 'string' && item.folder.trim() ? item.folder.trim() : null
+        folder: typeof item?.folder === 'string' && item.folder.trim() ? item.folder.trim() : null,
+        ...(item?.negative === null
+          ? { negative: null }
+          : typeof item?.negative === 'string' && item.negative.trim()
+            ? { negative: item.negative.trim() }
+            : {})
       })
     }
   }
@@ -90,7 +99,19 @@ export function runFragmentRequest(request: FragmentRequest): {
     outcome.created++
   }
 
+  // 네거 짝 — 조각을 다 만든 뒤에 맞춘다 (같은 요청에서 만든 네거 조각을 짝으로 삼을 수 있게)
+  for (const item of request.set) {
+    if (item.negative === undefined) continue
+    const self = byName.get(key(item.name))
+    const pair = item.negative === null ? null : byName.get(key(item.negative))
+    if (!self) continue
+    if (item.negative !== null && !pair) outcome.missing.push(item.negative)
+    else setFragmentNegative(self.id, pair?.id ?? null)
+  }
+
   const after = listFragments()
+  const pairs = getFragmentNegatives()
+  const nameById = new Map(after.items.map((f) => [f.id, f.name]))
   const folderName = new Map(after.folders.map((f) => [f.id, f.name]))
   const all = new Map(after.items.map((f) => [key(f.name), f]))
   const wanted =
@@ -106,7 +127,8 @@ export function runFragmentRequest(request: FragmentRequest): {
     content: f.content,
     ...(f.folderId != null && folderName.has(f.folderId)
       ? { folder: folderName.get(f.folderId) as string }
-      : {})
+      : {}),
+    ...(nameById.has(pairs[f.id]) ? { negative: nameById.get(pairs[f.id]) as string } : {})
   }))
   return { outcome, items }
 }

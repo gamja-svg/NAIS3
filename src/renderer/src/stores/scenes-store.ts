@@ -16,6 +16,7 @@ import type {
   WatchFolderFailure
 } from '@shared/types'
 import { enabledCharacters, useCharactersStore } from './characters-store'
+import { useFragmentNegativeStore } from './custom-fragment-negative-store'
 import { useFragmentsStore } from './fragments-store'
 import { randomSeed, useGenerationStore } from './generation-store'
 import { useLayoutStore } from './layout-store'
@@ -901,6 +902,7 @@ export function bindSceneEvents(): () => void {
     if (event.fragments) {
       const f = event.fragments
       if (f.created + f.updated > 0) void useFragmentsStore.getState().load()
+      void useFragmentNegativeStore.getState().hydrate() // 요청이 네거 짝을 바꿨을 수 있다
       toast(
         t('ui.customRequestFragmentsDoneValue', event.file, f.updated, f.created, f.unchanged),
         'success'

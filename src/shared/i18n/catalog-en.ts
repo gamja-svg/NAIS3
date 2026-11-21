@@ -279,6 +279,19 @@ export const EN = {
   'ui.customRemovedTags': 'Removed',
   'ui.customSceneMemo': 'Scene memo',
   'ui.customSceneMemoEdit': 'Memo…',
+  'ui.customFragmentNegativeSet': 'Set negative pair',
+  'ui.customFragmentNegativeHintValue':
+    'Negative pair: {0} — when this fragment is in the prompt, it is added to the negative prompt at generation. Click to change.',
+  'ui.customFragmentNegativeAbout':
+    'Pick the fragment to pair as its negative. When this fragment is in the prompt, the pair is added to the negative prompt at generation (it is not written in the negative box).',
+  'ui.customFragmentNegativeClear': 'Remove pair',
+  'ui.customFragmentNegativeCountValue': 'Pairs {0}',
+  'ui.customFragmentNegativeOnlyHint': 'Show only fragments that have a negative pair',
+  'ui.customSceneNegativeAuto': 'Added to the negative at generation:',
+  'ui.customSceneNegativeOff': 'Leave out',
+  'ui.customSceneNegativeOn': 'Add again',
+  'ui.customSceneNegativeOffNote': 'Negative pairs are not added for this scene.',
+  'ui.customSceneNegativeOffHint': 'Turn automatic negative pairs off or on for this scene only.',
   'ui.customFragmentInsert': 'Insert at cursor',
   'ui.customFragmentInsertHint':
     'Inserts {0} at the cursor of the prompt box you last clicked. You can also drag it to the spot you want.',

@@ -1,3 +1,4 @@
+import { setSceneNegativeOff } from '../custom/fragment-negatives'
 import { BrowserWindow } from 'electron'
 import { showOpenDialog, showSaveDialog } from '../dialogs'
 import { readFileSync, unlinkSync, writeFileSync } from 'fs'
@@ -859,6 +860,11 @@ export function applyImportedScenes(presetId: number, scenes: ImportedScene[]): 
     if (value === undefined || !setSceneTransparent(sceneId, value)) return
     if (!outcome.sceneIds.includes(sceneId)) outcome.sceneIds.push(sceneId)
   }
+  // [custom] 네거 짝 자동 붙이기 — 칸이 있을 때만 맞춘다. 바뀌면 다시 뽑을 씬으로 친다
+  const applyAutoNegative = (sceneId: number, value: boolean | undefined): void => {
+    if (value === undefined || !setSceneNegativeOff(sceneId, !value)) return
+    if (!outcome.sceneIds.includes(sceneId)) outcome.sceneIds.push(sceneId)
+  }
   const db = getDb()
   const max = db
     .prepare('SELECT COALESCE(MAX(sort_order), 0) AS m FROM gen_scenes WHERE preset_id = ?')
@@ -890,6 +896,7 @@ export function applyImportedScenes(presetId: number, scenes: ImportedScene[]): 
         outcome.unchanged++
         if (s.memo !== undefined && setSceneMemo(target.id, s.memo)) outcome.memos++
         applyTransparent(target.id, s.transparent)
+        applyAutoNegative(target.id, s.autoNegative)
         continue
       }
       const name = s.name ?? t('ui.scene')
@@ -923,6 +930,7 @@ export function applyImportedScenes(presetId: number, scenes: ImportedScene[]): 
         // [custom] 메모가 적혀 있으면 바꾼다 (빈 글자면 지움, 칸이 없으면 그대로) — 다시 뽑을 일은 아니다
         if (s.memo !== undefined && setSceneMemo(existing.id, s.memo)) outcome.memos++
         applyTransparent(existing.id, s.transparent)
+        applyAutoNegative(existing.id, s.autoNegative)
         continue
       }
       outcome.added++
@@ -938,6 +946,7 @@ export function applyImportedScenes(presetId: number, scenes: ImportedScene[]): 
       outcome.sceneIds.push(Number(inserted.lastInsertRowid))
       if (s.memo && setSceneMemo(Number(inserted.lastInsertRowid), s.memo)) outcome.memos++ // [custom]
       if (s.transparent) setSceneTransparent(Number(inserted.lastInsertRowid), true) // [custom]
+      if (s.autoNegative === false) setSceneNegativeOff(Number(inserted.lastInsertRowid), true) // [custom]
     }
   })()
   return outcome

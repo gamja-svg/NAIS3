@@ -13,6 +13,8 @@ export interface ImportedScene {
   memo?: string
   /** [custom] 씬별 투명 배경 — true면 켜고 false면 끈다 (칸이 없으면 그대로) */
   transparent?: boolean
+  /** [custom] 네거 짝 자동 붙이기 — false면 이 씬은 붙이지 않고 true면 다시 붙인다 (칸이 없으면 그대로) */
+  autoNegative?: boolean
 }
 
 type Obj = Record<string, unknown>
@@ -57,7 +59,8 @@ export function parseSceneImport(raw: string): ImportedScene[] | null {
       width: num(s.width),
       height: num(s.height),
       ...(str(s.memo) !== undefined ? { memo: str(s.memo) } : {}), // [custom]
-      ...(typeof s.transparent === 'boolean' ? { transparent: s.transparent } : {}) // [custom]
+      ...(typeof s.transparent === 'boolean' ? { transparent: s.transparent } : {}), // [custom]
+      ...(typeof s.autoNegative === 'boolean' ? { autoNegative: s.autoNegative } : {}) // [custom]
     }))
   }
 

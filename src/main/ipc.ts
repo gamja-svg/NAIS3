@@ -147,6 +147,12 @@ import { openCensor, readCensorBase, saveCensor } from './custom/censor'
 import { pickShape, warmSam } from './custom/censor-sam'
 import { getPresetFolders, renamePresetFolder, setPresetFolder } from './custom/preset-folders'
 import {
+  getFragmentNegatives,
+  listSceneNegativeOff,
+  setFragmentNegative,
+  setSceneNegativeOff
+} from './custom/fragment-negatives'
+import {
   arrangeFolderGroups,
   createFolderGroup,
   deleteFolderGroup,
@@ -655,6 +661,16 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
   handle('custom:sceneBase', ({ id }) => getSceneBase(id))
   handle('custom:sceneMemo', ({ id, memo }) => {
     setSceneMemo(id, memo)
+  })
+  handle('custom:fragmentNegatives', () => ({
+    pairs: getFragmentNegatives(),
+    offScenes: listSceneNegativeOff()
+  }))
+  handle('custom:fragmentNegativeSet', ({ fragmentId, negativeId }) =>
+    setFragmentNegative(fragmentId, negativeId)
+  )
+  handle('custom:sceneNegativeOff', ({ id, off }) => {
+    setSceneNegativeOff(id, off)
   })
   handle('custom:sceneTransparent', ({ id, on }) => {
     setSceneTransparent(id, on)

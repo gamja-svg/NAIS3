@@ -1,4 +1,5 @@
 import {
+  CircleMinus,
   Copy,
   CornerDownRight,
   Download,
@@ -20,6 +21,8 @@ import { useT } from '../lib/i18n'
 import { buildDisplayRows } from '../lib/folder-list'
 import { useFragmentsStore } from '../stores/fragments-store'
 import { insertIntoPrompt } from '../lib/custom-prompt-target'
+import { useFragmentNegativeStore } from '../stores/custom-fragment-negative-store'
+import { FragmentNegativePicker } from './custom-fragment-negative'
 import { toast } from '../stores/toast-store'
 import { FragmentNameInput } from './fragment-name-input'
 import { FolderListView } from './folder-list-view'
@@ -68,6 +71,17 @@ export function FragmentOverlay(): React.JSX.Element {
     const q = search.trim().toLowerCase()
     return all.filter((r) => r.type === 'item' && r.item.name.toLowerCase().includes(q))
   }, [folders, items, searching, search])
+  // [custom] 네거 짝이 있는 조각만 보기 — 묶어 둔 세트를 한눈에 확인
+  const negativePairs = useFragmentNegativeStore((s) => s.pairs)
+  const pairCount = items.filter((f) => negativePairs[f.id] != null).length
+  const [pairedOnly, setPairedOnly] = useState(false)
+  const shownRows = useMemo(
+    () =>
+      pairedOnly && pairCount > 0
+        ? rows.filter((r) => r.type === 'item' && negativePairs[r.item.id] != null)
+        : rows,
+    [rows, pairedOnly, pairCount, negativePairs]
+  )
 
   const folderName = useMemo(() => new Map(folders.map((f) => [f.id, f.name])), [folders])
   const pathOf = (f: Fragment): string =>
@@ -123,6 +137,7 @@ export function FragmentOverlay(): React.JSX.Element {
             {fragment.name}
           </button>
         )}
+        <FragmentNegativePicker fragment={fragment} />
         <Button
           size="sm"
           variant="ghost"
@@ -262,6 +277,18 @@ export function FragmentOverlay(): React.JSX.Element {
             onChange={(e) => setSearch(e.target.value)}
           />
         </div>
+        {pairCount > 0 && (
+          <Button
+            size="sm"
+            variant={pairedOnly ? 'accent' : 'ghost'}
+            className="gap-1 px-2 text-[11.5px]"
+            title={t('ui.customFragmentNegativeOnlyHint')}
+            aria-pressed={pairedOnly}
+            onClick={() => setPairedOnly((v) => !v)}
+          >
+            <CircleMinus size={13} /> {t('ui.customFragmentNegativeCountValue', pairCount)}
+          </Button>
+        )}
         <Button
           size="sm"
           variant="ghost"
@@ -284,8 +311,8 @@ export function FragmentOverlay(): React.JSX.Element {
 
       <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden no-scrollbar">
         <FolderListView
-          rows={rows}
-          searching={searching}
+          rows={shownRows}
+          searching={searching || (pairedOnly && pairCount > 0)}
           expandedId={expandedId}
           renderKey={renderKey}
           folderActions={{

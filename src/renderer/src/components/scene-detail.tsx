@@ -24,6 +24,7 @@ import {
 import { changedTagRanges } from '../lib/custom-prompt-diff'
 import { useSceneBase } from '../lib/custom-scene-base'
 import { ChangedTagsNote } from './custom-changed-tags'
+import { SceneNegativePairs } from './custom-fragment-negative'
 
 export function SceneDetail({ scene }: { scene: Scene }): React.JSX.Element {
   const t = useT()
@@ -52,6 +53,12 @@ export function SceneDetail({ scene }: { scene: Scene }): React.JSX.Element {
   const model = useGenerationStore((s) => s.request.model)
   const tokenLimit = promptTokenLimit(model)
   const charItems = useCharactersStore((s) => s.items)
+  // [custom] 네거 짝을 찾을 글 — 이 씬을 뽑을 때 쓰이는 프롬프트 전부
+  const pairPrompts = useMemo(
+    () => [basePrompt, scene.prompt, ...charItems.filter((c) => c.enabled).map((c) => c.prompt)],
+    [basePrompt, scene.prompt, charItems]
+  )
+  const pairNegative = `${baseNegative}\n${scene.negativePrompt}`
   // Only whether a frame exists — the frame itself is read by StreamingFrame so per-step
   // previews don't re-render the whole image grid
   // [custom] 동시 생성이면 여러 씬을 함께 뽑으므로 이 씬을 뽑는 항목 기준
@@ -282,6 +289,8 @@ export function SceneDetail({ scene }: { scene: Scene }): React.JSX.Element {
           {sceneBase && (
             <ChangedTagsNote current={scene.negativePrompt} base={sceneBase.negativePrompt} />
           )}
+          {/* [custom] 뽑을 때 자동으로 붙는 네거 짝 + 이 씬에는 안 넣기 */}
+          <SceneNegativePairs scene={scene} prompts={pairPrompts} negative={pairNegative} />
         </div>
 
         <div className="mt-4 mb-2 flex items-center gap-2 text-[12px] text-muted">

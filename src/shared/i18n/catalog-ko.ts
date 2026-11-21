@@ -274,6 +274,12 @@ export const KO = {
   'ui.customRemovedTags': '빠진 태그',
   'ui.customSceneMemo': '씬 메모',
   'ui.customSceneMemoEdit': '메모…',
+  'ui.customFragmentInsert': '커서 자리에 넣기',
+  'ui.customFragmentInsertHint':
+    '{0} 을(를) 마지막으로 누른 프롬프트 칸의 커서 자리에 넣습니다. 끌어다 원하는 자리에 놓아도 됩니다.',
+  'ui.customFragmentInsertNoTarget': '먼저 넣을 프롬프트 칸을 한 번 눌러 커서를 두세요',
+  'ui.customFragmentInsertTip':
+    '↳ 버튼: 마지막으로 누른 프롬프트 칸의 커서 자리에 넣기 (끌어다 놓기도 됨).',
   'ui.customSceneTransparentOn': '투명 배경 켜기',
   'ui.customSceneTransparentOff': '투명 배경 끄기',
   'ui.customSceneTransparentHint':

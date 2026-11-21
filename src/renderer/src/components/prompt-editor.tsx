@@ -1,10 +1,16 @@
 import { ChevronDown, ChevronUp, Search, X } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { cn } from '../lib/utils'
 import { useT } from '../lib/i18n'
 import { caretCoords } from '../lib/caret'
 import { highlightRanges } from '../lib/prompt-weights'
+import {
+  clearPromptTarget,
+  insertAtCaret,
+  setPromptTarget,
+  type PromptTarget
+} from '../lib/custom-prompt-target'
 import { CHANGED_TAG_STYLE, markedSegments, type TextRange } from '../lib/custom-prompt-diff'
 import { fragmentAtSelection, fragmentPaths, useFragmentsStore } from '../stores/fragments-store'
 
@@ -92,6 +98,30 @@ export function PromptEditor({
 }): React.JSX.Element {
   const t = useT()
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  // [custom] 조각 창의 `커서 자리에 넣기` — 이 칸이 포커스를 받으면 넣을 곳으로 등록된다.
+  // 포커스를 잃어도 textarea는 커서 자리를 기억하므로, 조각 창을 눌러도 그 자리에 들어간다
+  const live = useRef({ value, onValueChange })
+  useLayoutEffect(() => {
+    live.current = { value, onValueChange }
+  })
+  const [promptTarget] = useState<PromptTarget>(() => ({
+    insert: (text) => {
+      const ta = textareaRef.current
+      if (!ta) return
+      const { next, caret } = insertAtCaret(
+        live.current.value,
+        ta.selectionStart,
+        ta.selectionEnd,
+        text
+      )
+      live.current.onValueChange(next)
+      requestAnimationFrame(() => {
+        ta.focus()
+        ta.setSelectionRange(caret, caret)
+      })
+    }
+  }))
+  useEffect(() => () => clearPromptTarget(promptTarget), [promptTarget])
   const mirrorRef = useRef<HTMLDivElement>(null)
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined)
   // 검색 세대 — 이미 날아간(in-flight) 태그 검색의 스테일 결과가 뒤늦게 패널을 다시 여는 것 방지.
@@ -388,6 +418,7 @@ export function PromptEditor({
           refreshSuggestions(e.target.value, e.target.selectionStart)
         }}
         onScroll={syncScroll}
+        onFocus={() => setPromptTarget(promptTarget)}
         onDoubleClick={(e) => {
           const ta = e.currentTarget
           const fragment = fragmentAtSelection(value, ta.selectionStart, ta.selectionEnd)

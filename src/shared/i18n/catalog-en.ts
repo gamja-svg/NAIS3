@@ -279,6 +279,12 @@ export const EN = {
   'ui.customRemovedTags': 'Removed',
   'ui.customSceneMemo': 'Scene memo',
   'ui.customSceneMemoEdit': 'Memo…',
+  'ui.customFragmentInsert': 'Insert at cursor',
+  'ui.customFragmentInsertHint':
+    'Inserts {0} at the cursor of the prompt box you last clicked. You can also drag it to the spot you want.',
+  'ui.customFragmentInsertNoTarget': 'Click a prompt box first to place the cursor',
+  'ui.customFragmentInsertTip':
+    '↳ button: insert at the cursor of the prompt box you last clicked (or drag it there).',
   'ui.customSceneTransparentOn': 'Turn on transparent background',
   'ui.customSceneTransparentOff': 'Turn off transparent background',
   'ui.customSceneTransparentHint':

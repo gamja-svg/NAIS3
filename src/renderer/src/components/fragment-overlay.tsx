@@ -1,5 +1,6 @@
 import {
   Copy,
+  CornerDownRight,
   Download,
   FileDown,
   FileUp,
@@ -7,7 +8,6 @@ import {
   Maximize2,
   Pencil,
   Plus,
-  Puzzle,
   RotateCcw,
   Search,
   Trash2,
@@ -19,6 +19,7 @@ import { cn } from '../lib/utils'
 import { useT } from '../lib/i18n'
 import { buildDisplayRows } from '../lib/folder-list'
 import { useFragmentsStore } from '../stores/fragments-store'
+import { insertIntoPrompt } from '../lib/custom-prompt-target'
 import { toast } from '../stores/toast-store'
 import { FragmentNameInput } from './fragment-name-input'
 import { FolderListView } from './folder-list-view'
@@ -74,11 +75,39 @@ export function FragmentOverlay(): React.JSX.Element {
       ? `${folderName.get(f.folderId)}/${f.name}`
       : f.name
 
+  // [custom] 프롬프트에 적을 참조 — 이름이 겹치면 폴더까지 적는다
+  const nameCount = useMemo(() => {
+    const count = new Map<string, number>()
+    for (const f of items)
+      count.set(f.name.toLowerCase(), (count.get(f.name.toLowerCase()) ?? 0) + 1)
+    return count
+  }, [items])
+  const refOf = (f: Fragment): string =>
+    `<${(nameCount.get(f.name.toLowerCase()) ?? 0) > 1 ? pathOf(f) : f.name}>`
+
   const renderHeader = (fragment: Fragment): React.ReactNode => {
     const lines = lineCount(fragment.content)
     return (
       <div className="flex h-10 items-center gap-2 px-2.5">
-        <Puzzle size={14} className="shrink-0 text-faint" />
+        {/* [custom] 커서 자리에 넣기 — 누르면 마지막으로 커서를 둔 프롬프트 칸에, 끌면 놓은 자리에 */}
+        <button
+          type="button"
+          draggable
+          className="-ml-1 grid size-7 shrink-0 cursor-grab place-items-center rounded-md text-accent-ink hover:bg-accent/15 active:cursor-grabbing"
+          title={t('ui.customFragmentInsertHint', refOf(fragment))}
+          aria-label={t('ui.customFragmentInsert')}
+          onPointerDown={(e) => e.stopPropagation()}
+          onDragStart={(e) => {
+            e.dataTransfer.setData('text/plain', `${refOf(fragment)}, `)
+            e.dataTransfer.effectAllowed = 'copy'
+          }}
+          onClick={() => {
+            if (!insertIntoPrompt(refOf(fragment)))
+              toast(t('ui.customFragmentInsertNoTarget'), 'info')
+          }}
+        >
+          <CornerDownRight size={15} />
+        </button>
         {renamingId === fragment.id ? (
           <FragmentNameInput fragment={fragment} onDone={() => setRenamingId(null)} />
         ) : (
@@ -219,7 +248,9 @@ export function FragmentOverlay(): React.JSX.Element {
         </Button>
       </div>
 
-      <p className="px-1 text-[11px] text-faint">{t('ui.fragmentQuickEditHint')}</p>
+      <p className="px-1 text-[11px] text-faint">
+        {t('ui.customFragmentInsertTip')} {t('ui.fragmentQuickEditHint')}
+      </p>
 
       <div className="flex items-center gap-1.5">
         <div className="relative flex-1">

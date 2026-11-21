@@ -100,7 +100,7 @@ function fromBlocks<T extends FolderListItem>(
 
 /**
  * 드래그 결과 반영. activeKey/overKey는 rowKey 형식 ("f-1" | "i-3" | "divider").
- * - 아이템 이동: 도착 위치의 폴더 문맥으로 소속 변경 (구분선 아래 = 미분류)
+ * - 아이템 이동: 도착 위치의 폴더 문맥으로 소속 변경 (구분선 아래 = 미분류, 폴더 줄 위 = 그 폴더 안)
  * - 폴더 이동: 소속 아이템이 블록째 함께 이동, 미분류 섹션 아래로는 스냅
  */
 export function moveRow<T extends FolderListItem>(
@@ -147,7 +147,11 @@ export function moveRow<T extends FolderListItem>(
 
   let toIdx = rows.findIndex((r) => rowKey(r) === overKey)
   if (toIdx < 0) return { folders, items }
-  if (toIdx >= fromIdx) toIdx += 1
+  // [custom] 폴더 줄 위에 놓으면 그 폴더 안(맨 위)으로 — 아래에서 끌어 올리면 폴더 줄 "앞"에 끼어
+  // 앞 폴더(없으면 미분류)로 가 버려, 비었거나 접힌 폴더에는 넣을 방법이 없었다
+  // (자기 폴더의 줄 위로 올리는 것은 전처럼 그 폴더에서 빼는 동작)
+  const intoFolder = overKey.startsWith('f-') && row.item.folderId !== Number(overKey.slice(2))
+  if (intoFolder || toIdx >= fromIdx) toIdx += 1
   rows.splice(Math.min(toIdx, rows.length), 0, row)
 
   // 행 순서에서 folders/items 재구성 (소속은 직전 폴더에서 파생, 구분선이 리셋)

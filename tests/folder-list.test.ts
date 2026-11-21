@@ -52,6 +52,21 @@ describe('폴더 리스트 이동 로직 (폴더 섹션 상단 + 미분류 구�
     expect(r.items.find((i) => i.id === 12)?.folderId).toBeNull()
   })
 
+  it('[custom] 다른 폴더의 줄 위에 놓으면 그 폴더 안으로 들어간다 (비었거나 접힌 폴더에도)', () => {
+    // 미분류(폴더들 아래)에서 끌어 올려 폴더 줄에 놓기
+    const fromLoose = moveRow(folders, items, 'i-10', 'f-1')
+    expect(fromLoose.items.find((i) => i.id === 10)?.folderId).toBe(1)
+    const toSecond = moveRow(folders, items, 'i-10', 'f-2')
+    expect(toSecond.items.find((i) => i.id === 10)?.folderId).toBe(2)
+    // 빈 폴더
+    const empty = [...folders, { id: 3, name: 'empty', collapsed: false, color: null }]
+    const intoEmpty = moveRow(empty, items, 'i-10', 'f-3')
+    expect(intoEmpty.items.find((i) => i.id === 10)?.folderId).toBe(3)
+    // 다른 폴더에서 위 폴더의 줄로
+    const across = moveRow(folders, items, 'i-13', 'f-1')
+    expect(across.items.find((i) => i.id === 13)?.folderId).toBe(1)
+  })
+
   it('폴더 이동 시 소속 아이템이 블록째 따라간다', () => {
     const r = moveRow(folders, items, 'f-1', 'f-2')
     expect(keys(r.folders, r.items)).toEqual([

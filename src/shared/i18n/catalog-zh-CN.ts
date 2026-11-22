@@ -248,8 +248,10 @@ export const ZH_CN = {
     '尚未设置封面集默认文件夹。请先在场景列表中用“保存封面集”选择，或在请求中填写 "to" 文件夹。',
   'ui.customRequestBadJson': '请求文件不是有效的 JSON',
   'ui.customRequestUnknownAction':
-    '未知请求（"action" 只能是 "exportTopSet"、"autoGenerate" 或 "fragments"）',
+    '未知请求（"action" 只能是 "exportTopSet"、"autoGenerate"、"fragments" 或 "sortScenes"）',
   'ui.customRequestNoPreset': '请求中没有预设名称',
+  'ui.customRequestSortedValue': '{0}：已按编号排序场景（移动 {1} 个）',
+  'ui.customRequestSortedSameValue': '{0}：场景已按编号排列',
   'ui.customRequestFragmentsBadSet': '"set" 中请填写 { "name": "片段名称", "content": "内容" }',
   'ui.customRequestFragmentsEmpty': '片段请求中没有 "set"（要修改的片段）或 "read"（要读取的片段）',
   'ui.customRequestFragmentsDoneValue':

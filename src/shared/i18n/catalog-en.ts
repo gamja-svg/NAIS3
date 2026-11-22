@@ -254,8 +254,10 @@ export const EN = {
     'No default cover set folder. Choose one with Save cover set in the scene list, or put a "to" folder in the request.',
   'ui.customRequestBadJson': 'The request file is not valid JSON',
   'ui.customRequestUnknownAction':
-    'Unknown request ("action" must be "exportTopSet", "autoGenerate" or "fragments")',
+    'Unknown request ("action" must be "exportTopSet", "autoGenerate", "fragments" or "sortScenes")',
   'ui.customRequestNoPreset': 'The request names no preset',
+  'ui.customRequestSortedValue': '{0}: scenes sorted by number ({1} moved)',
+  'ui.customRequestSortedSameValue': '{0}: scenes are already in number order',
   'ui.customRequestFragmentsBadSet':
     '"set" needs items like { "name": "fragment name", "content": "text" }',
   'ui.customRequestFragmentsEmpty':

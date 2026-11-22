@@ -250,8 +250,10 @@ export const KO = {
     '대표 세트 기본 폴더가 정해져 있지 않습니다. 씬 목록의 대표 세트 받기로 먼저 고르거나 요청에 "to" 폴더를 적어 주세요.',
   'ui.customRequestBadJson': '요청 파일을 읽을 수 없습니다 (JSON 형식이 아님)',
   'ui.customRequestUnknownAction':
-    '알 수 없는 요청입니다 ("action"은 "exportTopSet", "autoGenerate", "fragments" 중 하나)',
+    '알 수 없는 요청입니다 ("action"은 "exportTopSet", "autoGenerate", "fragments", "sortScenes" 중 하나)',
   'ui.customRequestNoPreset': '요청에 프리셋 이름이 없습니다',
+  'ui.customRequestSortedValue': '{0}: 씬을 번호순으로 정렬했습니다 ({1}개 자리 바뀜)',
+  'ui.customRequestSortedSameValue': '{0}: 씬이 이미 번호순입니다',
   'ui.customRequestFragmentsBadSet':
     '"set"에는 { "name": "조각 이름", "content": "내용" }을 적어 주세요',
   'ui.customRequestFragmentsEmpty': '조각 요청에 "set"(고칠 조각)이나 "read"(읽을 조각)가 없습니다',

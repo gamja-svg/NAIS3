@@ -140,6 +140,33 @@ describe('custom: watch folder', () => {
     expect(scanWatchFolder()).toEqual([])
   })
 
+  it('puts new scenes at their number instead of the end', () => {
+    const preset = createPreset('번호 자리')
+    for (const name of ['001', '003', '메모용', '005']) createScene(preset, name)
+    drop('add.json', {
+      preset: '번호 자리',
+      scenes: [
+        { name: '006', prompt: 'f' },
+        { name: '002', prompt: 'b' },
+        { name: '004', prompt: 'd' },
+        { name: '새 씬', prompt: 'x' }
+      ]
+    })
+    const [event] = settle()
+    expect(event.added).toBe(4)
+    // 있던 씬(001, 003, 메모용, 005)의 순서는 그대로, 새 씬만 번호 자리에
+    expect(listScenes(preset).map((s) => s.name)).toEqual([
+      '001',
+      '002',
+      '003',
+      '004',
+      '메모용',
+      '005',
+      '006',
+      '새 씬'
+    ])
+  })
+
   it('leaves files that were there before watching was switched on', () => {
     const preset = createPreset('D1')
     const old = join(watchDir, 'old.json')

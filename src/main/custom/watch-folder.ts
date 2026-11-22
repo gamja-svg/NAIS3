@@ -14,6 +14,7 @@ import { isWatchRequestFile, isWatchResultFile } from './top-set'
  *   포함)은 건드리지 않는다. 처리한 파일은 크기·수정 시각을 기억해, 다시 바뀔 때까지 또 불러오지 않는다
  *   (프로그램을 껐다 켜도 유지).
  * - 불러오기는 파일 고르기와 같은 applyImportedScenes: 같은 이름 씬은 내용만 교체, 새 이름은 추가.
+ *   다만 새 씬은 끝이 아니라 번호 자리에 끼운다 ("25"는 24와 26 사이 — 있던 씬의 순서는 그대로).
  *   prompt 칸이 없는 줄은 같은 이름 씬의 메모만 바꾼다(없는 씬은 건너뜀).
  *   씬을 지우거나 이미지를 만들지는 않는다.
  * - 프리셋 정하기: JSON 최상위 `preset` 이름(없으면 새로 만듦) → 없으면 파일 이름에 든 프리셋 이름.
@@ -141,7 +142,8 @@ export function importWatchFile(dir: string, file: string): WatchFolderEvent {
     preset = picked
   }
 
-  const outcome = applyImportedScenes(preset.id, scenes)
+  // 새 씬은 끝이 아니라 번호 자리에 끼운다 (이름이 번호로 시작하는 씬)
+  const outcome = applyImportedScenes(preset.id, scenes, { placeByNumber: true })
   return {
     file,
     ok: true,

@@ -5,7 +5,7 @@ import type { FragmentRequestItem, TopSetResult, WatchRequestEvent } from '../..
 import { getSetting, setSetting } from '../db/settings'
 import { t } from '../i18n'
 import { getMemoryImage, isMemoryPath } from '../images/storage'
-import { getPresetName, listPresets, listScenes } from '../scenes/repo'
+import { getPresetName, listPresets, listScenes, sortPresetScenesByNumber } from '../scenes/repo'
 import { parseFragmentRequest, runFragmentRequest } from './fragment-request'
 import sharp from '../sharp'
 
@@ -322,8 +322,36 @@ export async function runWatchRequest(
       event.errors.push(e instanceof Error ? e.message : String(e))
     }
   }
+  // 씬 번호순 정렬 — { "action": "sortScenes", "preset": "이름" } (또는 "presets": [...])
+  const sorting = body && typeof body !== 'string' && body.action === 'sortScenes'
+  if (sorting && body && typeof body !== 'string') {
+    const names = [
+      ...(typeof body.preset === 'string' ? [body.preset] : []),
+      ...(Array.isArray(body.presets) ? body.presets : [])
+    ]
+      .filter((n): n is string => typeof n === 'string')
+      .map((n) => n.trim())
+      .filter(Boolean)
+    if (names.length === 0) event.errors.push(t('ui.customRequestNoPreset'))
+    const presets = listPresets()
+    event.sorted = []
+    for (const name of new Set(names)) {
+      const preset =
+        presets.find((p) => p.name.trim() === name) ??
+        presets.find((p) => norm(p.name) === norm(name))
+      if (!preset) {
+        event.errors.push(t('ui.customRequestPresetNotFoundValue', name))
+        continue
+      }
+      event.sorted.push({
+        presetId: preset.id,
+        preset: preset.name,
+        ...sortPresetScenesByNumber(preset.id)
+      })
+    }
+  }
   const request =
-    raw && autoGenerate === null && fragments === null ? parseTopSetRequest(raw) : null
+    raw && autoGenerate === null && fragments === null && !sorting ? parseTopSetRequest(raw) : null
   if (typeof request === 'string') event.errors.push(request)
   else if (request) {
     const presets = listPresets()

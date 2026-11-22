@@ -1,3 +1,4 @@
+import { placeScenesByNumber, sortScenesByNumber } from '../../shared/custom-scene-order'
 import { setSceneNegativeOff } from '../custom/fragment-negatives'
 import { BrowserWindow } from 'electron'
 import { showOpenDialog, showSaveDialog } from '../dialogs'
@@ -204,6 +205,22 @@ export function setSceneMemo(id: number, memo: string): boolean {
        ON CONFLICT(scene_id) DO UPDATE SET memo = excluded.memo`
     ).run(id, text)
   return true
+}
+
+/** [custom] 프리셋의 씬을 지금 순서대로 (id·이름만) */
+function sceneOrder(presetId: number): { id: number; name: string }[] {
+  return getDb()
+    .prepare('SELECT id, name FROM gen_scenes WHERE preset_id = ? ORDER BY sort_order, id')
+    .all(presetId) as { id: number; name: string }[]
+}
+
+/** [custom] 프리셋의 씬을 번호순으로 정렬한다. 자리가 바뀐 씬 수를 돌려준다 */
+export function sortPresetScenesByNumber(presetId: number): { scenes: number; moved: number } {
+  const before = sceneOrder(presetId)
+  const after = sortScenesByNumber(before)
+  const moved = after.filter((id, i) => before[i].id !== id).length
+  if (moved > 0) reorderScenes(after)
+  return { scenes: before.length, moved }
 }
 
 /**
@@ -846,7 +863,13 @@ export interface ImportApplyResult {
  * [custom] 해석이 끝난 씬 목록을 프리셋에 반영한다 — 파일 고르기(importScenesJson)와
  * 감시 폴더(custom/watch-folder)가 같이 쓴다.
  */
-export function applyImportedScenes(presetId: number, scenes: ImportedScene[]): ImportApplyResult {
+export function applyImportedScenes(
+  presetId: number,
+  scenes: ImportedScene[],
+  // [custom] 새 씬을 끝이 아니라 번호 자리에 끼운다 (감시 폴더)
+  { placeByNumber = false }: { placeByNumber?: boolean } = {}
+): ImportApplyResult {
+  const addedIds: number[] = []
   const outcome: ImportApplyResult = {
     added: 0,
     updated: 0,
@@ -944,11 +967,15 @@ export function applyImportedScenes(presetId: number, scenes: ImportedScene[]): 
         ++order
       )
       outcome.sceneIds.push(Number(inserted.lastInsertRowid))
+      addedIds.push(Number(inserted.lastInsertRowid)) // [custom]
       if (s.memo && setSceneMemo(Number(inserted.lastInsertRowid), s.memo)) outcome.memos++ // [custom]
       if (s.transparent) setSceneTransparent(Number(inserted.lastInsertRowid), true) // [custom]
       if (s.autoNegative === false) setSceneNegativeOff(Number(inserted.lastInsertRowid), true) // [custom]
     }
   })()
+  // [custom] 새 씬을 번호 자리에 — 있던 씬의 순서는 그대로 둔다
+  if (placeByNumber && addedIds.length > 0)
+    reorderScenes(placeScenesByNumber(sceneOrder(presetId), addedIds))
   return outcome
 }
 

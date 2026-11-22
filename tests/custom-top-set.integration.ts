@@ -418,4 +418,21 @@ describe('custom: cover set request files', () => {
     expect((await runWatchRequest(watchDir(), 'f.request.json', { trash })).ok).toBe(false)
     expect(listFragments().items).toHaveLength(state.items.length)
   })
+
+  it('sorts a preset by scene number from a request file', async () => {
+    const preset = createPreset('정렬')
+    for (const name of ['10', '2', '메모용', '1']) createScene(preset, name)
+    request('s.request.json', { action: 'sortScenes', preset: '정렬' })
+    const done = await runWatchRequest(watchDir(), 's.request.json', { trash })
+    expect(done.ok).toBe(true)
+    expect(done.sorted).toEqual([{ presetId: preset, preset: '정렬', scenes: 4, moved: 3 }])
+    expect(listScenes(preset).map((s) => s.name)).toEqual(['1', '2', '10', '메모용'])
+    const again = await runWatchRequest(watchDir(), 's.request.json', { trash })
+    expect(again.sorted?.[0].moved).toBe(0)
+
+    request('s.request.json', { action: 'sortScenes', preset: '없는 프리셋' })
+    expect((await runWatchRequest(watchDir(), 's.request.json', { trash })).ok).toBe(false)
+    request('s.request.json', { action: 'sortScenes' })
+    expect((await runWatchRequest(watchDir(), 's.request.json', { trash })).ok).toBe(false)
+  })
 })

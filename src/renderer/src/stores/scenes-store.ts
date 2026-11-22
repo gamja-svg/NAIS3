@@ -898,6 +898,19 @@ export function bindSceneEvents(): () => void {
         'info'
       )
     }
+    // 요청 파일로 씬을 번호순 정렬 — 보고 있는 프리셋이면 목록을 새로 읽는다
+    for (const sorted of event.sorted ?? []) {
+      const scenes = useScenesStore.getState()
+      if (sorted.presetId === scenes.activePresetId && sorted.moved > 0) void scenes.load()
+      toast(
+        t(
+          sorted.moved > 0 ? 'ui.customRequestSortedValue' : 'ui.customRequestSortedSameValue',
+          sorted.preset,
+          sorted.moved
+        ),
+        'success'
+      )
+    }
     // 요청 파일로 조각을 고침 — 조각 화면을 새로 읽는다
     if (event.fragments) {
       const f = event.fragments

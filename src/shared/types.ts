@@ -559,6 +559,8 @@ export interface WatchRequestEvent {
   errors: string[]
   /** `"action": "autoGenerate"` 요청으로 바뀐 불러온 씬 자동 생성 값 */
   autoGenerate?: boolean
+  /** `"action": "sortScenes"` 요청으로 번호순 정렬한 프리셋 */
+  sorted?: { presetId: number; preset: string; scenes: number; moved: number }[]
   /** `"action": "fragments"` 요청의 결과 — 조각 내용 자체는 결과 파일의 fragmentItems에만 담는다 */
   fragments?: FragmentRequestOutcome
 }

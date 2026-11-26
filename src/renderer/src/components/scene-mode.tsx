@@ -1,8 +1,17 @@
 import {
+  CheckCheck,
+  CircleDashed,
   CalendarPlus,
   CalendarX,
   ChevronDown,
+  ChevronRight,
+  ChevronUp,
+  Folder,
+  Grid2x2,
+  FolderMinus,
+  FolderPlus,
   Copy,
+  Download,
   FileDown,
   FileUp,
   FolderArchive,
@@ -15,10 +24,12 @@ import {
   Plus,
   RectangleHorizontal,
   RectangleVertical,
+  ScanEye,
   SlidersHorizontal,
   Square,
   Trash2,
-  UsersRound
+  UsersRound,
+  StickyNote
 } from 'lucide-react'
 import {
   closestCenter,
@@ -32,8 +43,17 @@ import {
 } from '@dnd-kit/core'
 import { arrayMove, rectSortingStrategy, SortableContext, useSortable } from '@dnd-kit/sortable'
 import { AnimatePresence, motion } from 'motion/react'
-import { memo, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
-import type { Scene, SceneCast } from '@shared/types'
+import {
+  Fragment,
+  memo,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties
+} from 'react'
+import type { IpcInvokeMap, Scene, SceneCast } from '@shared/types'
 import { RESOLUTIONS, imageUrl, thumbnailFallback } from '../lib/constants'
 import { useT } from '../lib/i18n'
 import { useGenerationStore } from '../stores/generation-store'
@@ -45,6 +65,13 @@ import { cn } from '../lib/utils'
 import { ReserveCount } from './reserve-count'
 import { SceneCastDialog } from './scene-cast-dialog'
 import { SceneDetail } from './scene-detail'
+import { SceneReview } from './custom-scene-review'
+import { useTouchMode } from '../lib/custom-touch-mode'
+import { groupPresets } from '../lib/custom-preset-folders'
+import { usePresetFolderStore } from '../stores/custom-preset-folder-store'
+import { PresetFolderPicker } from './custom-preset-folder-picker'
+import { TopSetButton } from './custom-top-set'
+import { noteSceneCardClick, useSceneCardDoubleClick } from '../lib/custom-scene-double-click'
 import { SortableList, SortableRow } from './sortable-list'
 import { Button } from './ui/button'
 import {
@@ -57,11 +84,18 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select'
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip'
+import { useSortActivation } from '../lib/custom-touch-mode'
+import {
+  sceneIdsFromKey,
+  useGeneratingSceneKey,
+  useSceneFrame
+} from '../stores/custom-parallel-store'
 
 export function SceneMode(): React.JSX.Element {
   const scenes = useScenesStore((s) => s.scenes)
   const selectedId = useScenesStore((s) => s.selectedId)
   const loadPresets = useScenesStore((s) => s.loadPresets)
+  useSceneCardDoubleClick() // [custom] 카드 더블클릭(더블탭) = 그 씬부터 검수 모드
 
   useEffect(() => {
     void loadPresets()
@@ -74,14 +108,25 @@ export function SceneMode(): React.JSX.Element {
 }
 
 /** NAIS2식 프리셋 드롭다운 — 현재 프리셋 표시 + 전환/추가/이름변경/삭제 */
-function PresetDropdown(): React.JSX.Element {
+export function PresetDropdown(): React.JSX.Element {
   const presets = useScenesStore((s) => s.presets)
   const activePresetId = useScenesStore((s) => s.activePresetId)
   const setActivePreset = useScenesStore((s) => s.setActivePreset)
   const createPreset = useScenesStore((s) => s.createPreset)
   const renamePreset = useScenesStore((s) => s.renamePreset)
   const deletePreset = useScenesStore((s) => s.deletePreset)
-  const reorderPresets = useScenesStore((s) => s.reorderPresets)
+  // [custom] 폴더 — 같은 폴더의 프리셋을 한 묶음으로 보여 준다
+  const folders = usePresetFolderStore((s) => s.folders)
+  const collapsed = usePresetFolderStore((s) => s.collapsed)
+  const toggleFolder = usePresetFolderStore((s) => s.toggle)
+  const setFolder = usePresetFolderStore((s) => s.setFolder)
+  const renameFolder = usePresetFolderStore((s) => s.rename)
+  const moveInList = usePresetFolderStore((s) => s.move)
+  const reorderInFolders = usePresetFolderStore((s) => s.reorder)
+  const autoGroup = usePresetFolderStore((s) => s.autoGroup)
+  const groups = groupPresets(presets, folders)
+  const stepPreset = useScenesStore((s) => s.stepPreset)
+  const touchMode = useTouchMode()
   const [open, setOpen] = useState(false)
   const t = useT()
 
@@ -97,68 +142,196 @@ function PresetDropdown(): React.JSX.Element {
     <>
       <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger asChild>
-          <button className="flex h-8 min-w-52 items-center gap-1.5 rounded-md border border-line bg-paper px-2.5 text-[13px] font-medium hover:bg-surface-2">
+          {/* [custom] 이름 길이만큼 늘어난다 (아주 길 때만 줄임) — 잘린 이름은 마우스를 올리면 다 보인다 */}
+          <button
+            title={active?.name}
+            className="flex h-8 min-w-52 max-w-[min(32rem,60vw)] shrink-0 items-center gap-1.5 rounded-md border border-line bg-paper px-2.5 text-[13px] font-medium hover:bg-surface-2"
+          >
             <span className="min-w-0 flex-1 truncate text-left">
               {active?.name ?? t('ui.preset')}
             </span>
             <ChevronDown size={14} className="shrink-0 text-muted" />
           </button>
         </PopoverTrigger>
-        <PopoverContent align="start" className="w-[var(--radix-popover-trigger-width)] p-1">
-          <div className="max-h-64 overflow-y-auto overflow-x-hidden no-scrollbar">
+        {/* [custom] 목록은 가장 긴 이름에 맞춰 넓어진다 */}
+        <PopoverContent
+          align="start"
+          className="w-max min-w-[var(--radix-popover-trigger-width)] max-w-[min(40rem,90vw)] p-1"
+        >
+          <div className="max-h-[min(26rem,60vh)] overflow-y-auto overflow-x-hidden no-scrollbar">
             {/* 드래그로 순서 변경 */}
             <SortableList
               ids={presets.map((p) => p.id)}
-              onReorder={(ids) => void reorderPresets(ids)}
+              onReorder={(ids) => void reorderInFolders(ids)}
             >
-              {presets.map((p) => (
-                <SortableRow
-                  key={p.id}
-                  id={p.id}
-                  className="group gap-1"
-                  onTap={() => choose(p.id)}
-                >
-                  <div
-                    onClick={() => choose(p.id)}
-                    className={cn(
-                      'flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px]',
-                      p.id === activePresetId && 'font-semibold text-accent-ink'
-                    )}
+              {groups.map((group, groupIndex) => {
+                const row = (
+                  p: (typeof presets)[number],
+                  first: boolean,
+                  last: boolean,
+                  inFolder: boolean
+                ): React.JSX.Element => (
+                  <SortableRow
+                    key={p.id}
+                    id={p.id}
+                    className={cn('group gap-1', inFolder && 'pl-4')}
+                    onTap={() => choose(p.id)}
                   >
-                    <span className="truncate">{p.name}</span>
-                  </div>
-                  <button
-                    className="shrink-0 rounded p-1 text-faint opacity-0 hover:text-ink group-hover:opacity-100"
-                    onClick={async () => {
-                      const name = await askText(t('ui.presetName'), p.name)
-                      if (name) void renamePreset(p.id, name)
-                    }}
-                    title={t('ui.rename')}
-                    aria-label={t('ui.rename')}
-                  >
-                    <Pencil size={12} />
-                  </button>
-                  {presets.length > 1 && (
-                    <button
-                      className="shrink-0 rounded p-1 text-faint opacity-0 hover:text-danger-ink group-hover:opacity-100"
-                      onClick={async () => {
-                        if (
-                          await askConfirm(t('ui.deletePreset'), {
-                            message: t('ui.deletesTheValuePresetAndAllScenesInIt', p.name),
-                            confirmLabel: t('ui.delete'),
-                            danger: true
-                          })
-                        )
-                          void deletePreset(p.id)
-                      }}
-                      title={t('ui.delete')}
-                      aria-label={t('ui.delete')}
+                    <div
+                      onClick={() => choose(p.id)}
+                      className={cn(
+                        'flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px]',
+                        p.id === activePresetId && 'font-semibold text-accent-ink'
+                      )}
                     >
-                      <Trash2 size={12} />
+                      <span className="truncate" title={p.name}>
+                        {p.name}
+                      </span>
+                    </div>
+                    {/* [custom] 한 칸씩 자리 옮기기 — 끌기 어려운 화면(터치·원격)에서는 늘 보인다 */}
+                    {presets.length > 1 &&
+                      ([-1, 1] as const).map((dir) => (
+                        <button
+                          key={dir}
+                          className={cn(
+                            'shrink-0 rounded p-1 text-faint hover:text-ink disabled:pointer-events-none',
+                            touchMode
+                              ? 'disabled:opacity-25'
+                              : 'opacity-0 focus-visible:opacity-100 group-hover:opacity-100 group-hover:disabled:opacity-25'
+                          )}
+                          disabled={dir < 0 ? first : last}
+                          onClick={() => void moveInList(p.id, dir)}
+                          title={t(dir < 0 ? 'ui.customPresetMoveUp' : 'ui.customPresetMoveDown')}
+                          aria-label={t(
+                            dir < 0 ? 'ui.customPresetMoveUp' : 'ui.customPresetMoveDown'
+                          )}
+                        >
+                          {dir < 0 ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                        </button>
+                      ))}
+                    <PresetFolderPicker presetId={p.id} always={touchMode} />
+                    <button
+                      className="shrink-0 rounded p-1 text-faint opacity-0 hover:text-ink group-hover:opacity-100"
+                      onClick={async () => {
+                        const name = await askText(t('ui.presetName'), p.name)
+                        if (name) void renamePreset(p.id, name)
+                      }}
+                      title={t('ui.rename')}
+                      aria-label={t('ui.rename')}
+                    >
+                      <Pencil size={12} />
                     </button>
-                  )}
-                </SortableRow>
-              ))}
+                    {presets.length > 1 && (
+                      <button
+                        className="shrink-0 rounded p-1 text-faint opacity-0 hover:text-danger-ink group-hover:opacity-100"
+                        onClick={async () => {
+                          if (
+                            await askConfirm(t('ui.deletePreset'), {
+                              message: t('ui.deletesTheValuePresetAndAllScenesInIt', p.name),
+                              confirmLabel: t('ui.delete'),
+                              danger: true
+                            })
+                          )
+                            void deletePreset(p.id)
+                        }}
+                        title={t('ui.delete')}
+                        aria-label={t('ui.delete')}
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    )}
+                  </SortableRow>
+                )
+                if (group.folder === null)
+                  return row(
+                    group.presets[0],
+                    groupIndex === 0,
+                    groupIndex === groups.length - 1,
+                    false
+                  )
+                const folder = group.folder
+                const closed = collapsed.includes(folder)
+                const holdsActive = group.presets.some((p) => p.id === activePresetId)
+                return (
+                  <Fragment key={`folder:${folder}`}>
+                    {/* [custom] 폴더 줄 — 누르면 접고 편다 */}
+                    <div className="group flex items-center gap-1 rounded-md hover:bg-surface-2">
+                      <button
+                        className={cn(
+                          'flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1.5 text-left text-[13px] font-semibold',
+                          holdsActive && closed ? 'text-accent-ink' : 'text-muted'
+                        )}
+                        aria-expanded={!closed}
+                        onClick={() => toggleFolder(folder)}
+                      >
+                        {closed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
+                        <Folder size={13} className="shrink-0" />
+                        <span className="truncate" title={folder}>
+                          {folder}
+                        </span>
+                        <span className="shrink-0 font-mono text-[11px] font-normal opacity-70">
+                          {group.presets.length}
+                        </span>
+                      </button>
+                      {([-1, 1] as const).map((dir) => (
+                        <button
+                          key={dir}
+                          className={cn(
+                            'shrink-0 rounded p-1 text-faint hover:text-ink disabled:pointer-events-none',
+                            touchMode
+                              ? 'disabled:opacity-25'
+                              : 'opacity-0 focus-visible:opacity-100 group-hover:opacity-100 group-hover:disabled:opacity-25'
+                          )}
+                          disabled={dir < 0 ? groupIndex === 0 : groupIndex === groups.length - 1}
+                          onClick={() => void moveInList(folder, dir)}
+                          title={t(dir < 0 ? 'ui.customPresetMoveUp' : 'ui.customPresetMoveDown')}
+                          aria-label={t(
+                            dir < 0 ? 'ui.customPresetMoveUp' : 'ui.customPresetMoveDown'
+                          )}
+                        >
+                          {dir < 0 ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                        </button>
+                      ))}
+                      <button
+                        className={cn(
+                          'shrink-0 rounded p-1 text-faint hover:text-ink',
+                          !touchMode &&
+                            'opacity-0 focus-visible:opacity-100 group-hover:opacity-100'
+                        )}
+                        onClick={async () => {
+                          const name = await askText(t('ui.customPresetFolderName'), folder)
+                          if (name) void renameFolder(folder, name)
+                        }}
+                        title={t('ui.rename')}
+                        aria-label={t('ui.rename')}
+                      >
+                        <Pencil size={12} />
+                      </button>
+                      <button
+                        className={cn(
+                          'shrink-0 rounded p-1 text-faint hover:text-ink',
+                          !touchMode &&
+                            'opacity-0 focus-visible:opacity-100 group-hover:opacity-100'
+                        )}
+                        onClick={() =>
+                          void setFolder(
+                            group.presets.map((p) => p.id),
+                            null
+                          )
+                        }
+                        title={t('ui.customPresetFolderDissolve')}
+                        aria-label={t('ui.customPresetFolderDissolve')}
+                      >
+                        <FolderMinus size={12} />
+                      </button>
+                    </div>
+                    {!closed &&
+                      group.presets.map((p, i) =>
+                        row(p, i === 0, i === group.presets.length - 1, true)
+                      )}
+                  </Fragment>
+                )
+              })}
             </SortableList>
           </div>
           <div className="my-1 h-px bg-line" />
@@ -171,8 +344,44 @@ function PresetDropdown(): React.JSX.Element {
           >
             <Plus size={14} /> {t('ui.newPreset')}
           </button>
+          {/* [custom] 이름의 첫 낱말이 같은 프리셋끼리 폴더로 */}
+          <button
+            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] text-muted hover:bg-surface-2 hover:text-ink"
+            title={t('ui.customPresetFolderAutoHint')}
+            onClick={async () => {
+              const count = await autoGroup()
+              toast(
+                count > 0
+                  ? t('ui.customPresetFolderAutoDoneValue', count)
+                  : t('ui.customPresetFolderAutoNone'),
+                count > 0 ? 'success' : 'info'
+              )
+            }}
+          >
+            <FolderPlus size={14} /> {t('ui.customPresetFolderAuto')}
+          </button>
         </PopoverContent>
       </Popover>
+      {/* [custom] 이전·다음 프리셋으로 바로 넘기기 */}
+      {presets.length > 1 && (
+        <div className="flex shrink-0 flex-col">
+          {([-1, 1] as const).map((dir) => {
+            const index = presets.findIndex((p) => p.id === activePresetId)
+            return (
+              <button
+                key={dir}
+                className="grid h-4 w-6 place-items-center rounded text-muted hover:bg-surface-2 hover:text-ink disabled:pointer-events-none disabled:opacity-25"
+                disabled={dir < 0 ? index <= 0 : index >= presets.length - 1}
+                onClick={() => void stepPreset(dir)}
+                title={t(dir < 0 ? 'ui.customPresetPrevious' : 'ui.customPresetNext')}
+                aria-label={t(dir < 0 ? 'ui.customPresetPrevious' : 'ui.customPresetNext')}
+              >
+                {dir < 0 ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+              </button>
+            )
+          })}
+        </div>
+      )}
     </>
   )
 }
@@ -234,7 +443,7 @@ function CastSelector(): React.JSX.Element {
             {t('ui.sidebarSettings')}
           </button>
           {/* 많아져도 화면을 뚫지 않게 스크롤 + 드래그 정렬 (프리셋 드롭다운과 동일 패턴) */}
-          <div className="max-h-64 overflow-y-auto overflow-x-hidden no-scrollbar">
+          <div className="max-h-[min(26rem,60vh)] overflow-y-auto overflow-x-hidden no-scrollbar">
             <SortableList ids={casts.map((c) => c.id)} onReorder={reorderCasts}>
               {casts.map((c) => (
                 <SortableRow
@@ -349,6 +558,7 @@ function SceneGrid(): React.JSX.Element {
   const setCardOrientation = useScenesStore((s) => s.setCardOrientation)
   const adjustReserveAll = useScenesStore((s) => s.adjustReserveAll)
   const clearReserveAll = useScenesStore((s) => s.clearReserveAll)
+  const adjustReserveScenes = useScenesStore((s) => s.adjustReserveScenes)
   const reorder = useScenesStore((s) => s.reorder)
   const t = useT()
 
@@ -364,14 +574,44 @@ function SceneGrid(): React.JSX.Element {
 
   // 드래그 재정렬 (5px 이동해야 시작 — 클릭과 구분).
   // DragOverlay 사용: 드래그 중엔 가벼운 클론이 커서를 따라가고 원본은 숨겨 프레임 저하 방지
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }))
+  const sensors = useSensors(
+    // [custom] 터치·원격 모드에서는 길게 누른 뒤에만 자리 이동 시작
+    useSensor(PointerSensor, { activationConstraint: useSortActivation(5) })
+  )
   const [dragScene, setDragScene] = useState<Scene | null>(null)
+  // [custom] 변경 후 미생성 씬만 보기. 걸러 보는 동안에는 순서 바꾸기를 막는다 (부분 목록 기준 재정렬 방지)
+  const pendingOnly = useScenesStore((s) => s.pendingOnly)
+  const setPendingOnly = useScenesStore((s) => s.setPendingOnly)
+  const pendingCount = scenes.filter((s) => s.pending).length
+  const shownScenes = pendingOnly ? scenes.filter((s) => s.pending) : scenes
+
+  // [custom] 히스토리의 '씬 위치로 이동' — 그 씬 카드가 보이게 스크롤하고 잠깐 강조한다
+  const focusSceneId = useScenesStore((s) => s.focusSceneId)
+  const clearFocusScene = useScenesStore((s) => s.clearFocusScene)
+  const reviewSceneId = useScenesStore((s) => s.reviewSceneId)
+  // 목록에 아직 없으면(프리셋 전환 직후) 로드된 뒤 다시 실행된다. 미생성만 보기에 가려진 씬이면
+  // goToScene이 필터를 먼저 끈다
+  const focusTargetId = shownScenes.find((s) => s.id === focusSceneId)?.id
+  useEffect(() => {
+    if (focusTargetId == null) return
+    const frame = requestAnimationFrame(() =>
+      scrollRef.current
+        ?.querySelector(`[data-scene-id="${focusTargetId}"]`)
+        ?.scrollIntoView({ block: 'center' })
+    )
+    const timer = setTimeout(clearFocusScene, 2500)
+    return () => {
+      cancelAnimationFrame(frame)
+      clearTimeout(timer)
+    }
+  }, [focusTargetId, clearFocusScene])
   const onDragStart = (e: DragStartEvent): void => {
     setDragScene(scenes.find((s) => `scene-${s.id}` === e.active.id) ?? null)
   }
   const onDragEnd = (e: DragEndEvent): void => {
     setDragScene(null)
     const { active, over } = e
+    if (pendingOnly) return
     if (!over || active.id === over.id) return
     const ids = scenes.map((s) => `scene-${s.id}`)
     const from = ids.indexOf(String(active.id))
@@ -382,15 +622,39 @@ function SceneGrid(): React.JSX.Element {
 
   // Streaming: only the scene being generated. The card subscribes to the preview frame itself,
   // so per-step frames re-render that one card instead of the whole sortable grid
-  const generatingSceneId = useGenerationStore(
-    (s) => s.queue?.items.find((i) => i.state === 'generating')?.request.sceneId ?? null
+  // [custom] 동시 생성이면 여러 씬을 함께 뽑는다 — 문자열 키라 단계마다 그리드를 다시 그리지 않는다
+  const generatingSceneKey = useGeneratingSceneKey()
+  const generatingSceneIds = useMemo(
+    () => sceneIdsFromKey(generatingSceneKey),
+    [generatingSceneKey]
   )
+
+  // [custom] 일괄 확인 — 이 프리셋의 미생성 표시를 모두 끈다 (그림은 그대로, 다음 변경 때 다시 켜짐)
+  const ackPendingScenes = useScenesStore((s) => s.ackPendingScenes)
+  async function ackAllPending(): Promise<void> {
+    const ids = scenes.filter((s) => s.pending).map((s) => s.id)
+    if (ids.length === 0) {
+      toast(t('ui.customAckAllPendingNone'), 'info')
+      return
+    }
+    const ok = await askConfirm(t('ui.customAckAllPendingTitleValue', ids.length), {
+      message: t('ui.customAckAllPendingMessage'),
+      confirmLabel: t('ui.customAckAllPendingConfirm')
+    })
+    if (!ok) return
+    try {
+      await ackPendingScenes(ids)
+      toast(t('ui.customAckAllPendingDoneValue', ids.length), 'success')
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e), 'error')
+    }
+  }
 
   async function exportJson(): Promise<void> {
     await window.nais.invoke('scenes:exportJson', { presetId: activePresetId })
   }
   async function importJson(): Promise<void> {
-    let result: { count: number; unrecognized?: boolean; canceled?: boolean }
+    let result: IpcInvokeMap['scenes:importJson']['res']
     try {
       result = await window.nais.invoke('scenes:importJson', { presetId: activePresetId })
     } catch (e) {
@@ -399,7 +663,14 @@ function SceneGrid(): React.JSX.Element {
     }
     if (result.canceled) return
     if (result.unrecognized) toast(t('ui.unrecognizedSceneJson'), 'error')
-    else if (result.count > 0) {
+    else if (result.memos || result.skipped) {
+      // [custom] 메모가 바뀌었거나 메모 줄의 씬을 못 찾았으면 그 수까지 알린다
+      toast(
+        t('ui.customImportedMemoValue', result.count, result.memos ?? 0, result.skipped ?? 0),
+        result.count > 0 ? 'success' : 'info'
+      )
+      if (result.count > 0) void useScenesStore.getState().load()
+    } else if (result.count > 0) {
       toast(t('ui.importedValueScenes', result.count), 'success')
       void useScenesStore.getState().load()
     } else toast(t('ui.noScenesToImport'), 'info')
@@ -410,8 +681,8 @@ function SceneGrid(): React.JSX.Element {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col rounded-xl border border-line bg-surface">
-      {/* 툴바 — 한 행: 프리셋 드롭다운 + 아이콘(툴팁) */}
-      <div className="flex items-center gap-1 border-b border-line px-2 py-1.5">
+      {/* 툴바 — 한 행: 프리셋 드롭다운 + 아이콘(툴팁). [custom] 좁으면 두 줄로 (Claude 창을 열어도 잘리지 않게) */}
+      <div className="flex flex-wrap items-center gap-1 border-b border-line px-2 py-1.5">
         <PresetDropdown />
         <CastSelector />
         <div className="mx-1 h-5 w-px bg-line" />
@@ -422,19 +693,43 @@ function SceneGrid(): React.JSX.Element {
           tip={t('ui.exportZip')}
           onClick={() => void exportZip()}
         />
+        {/* [custom] 대표 세트 받기 — 씬마다 대표 이미지 1장씩 폴더로 */}
+        <TopSetButton presetId={activePresetId} />
         <IconBtn
           icon={<Pencil size={16} />}
           tip={t('ui.editMode')}
           active={editMode}
           onClick={() => setEditMode(!editMode)}
         />
+        <IconBtn
+          icon={<CircleDashed size={16} />}
+          tip={t('ui.showOnlyNotGeneratedValue', pendingCount)}
+          active={pendingOnly}
+          onClick={() => setPendingOnly(!pendingOnly)}
+        />
+        {/* [custom] 일괄 확인 — 미생성 표시를 한 번에 끈다 (씬마다 우클릭하기 어려운 원격·터치용) */}
+        <IconBtn
+          icon={<CheckCheck size={16} />}
+          tip={t('ui.customAckAllPendingValue', pendingCount)}
+          onClick={() => void ackAllPending()}
+        />
 
         <div className="flex-1" />
 
         <IconBtn
           icon={<CalendarPlus size={16} />}
-          tip={t('ui.queue1ForAll')}
-          onClick={() => void adjustReserveAll(1)}
+          // [custom] 미생성만 보는 중에는 보이는 씬(미생성)에만 예약한다
+          tip={
+            pendingOnly ? t('ui.customQueue1ForPendingValue', pendingCount) : t('ui.queue1ForAll')
+          }
+          onClick={() =>
+            void (pendingOnly
+              ? adjustReserveScenes(
+                  shownScenes.map((s) => s.id),
+                  1
+                )
+              : adjustReserveAll(1))
+          }
         />
         <IconBtn
           icon={<CalendarX size={16} />}
@@ -524,18 +819,18 @@ function SceneGrid(): React.JSX.Element {
           onDragEnd={onDragEnd}
         >
           <SortableContext
-            items={scenes.map((s) => `scene-${s.id}`)}
+            items={shownScenes.map((s) => `scene-${s.id}`)}
             strategy={rectSortingStrategy}
           >
             <div
               className="grid gap-3"
               style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}
             >
-              {scenes.map((scene) => (
+              {shownScenes.map((scene) => (
                 <SceneCard
                   key={scene.id}
                   scene={scene}
-                  generating={scene.id === generatingSceneId}
+                  generating={generatingSceneIds.has(scene.id)}
                 />
               ))}
               <button
@@ -582,6 +877,8 @@ function SceneGrid(): React.JSX.Element {
           </p>
         )}
       </div>
+      {/* [custom] 검수 모드 — 지금 보이는 순서(미생성만 보기면 그 목록)대로 대표 이미지를 넘겨 본다 */}
+      {reviewSceneId != null && <SceneReview scenes={shownScenes} />}
     </div>
   )
 }
@@ -808,7 +1105,7 @@ const SceneCard = memo(function SceneCard({
   scene: Scene
   generating: boolean
 }): React.JSX.Element {
-  const live = useGenerationStore((s) => (generating ? s.previewPng : null))
+  const live = useSceneFrame(scene.id, generating) // [custom] 동시 생성이면 이 씬을 뽑는 계정 것
   const editMode = useScenesStore((s) => s.editMode)
   const cardOrientation = useScenesStore((s) => s.cardOrientation)
   const selection = useScenesStore((s) => s.selection)
@@ -824,6 +1121,9 @@ const SceneCard = memo(function SceneCard({
   const activeCastId = useScenesStore((s) => s.activeCastId)
   const sortable = useSortable({ id: `scene-${scene.id}` })
   const t = useT()
+  // [custom] 히스토리 '씬 위치로 이동'으로 찾아온 카드 강조 / 검수 모드
+  const focused = useScenesStore((s) => s.focusSceneId === scene.id)
+  const setReviewScene = useScenesStore((s) => s.setReviewScene)
 
   // +/- 는 현재 선택된 출연의 예약을 조작하므로 그 출연의 수만 표시 (배지가 전체 내역 담당)
   const activeCast = casts.find((c) => c.id === activeCastId) ?? null
@@ -841,9 +1141,27 @@ const SceneCard = memo(function SceneCard({
     const name = await askText(t('ui.sceneName'), scene.name)
     if (name) void update(scene.id, { name })
   }
+  // [custom] 씬 메모(별명)
+  const setMemo = useScenesStore((s) => s.setMemo)
+  const setTransparent = useScenesStore((s) => s.setTransparent)
+  const editMemo = async (): Promise<void> => {
+    const memo = await askText(
+      t('ui.customSceneMemoTitleValue', scene.name),
+      scene.memo ?? '',
+      t('ui.customSceneMemoPlaceholder')
+    )
+    if (memo !== null) void setMemo(scene.id, memo)
+  }
   const openFolder = async (): Promise<void> => {
     const { ok } = await window.nais.invoke('scenes:openFolder', { sceneId: scene.id })
     if (!ok) toast(t('ui.noGeneratedImageFolderYet'), 'info')
+  }
+  // [custom] '미생성' 표시를 수동으로 끈다
+  const clearPending = async (): Promise<void> => {
+    await window.nais.invoke('scenes:clearPending', { id: scene.id })
+    useScenesStore.setState((st) => ({
+      scenes: st.scenes.map((s) => (s.id === scene.id ? { ...s, pending: false } : s))
+    }))
   }
   const removeScene = async (): Promise<void> => {
     if (
@@ -863,19 +1181,23 @@ const SceneCard = memo(function SceneCard({
           ref={sortable.setNodeRef}
           {...sortable.attributes}
           {...sortable.listeners}
+          data-scene-id={scene.id}
           className={cn(
             'group relative touch-none overflow-hidden rounded-lg border bg-surface-2 transition',
             editMode && checked ? 'border-accent ring-2 ring-accent/40' : 'border-line',
+            focused && 'border-accent ring-4 ring-accent',
             sortable.isDragging && 'shadow-xl'
           )}
           style={{ aspectRatio: CARD_ASPECT[cardOrientation], ...dndStyle(sortable) }}
-          onClick={(e) =>
-            editMode
-              ? e.shiftKey
-                ? rangeSelect(scene.id)
-                : toggleSelected(scene.id)
-              : select(scene.id)
-          }
+          onClick={(e) => {
+            if (editMode) {
+              if (e.shiftKey) rangeSelect(scene.id)
+              else toggleSelected(scene.id)
+              return
+            }
+            noteSceneCardClick(scene, e) // [custom] 곧바로 한 번 더 누르면 검수 모드
+            select(scene.id)
+          }}
         >
           {/* 배경 이미지 (생성 중이면 스트리밍 프리뷰) */}
           {src ? (
@@ -939,6 +1261,13 @@ const SceneCard = memo(function SceneCard({
               )
             })()}
 
+          {/* [custom] 변경 후 미생성 표시 — 3점 메뉴 왼쪽 */}
+          {scene.pending && (
+            <span className="pointer-events-none absolute right-9 top-1.5 rounded-full bg-accent px-1.5 py-0.5 text-[11px] font-bold leading-none text-on-accent shadow">
+              {t('ui.notGenerated')}
+            </span>
+          )}
+
           {/* 우측 상단 — 편집 모드 체크박스 / 일반 3점 메뉴 */}
           {editMode ? (
             <span
@@ -966,6 +1295,20 @@ const SceneCard = memo(function SceneCard({
                   icon={<Pencil size={13} />}
                   label={t('ui.rename')}
                   onClick={() => void renameScene()}
+                />
+                <MenuItem
+                  icon={<StickyNote size={13} />}
+                  label={t('ui.customSceneMemoEdit')}
+                  onClick={() => void editMemo()}
+                />
+                <MenuItem
+                  icon={<Grid2x2 size={13} />}
+                  label={t(
+                    scene.transparent
+                      ? 'ui.customSceneTransparentOff'
+                      : 'ui.customSceneTransparentOn'
+                  )}
+                  onClick={() => void setTransparent(scene.id, !scene.transparent)}
                 />
                 <MenuItem
                   icon={<Copy size={13} />}
@@ -1003,6 +1346,24 @@ const SceneCard = memo(function SceneCard({
                 ) : (
                   <div className="truncate text-[13px] font-semibold text-white drop-shadow">
                     {scene.name}
+                  </div>
+                )}
+                {/* [custom] 씬별 투명 배경 표시 */}
+                {scene.transparent && (
+                  <div
+                    className="mt-0.5 flex w-fit items-center gap-1 rounded bg-white/90 px-1 text-[10.5px] font-medium leading-4 text-black"
+                    title={t('ui.customSceneTransparentHint')}
+                  >
+                    <Grid2x2 size={10} /> {t('ui.transparentBackground')}
+                  </div>
+                )}
+                {/* [custom] 씬 메모 — 어떤 장면인지 한눈에 */}
+                {scene.memo && (
+                  <div
+                    className="truncate text-[11.5px] leading-tight text-white/85 drop-shadow"
+                    title={scene.memo}
+                  >
+                    {scene.memo}
                   </div>
                 )}
               </div>
@@ -1052,12 +1413,48 @@ const SceneCard = memo(function SceneCard({
         <ContextMenuItem onSelect={() => void renameScene()}>
           <Pencil size={13} /> {t('ui.rename')}
         </ContextMenuItem>
+        <ContextMenuItem onSelect={() => void editMemo()}>
+          <StickyNote size={13} /> {t('ui.customSceneMemoEdit')}
+        </ContextMenuItem>
+        <ContextMenuItem onSelect={() => void setTransparent(scene.id, !scene.transparent)}>
+          <Grid2x2 size={13} />{' '}
+          {t(scene.transparent ? 'ui.customSceneTransparentOff' : 'ui.customSceneTransparentOn')}
+        </ContextMenuItem>
+        {scene.memo && (
+          <ContextMenuItem onSelect={() => void setMemo(scene.id, '')}>
+            <StickyNote size={13} className="opacity-50" /> {t('ui.customSceneMemoClear')}
+          </ContextMenuItem>
+        )}
         <ContextMenuItem onSelect={() => void duplicate(scene.id)}>
           <Copy size={13} /> {t('ui.duplicate')}
         </ContextMenuItem>
         <ContextMenuItem onSelect={() => void openFolder()}>
           <FolderOpen size={13} className="text-hue-amber" /> {t('ui.openFolder')}
         </ContextMenuItem>
+        {scene.pending && (
+          <ContextMenuItem onSelect={() => void clearPending()}>
+            <CircleDashed size={13} /> {t('ui.markAsChecked')}
+          </ContextMenuItem>
+        )}
+        {/* [custom] 대표 이미지(카드에 보이는 그림) 저장 / 검수 모드 */}
+        {scene.thumbnailPath && (
+          <>
+            <ContextMenuSeparator />
+            <ContextMenuItem
+              onSelect={() =>
+                void window.nais.invoke('images:saveAs', {
+                  filePath: scene.thumbnailPath,
+                  defaultName: scene.name
+                })
+              }
+            >
+              <Download size={13} /> {t('ui.customSaveTopImage')}
+            </ContextMenuItem>
+            <ContextMenuItem onSelect={() => setReviewScene(scene.id)}>
+              <ScanEye size={13} className="text-hue-sky" /> {t('ui.customReviewFromHere')}
+            </ContextMenuItem>
+          </>
+        )}
         <ContextMenuSeparator />
         <ContextMenuItem danger onSelect={() => void removeScene()}>
           <Trash2 size={13} /> {t('ui.delete')}

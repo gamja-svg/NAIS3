@@ -107,6 +107,11 @@ import {
   getPresetName,
   updateScene,
   duplicateScene,
+  clearScenePending,
+  clearScenesPending,
+  getSceneBase,
+  setSceneMemo,
+  setSceneTransparent,
   deleteScene,
   reorderScenes,
   setReserveAll,
@@ -129,6 +134,40 @@ import {
   importScenesJson,
   exportZip
 } from './scenes/repo'
+import {
+  getWatchFolderConfig,
+  setWatchFolderDir,
+  setWatchFolderEnabled,
+  setWatchRequestHandler,
+  startWatchFolder
+} from './custom/watch-folder'
+import {
+  defaultTopSetDest,
+  exportTopSet,
+  getTopSetDir,
+  getTopSetFormat,
+  runWatchRequest,
+  setTopSetDir,
+  setTopSetFormat,
+  shrinkImage
+} from './custom/top-set'
+import { openCensor, readCensorBase, saveCensor } from './custom/censor'
+import { pickShape, warmSam } from './custom/censor-sam'
+import { getPresetFolders, renamePresetFolder, setPresetFolder } from './custom/preset-folders'
+import {
+  getFragmentNegatives,
+  listSceneNegativeOff,
+  setFragmentNegative,
+  setSceneNegativeOff
+} from './custom/fragment-negatives'
+import {
+  arrangeFolderGroups,
+  createFolderGroup,
+  deleteFolderGroup,
+  listFolderGroups,
+  updateFolderGroup
+} from './custom/folder-groups'
+import { getParallelConfig, setParallelConfig } from './custom/parallel'
 import {
   listPromptPresets,
   createPromptPreset,
@@ -188,7 +227,7 @@ import {
   scenesRoot
 } from './images/storage'
 import { copyFileSync, existsSync, readFileSync, writeFileSync } from 'fs'
-import { basename } from 'path'
+import { basename, join } from 'path'
 import sharp from './sharp'
 import { verifyToken } from './nai/client'
 import { t } from './i18n'
@@ -320,6 +359,7 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
       reason: 'added',
       label: account.label
     })
+    ctx.queue.kick() // [custom] 동시 생성 중이면 새 계정도 바로 거든다
     return { ...result, accountId: account.id, label: account.label }
   })
   handle('nai:setActiveAccount', async ({ id }) => {
@@ -350,6 +390,7 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
       () => {
         const activeId = deleteNaiAccount(id)
         broadcast('nai:accountChanged', { accountId: activeId, reason: 'deleted' })
+        ctx.queue.kick() // [custom] 동시 생성 계정 목록이 바뀜
         return { activeId, locked: false, lockReason: null }
       },
       (lockReason) => ({ activeId: null, locked: true, lockReason })
@@ -566,6 +607,12 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
   handle('scenes:delete', ({ id }) => {
     deleteScene(id)
   })
+  handle('scenes:clearPending', ({ id }) => {
+    clearScenePending(id)
+  })
+  handle('scenes:clearPendingMany', ({ ids }) => {
+    clearScenesPending(ids) // [custom] 일괄 확인
+  })
   handle('scenes:reorder', ({ ids }) => {
     reorderScenes(ids)
   })
@@ -645,7 +692,120 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
 
   handle('scenes:exportJson', async ({ presetId }) => ({ saved: await exportScenesJson(presetId) }))
   handle('scenes:importJson', ({ presetId }) => importScenesJson(presetId))
+  // [custom] 여러 계정으로 동시 생성 — 바꾸면 큐를 다시 돌린다 (계정별 루프 ↔ 한 장씩)
+  handle('custom:parallelGet', () => getParallelConfig())
+  handle('custom:parallelSet', (patch) => {
+    const config = setParallelConfig(patch)
+    ctx.queue.kick()
+    return config
+  })
+  // [custom] 상위 폴더
+  handle('custom:folderGroups:list', ({ kind }) => listFolderGroups(kind))
+  handle('custom:folderGroups:create', ({ kind, name }) => ({ id: createFolderGroup(kind, name) }))
+  handle('custom:folderGroups:update', ({ id, patch }) => updateFolderGroup(id, patch))
+  handle('custom:folderGroups:delete', ({ id }) => deleteFolderGroup(id))
+  handle('custom:folderGroups:arrange', ({ kind, groupIds, links }) =>
+    arrangeFolderGroups(kind, groupIds, links)
+  )
+  // [custom] 감시 폴더
+  handle('custom:watchGet', () => getWatchFolderConfig())
+  handle('custom:watchSetEnabled', ({ enabled }) => setWatchFolderEnabled(enabled))
+  handle('custom:watchPickDir', async () => {
+    const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
+    const result = await showOpenDialog(win, {
+      title: t('ui.customWatchChooseFolder'),
+      properties: ['openDirectory', 'createDirectory']
+    })
+    if (result.canceled || result.filePaths.length === 0) return getWatchFolderConfig()
+    // 처음 고를 때는 바로 켠다 (이미 골라 둔 폴더를 바꿀 때는 켜짐 상태 유지)
+    const first = !getWatchFolderConfig().dir
+    setWatchFolderDir(result.filePaths[0])
+    return first ? setWatchFolderEnabled(true) : getWatchFolderConfig()
+  })
   handle('scenes:exportZip', async ({ presetId }) => ({ count: await exportZip(presetId) }))
+  // [custom] 대표 세트 받기 — 한 번 누르면 기본 폴더 안 프리셋 이름 폴더로
+  const pickTopSetDir = async (): Promise<string | null> => {
+    const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
+    const result = await showOpenDialog(win, {
+      title: t('ui.customTopSetChooseDefault'),
+      defaultPath: getTopSetDir() || undefined,
+      properties: ['openDirectory', 'createDirectory']
+    })
+    const dir = result.canceled ? undefined : result.filePaths[0]
+    if (!dir) return null
+    setTopSetDir(dir)
+    return dir
+  }
+  handle('custom:topSetGetDir', () => ({ dir: getTopSetDir(), format: getTopSetFormat() }))
+  handle('custom:topSetFormat', ({ format }) => setTopSetFormat(format))
+  // [custom] Electron <webview>는 클릭으로 포커스를 받으면 Windows 입력기(한/영)가 붙지 않을 때가 있다.
+  // 창 포커스를 한 번 놓았다 다시 잡으면 입력기가 다시 붙는다
+  handle('custom:windowRefocus', () => {
+    const win = BrowserWindow.getFocusedWindow()
+    if (!win || win.isDestroyed()) return
+    win.blur()
+    win.focus()
+  })
+  handle('custom:sceneBase', ({ id }) => getSceneBase(id))
+  handle('custom:sceneMemo', ({ id, memo }) => {
+    setSceneMemo(id, memo)
+  })
+  handle('custom:fragmentNegatives', () => ({
+    pairs: getFragmentNegatives(),
+    offScenes: listSceneNegativeOff()
+  }))
+  handle('custom:fragmentNegativeSet', ({ fragmentId, negativeId }) =>
+    setFragmentNegative(fragmentId, negativeId)
+  )
+  handle('custom:sceneNegativeOff', ({ id, off }) => {
+    setSceneNegativeOff(id, off)
+  })
+  handle('custom:sceneTransparent', ({ id, on }) => {
+    setSceneTransparent(id, on)
+  })
+  // [custom] 검수 모드의 검열(흰칠) — 원본은 두고 칠한 그림을 같은 씬에 저장, 콕 찍기는 모양 따기 모델
+  const samDeps = {
+    dir: join(app.getPath('userData'), 'custom-models'),
+    progress: (percent: number) => broadcast('custom:censorModel', { percent })
+  }
+  handle('custom:presetFolders', () => ({ folders: getPresetFolders() }))
+  handle('custom:presetFolderSet', ({ presetIds, folder }) => setPresetFolder(presetIds, folder))
+  handle('custom:presetFolderRename', ({ from, to }) => renamePresetFolder(from, to))
+  handle('custom:censorOpen', ({ filePath }) => openCensor(filePath))
+  handle('custom:censorSave', async ({ filePath, maskBase64 }) => {
+    const saved = await saveCensor(filePath, maskBase64)
+    if (saved.sceneId != null)
+      broadcast('scenes:changed', { sceneId: saved.sceneId, filePath: saved.filePath })
+    return saved
+  })
+  handle('custom:censorPick', ({ filePath, x, y }) => pickShape(samDeps, filePath, x, y))
+  handle('custom:censorWarm', () => warmSam(samDeps))
+  handle('custom:censorBase', ({ filePath }) => ({ dataUrl: readCensorBase(filePath) }))
+  handle('custom:topSetPickDir', async () => {
+    const dir = await pickTopSetDir()
+    return dir ? { dir } : { dir: getTopSetDir(), canceled: true }
+  })
+  handle('custom:topSetExport', async ({ presetId, pick }) => {
+    if (pick) {
+      const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
+      const result = await showOpenDialog(win, {
+        title: t('ui.customTopSetChooseOther'),
+        properties: ['openDirectory', 'createDirectory']
+      })
+      const dir = result.canceled ? undefined : result.filePaths[0]
+      return dir ? exportTopSet(presetId, dir) : { canceled: true as const }
+    }
+    if (!getTopSetDir() && !(await pickTopSetDir())) return { canceled: true as const }
+    const dest = defaultTopSetDest(presetId)
+    if (!dest) throw new Error(t('ui.customTopSetPresetMissing'))
+    return exportTopSet(presetId, dest)
+  })
+  handle('custom:topSetOpenDir', async ({ presetId }) => {
+    const dest = defaultTopSetDest(presetId)
+    const target = dest && existsSync(dest) ? dest : getTopSetDir()
+    if (!target || !existsSync(target)) return { ok: false }
+    return { ok: (await shell.openPath(target)) === '' }
+  })
 
   handle('settings:get', ({ key }) => ({ value: getSetting(key) }))
   handle('settings:set', ({ key, value }) => {
@@ -731,19 +891,36 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
     if (isUnderImagesRoot(filePath)) shell.showItemInFolder(filePath)
   })
 
-  handle('images:saveAs', async ({ filePath }) => {
+  handle('images:saveAs', async ({ filePath, defaultName }) => {
     const memory = isMemoryPath(filePath)
     if (!memory && !isUnderImagesRoot(filePath)) return { saved: false }
     const memBuf = memory ? getMemoryImage(filePath) : null
     if (memory && !memBuf) return { saved: false } // 원본 만료 (자동저장 꺼짐 생성분)
     const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
+    // [custom] 이름을 정해 주면 그 이름 + 원본 확장자 (파일 이름에 못 쓰는 글자는 _ 로)
+    const named = defaultName
+      ? Array.from(defaultName, (ch) => (ch < ' ' || '\\/:*?"<>|'.includes(ch) ? '_' : ch))
+          .join('')
+          .trim()
+      : ''
+    const sourceExt = memory ? '.png' : (/\.[^.\\/]+$/.exec(filePath)?.[0] ?? '.png')
+    // [custom] 대표 이미지 저장(이름을 정해 주는 저장)은 `줄여서 받기`를 따른다 — WebP로 줄여서
+    const small = !!named && getTopSetFormat() === 'webp' && /^\.(png|webp)$/i.test(sourceExt)
+    const ext = small ? '.webp' : sourceExt
     const result = await showSaveDialog(win, {
       title: t('ui.saveAs'),
-      defaultPath: memory ? `NAIS3_${Date.now()}.png` : basename(filePath),
-      filters: [{ name: 'PNG', extensions: ['png'] }]
+      defaultPath: named
+        ? `${named}${ext}`
+        : memory
+          ? `NAIS3_${Date.now()}.png`
+          : basename(filePath),
+      filters: small
+        ? [{ name: 'WebP', extensions: ['webp'] }]
+        : [{ name: 'PNG', extensions: ['png'] }]
     })
     if (result.canceled || !result.filePath) return { saved: false }
-    if (memBuf) writeFileSync(result.filePath, memBuf)
+    if (small) writeFileSync(result.filePath, await shrinkImage(memBuf ?? readFileSync(filePath)))
+    else if (memBuf) writeFileSync(result.filePath, memBuf)
     else copyFileSync(filePath, result.filePath)
     return { saved: true }
   })
@@ -1125,6 +1302,13 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
   })
 
   bindSceneReservationRecovery(ctx.queue, () => broadcast('scenes:reservationsChanged', {}))
+  startWatchFolder((event) => broadcast('custom:watchImported', event))
+  // [custom] 감시 폴더의 요청 파일 (Claude가 원하는 폴더로 대표 세트 받기 등)
+  setWatchRequestHandler((dir, file) => {
+    void runWatchRequest(dir, file)
+      .then((event) => broadcast('custom:watchRequestDone', event))
+      .catch((e: unknown) => console.error('[custom] watch request failed', e))
+  })
   ctx.queue.on('changed', (status) => broadcast('queue:changed', status))
   ctx.queue.on('halted', (halt: QueueHalt) => broadcast('queue:halted', halt))
 }

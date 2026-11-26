@@ -25,7 +25,7 @@ import {
 } from '@shared/anlas'
 import { normalizeDailyAnlasCap } from '@shared/anlas-guard'
 import { isLang, LANGUAGES, SUPPORTED_LANGUAGES, type MessageId } from '@shared/i18n'
-import type { NaiAccountInfo, NaiTokenStoreLockReason } from '@shared/types'
+import type { NaiAccountInfo, NaiTokenStoreLockReason, WatchFolderConfig } from '@shared/types'
 import discordSvg from '../assets/discord.svg'
 import nais3Logo from '../assets/nais3-logo.svg'
 import { importBackup } from '../lib/backup-import'
@@ -58,6 +58,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Slider } from './ui/slider'
 import { Switch } from './ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs'
+import { TOUCH_MODE_KEY, applyTouchMode } from '../lib/custom-touch-mode'
+import { useParallelStore } from '../stores/custom-parallel-store'
+import { useAutoGenStore } from '../stores/custom-autogen-store'
 
 type SectionId = 'appearance' | 'generation' | 'storage' | 'shortcuts' | 'account' | 'about'
 
@@ -102,6 +105,7 @@ function AppearanceSection(): React.JSX.Element {
   const setUiSize = useThemeStore((s) => s.setUiSize)
   const promptSize = useThemeStore((s) => s.promptSize)
   const setPromptSize = useThemeStore((s) => s.setPromptSize)
+  const [showScrollbars, setShowScrollbars] = useBoolSetting(TOUCH_MODE_KEY, false)
 
   return (
     <div className="divide-y divide-line">
@@ -174,6 +178,16 @@ function AppearanceSection(): React.JSX.Element {
           step={0.5}
           value={[promptSize]}
           onValueChange={([v]) => setPromptSize(v)}
+        />
+      </Row>
+      <Row label={t('ui.customShowScrollbars')} hint={t('ui.customShowScrollbarsHint')}>
+        <Switch
+          aria-label={t('ui.customShowScrollbars')}
+          checked={showScrollbars}
+          onCheckedChange={(on) => {
+            setShowScrollbars(on)
+            applyTouchMode(on)
+          }}
         />
       </Row>
       <Row label={t('ui.visibleTabs')} hint={t('ui.tabsTurnedOffAreHiddenFromTheTopBar')}>
@@ -602,6 +616,69 @@ function SaveDirRow({
   )
 }
 
+/** [custom] 감시 폴더 — 켜고 끄기 + 폴더 고르기 */
+function WatchFolderRow(): React.JSX.Element {
+  const t = useT()
+  const [config, setWatchConfig] = useState<WatchFolderConfig>({ enabled: false, dir: '' })
+  // 타이틀바 `자동 생성` 버튼·요청 파일과 같은 값
+  const autoGenerate = useAutoGenStore((s) => s.enabled)
+  const setAutoGenerate = useAutoGenStore((s) => s.setEnabled)
+  const setConfig = useCallback((next: WatchFolderConfig) => {
+    setWatchConfig(next)
+    useAutoGenStore.getState().setWatching(next.enabled)
+  }, [])
+  useEffect(() => {
+    void window.nais.invoke('custom:watchGet', undefined).then(setConfig)
+  }, [setConfig])
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="flex items-center justify-between gap-6">
+        <div className="min-w-0">
+          <p className="text-[13px] text-ink">{t('ui.customWatchFolder')}</p>
+          <p className="text-[11.5px] text-faint">{t('ui.customWatchFolderHint')}</p>
+        </div>
+        <Switch
+          aria-label={t('ui.customWatchFolder')}
+          checked={config.enabled}
+          disabled={!config.dir}
+          onCheckedChange={async (enabled) =>
+            setConfig(await window.nais.invoke('custom:watchSetEnabled', { enabled }))
+          }
+        />
+      </div>
+      <div className="flex w-full min-w-0 items-center gap-1.5 overflow-hidden">
+        <div
+          className="w-0 min-w-0 flex-1 truncate rounded-md border border-line bg-surface-2/60 px-3 py-2 font-mono text-[12px] text-muted"
+          title={config.dir}
+        >
+          {config.dir || t('ui.customWatchNotChosen')}
+        </div>
+        <Button
+          variant="default"
+          className="gap-1"
+          onClick={async () =>
+            setConfig(await window.nais.invoke('custom:watchPickDir', undefined))
+          }
+        >
+          <FolderOpen size={14} /> {t('ui.change')}
+        </Button>
+      </div>
+      <div className="flex items-center justify-between gap-6">
+        <div className="min-w-0">
+          <p className="text-[13px] text-ink">{t('ui.customWatchAutoGenerate')}</p>
+          <p className="text-[11.5px] text-faint">{t('ui.customWatchAutoGenerateHint')}</p>
+        </div>
+        <Switch
+          aria-label={t('ui.customWatchAutoGenerate')}
+          checked={autoGenerate && config.enabled}
+          disabled={!config.enabled}
+          onCheckedChange={setAutoGenerate}
+        />
+      </div>
+    </div>
+  )
+}
+
 function StorageSection(): React.JSX.Element {
   const t = useT()
   const [autoSave, setAutoSave] = useBoolSetting('auto_save', true)
@@ -660,6 +737,8 @@ function StorageSection(): React.JSX.Element {
         label={t('ui.sceneSaveFolder')}
         hint={t('ui.organizedUnderThisFolderByPresetSceneName')}
       />
+
+      {window.nais.runtime !== 'browser' && <WatchFolderRow />}
 
       <div className="mt-1 border-t border-line pt-3">
         <p className="text-[13px] text-ink">{t('ui.dataBackup')}</p>
@@ -805,6 +884,11 @@ function AccountSection(): React.JSX.Element {
   // 계정 자동 전환 (기본 켜짐) — 브라우저 버전은 전환하지 않는다
   const [autoSwitch, setAutoSwitch] = useState(true)
   const canAutoSwitch = window.nais.runtime !== 'browser' && accounts.length > 1
+  // [custom] 여러 계정으로 동시에 생성
+  const parallelEnabled = useParallelStore((s) => s.config.enabled)
+  const setParallelEnabled = useParallelStore((s) => s.setEnabled)
+  const parallelAnlas = useParallelStore((s) => s.config.anlasFallback)
+  const setParallelAnlas = useParallelStore((s) => s.setAnlasFallback)
   const anlasBalance = useGenerationStore((s) => s.anlasBalance)
   const opusUsage = useGenerationStore((s) => s.opusUsage)
   const subscriptionTier = useGenerationStore((s) => s.subscriptionTier)
@@ -1076,6 +1160,29 @@ function AccountSection(): React.JSX.Element {
         </Row>
       )}
 
+      {/* [custom] 여러 계정으로 동시에 생성 (계정마다 한 장씩) */}
+      {canAutoSwitch && (
+        <Row label={t('ui.customParallelAccounts')} hint={t('ui.customParallelAccountsHint')}>
+          <Switch
+            aria-label={t('ui.customParallelAccounts')}
+            checked={parallelEnabled}
+            onCheckedChange={(v) => void setParallelEnabled(v)}
+          />
+        </Row>
+      )}
+      {canAutoSwitch && parallelEnabled && (
+        <Row
+          label={t('ui.customParallelAnlasFallback')}
+          hint={t('ui.customParallelAnlasFallbackHint')}
+        >
+          <Switch
+            aria-label={t('ui.customParallelAnlasFallback')}
+            checked={parallelAnlas}
+            onCheckedChange={(v) => void setParallelAnlas(v)}
+          />
+        </Row>
+      )}
+
       {activeAccount && subscriptionTier === 'opus' && (
         <div className="min-w-0 rounded-lg border border-line bg-surface-2/50 p-3">
           <div className="mb-2 flex items-center justify-between gap-2">
@@ -1113,9 +1220,11 @@ function AccountSection(): React.JSX.Element {
             {opusUsage
               ? opusUsage.isNegative
                 ? `${
-                    canAutoSwitch && autoSwitch
-                      ? t('ui.depletedWillSwitchToAnAvailableAccountBeforeTheNextV5Generation')
-                      : t('ui.depletedV5GenerationsWillUseAnlasUntilItRecharges')
+                    canAutoSwitch && parallelEnabled
+                      ? t('ui.customLaneRestsUntilRecharge') // [custom] 동시 생성은 Anlas 대신 쉰다
+                      : canAutoSwitch && autoSwitch
+                        ? t('ui.depletedWillSwitchToAnAvailableAccountBeforeTheNextV5Generation')
+                        : t('ui.depletedV5GenerationsWillUseAnlasUntilItRecharges')
                   } · ${formatOpusUsageRefill(opusUsage, t)}`
                 : formatOpusUsageRefill(opusUsage, t)
               : t('ui.checkingUsage')}

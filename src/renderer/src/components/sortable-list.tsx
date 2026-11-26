@@ -15,6 +15,7 @@ import {
 } from '@dnd-kit/sortable'
 import { useRef, type CSSProperties } from 'react'
 import { cn } from '../lib/utils'
+import { useSortActivation } from '../lib/custom-touch-mode'
 
 /** 드롭다운 목록용 세로 드래그 정렬 컨테이너 — onReorder에 새 id 순서 전달 */
 export function SortableList<Id extends number | string>({
@@ -26,7 +27,10 @@ export function SortableList<Id extends number | string>({
   onReorder: (ids: Id[]) => void
   children: React.ReactNode
 }): React.JSX.Element {
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }))
+  const sensors = useSensors(
+    // [custom] 터치·원격 모드에서는 길게 누른 뒤에만 자리 이동 시작
+    useSensor(PointerSensor, { activationConstraint: useSortActivation(4) })
+  )
   const onDragEnd = (e: DragEndEvent): void => {
     const { active, over } = e
     if (!over || active.id === over.id) return

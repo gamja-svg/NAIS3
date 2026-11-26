@@ -5,6 +5,7 @@ import {
   Loader2,
   Minus,
   PanelLeft,
+  MessageCircle,
   PanelRight,
   Settings,
   Square,
@@ -29,6 +30,8 @@ import { inpaintingModelFor, modelCapabilities } from '@shared/nai-models'
 import { sentReferenceCount } from '@shared/precise-reference'
 import { snapNaiResolution } from '@shared/nai-resolution'
 import { PageNav } from './page-nav'
+import { useClaudePanelStore } from '../stores/custom-claude-panel-store'
+import { AutoGenToggle } from './custom-autogen-toggle'
 import { ThemeToggle } from './theme-toggle'
 
 const isMac = typeof navigator !== 'undefined' && navigator.platform.toLowerCase().includes('mac')
@@ -78,7 +81,7 @@ function UpdateButton(): React.JSX.Element | null {
 }
 
 /** Anlas 잔액 + 예상 소모(-N). 토큰 미설정(잔액 없음)이면 표시하지 않음 */
-function AnlasChips({
+export function AnlasChips({
   balance,
   cost
 }: {
@@ -108,7 +111,7 @@ function AnlasChips({
   )
 }
 
-function OpusUsageChip(): React.JSX.Element | null {
+export function OpusUsageChip(): React.JSX.Element | null {
   const t = useT()
   const usage = useGenerationStore((s) => s.opusUsage)
   const subscriptionTier = useGenerationStore((s) => s.subscriptionTier)
@@ -227,6 +230,18 @@ function PanelToggle({ side }: { side: 'left' | 'right' }): React.JSX.Element {
   ) : (
     <BarButton onClick={toggle} active={open} title={t('ui.toggleHistoryPanel.b5c0fb9')}>
       <PanelRight size={15} />
+    </BarButton>
+  )
+}
+
+/** [custom] Claude 창 열기/닫기 — 열림 상태는 여기서만 구독한다 */
+function ClaudeToggle(): React.JSX.Element {
+  const t = useT()
+  const open = useClaudePanelStore((s) => s.open)
+  const toggle = useClaudePanelStore((s) => s.toggle)
+  return (
+    <BarButton onClick={toggle} active={open} title={t('ui.customClaudePanel')}>
+      <MessageCircle size={15} />
     </BarButton>
   )
 }
@@ -378,6 +393,8 @@ export function Titlebar(): React.JSX.Element {
       {isMac && <OpusUsageChip />}
       {isMac && <AnlasChips balance={anlasBalance} cost={anlasCost} />}
 
+      <AutoGenToggle />
+      <ClaudeToggle />
       <PanelToggle side="right" />
       {isMac && (
         <div className="no-drag mx-0.5">

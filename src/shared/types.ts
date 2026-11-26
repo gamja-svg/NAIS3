@@ -135,12 +135,44 @@ export interface QueueItem {
   filePath?: string
   /** 전이성 오류(429/5xx 등)로 백오프 대기 중 — state는 'generating' 유지, UI 안내용 */
   retrying?: boolean
+  /** [custom] 동시 생성: 이 계정으로 보낸 항목 (없으면 비어 있는 계정 아무나) */
+  accountId?: string
+  /** [custom] 동시 생성: 이 항목을 뽑는(뽑은) 계정 */
+  laneAccountId?: string
+}
+
+/** [custom] 여러 계정으로 동시 생성 설정 — target: 새 항목을 보낼 계정 (null = 자동) */
+export interface ParallelConfig {
+  enabled: boolean
+  target: string | null
+  /** 게이지가 바닥난 계정도 그 계정의 Anlas로 이어서 뽑는다 (기본 꺼짐 = Anlas를 쓰지 않고 쉰다) */
+  anlasFallback: boolean
+}
+
+/**
+ * [custom] 동시 생성에서 계정이 쉬는 이유 — 게이지 소진 / 게이지 소진에 Anlas도 모자람 /
+ * Opus 아님 / 계정 상태 조회 실패
+ */
+export type LanePauseReason = 'exhausted' | 'noAnlas' | 'notOpus' | 'unknown'
+
+/** [custom] 동시 생성 계정(레인) 하나의 상태 */
+export interface QueueLane {
+  accountId: string
+  /** 지금 뽑는 항목 */
+  generatingId: string | null
+  /** 쉬는 중이면 다시 확인할 시각 (ms epoch) */
+  pausedUntil: number | null
+  pauseReason: LanePauseReason | null
+  /** 앱을 켠 뒤 이 계정이 뽑은 장수 */
+  done: number
 }
 
 export interface QueueStatus {
   items: QueueItem[]
   running: boolean
   delayMs: number
+  /** [custom] 동시 생성이 켜져 있고 계정이 2개 이상일 때만 */
+  lanes?: QueueLane[]
 }
 
 /** Anlas 가드가 요청을 막아 큐를 멈춤 — reason은 사용자에게 보일 이유, stopped는 함께 멈춘 대기 항목 수 */
@@ -221,6 +253,22 @@ export interface ListFolder {
 }
 export type CharacterFolder = ListFolder
 
+/** [custom] 상위 폴더 — 폴더 여러 개를 묶는다 (지금은 캐릭터 프롬프트만) */
+export type FolderGroupKind = 'chars'
+export interface FolderGroup {
+  id: number
+  name: string
+  collapsed: boolean
+  /** 구분용 색 (hex). null = 기본 */
+  color: string | null
+}
+export type FolderGroupPatch = Partial<Pick<FolderGroup, 'name' | 'collapsed' | 'color'>>
+/** 폴더가 어느 상위 폴더에 들어 있는지 (없으면 상위 폴더 밖) */
+export interface FolderGroupLink {
+  folderId: number
+  groupId: number
+}
+
 /** 무채색 테마에 어울리는 채도 낮은 폴더 색 프리셋 */
 export const FOLDER_COLORS = [
   '#c47a72', // red
@@ -256,6 +304,11 @@ export interface HistoryItem {
   kind: string
   seed: number | null
   createdAt: string
+  /** [custom] 씬 모드로 만든 이미지면 그 씬·프리셋 이름 (씬이 지워졌거나 씬 이미지가 아니면 없음) */
+  sceneName?: string | null
+  presetName?: string | null
+  sceneId?: number | null
+  presetId?: number | null
 }
 
 /** 디렉터 툴 (augment-image req_type) */
@@ -437,6 +490,12 @@ export interface Scene {
   imageCount: number
   /** 즐겨찾기 보유 여부 — 카드 낙관적 썸네일 교체 억제용 (즐겨찾기가 썸네일 고정) */
   hasFavorite: boolean
+  /** [custom] 내용(프롬프트·네거티브·크기) 변경 뒤 아직 한 장도 생성하지 않았거나, 이미지가 0장인 씬 */
+  pending?: boolean
+  /** [custom] 씬 메모(별명) — 어떤 장면인지 한눈에 보이게. 파일 이름에는 쓰지 않는다 */
+  memo?: string
+  /** [custom] 씬별 투명 배경 — 켠 씬은 사이드바 설정과 상관없이 투명 배경으로 뽑는다 (V5 모델) */
+  transparent?: boolean
 }
 
 /** 씬 상세의 생성 이미지 (페이지네이션 단위) */
@@ -502,7 +561,131 @@ export interface RecoverableBackup {
 }
 
 /** IPC invoke 채널 계약: 채널명 → (요청, 응답) */
+/** [custom] 감시 폴더 설정 */
+export interface WatchFolderConfig {
+  enabled: boolean
+  /** 비어 있으면 아직 고르지 않음 */
+  dir: string
+}
+
+export type WatchFolderFailure =
+  'unrecognized' | 'empty' | 'noPreset' | 'ambiguousPreset' | 'tooLarge' | 'readError'
+
+/** [custom] 감시 폴더가 파일 하나를 처리한 결과 */
+export interface WatchFolderEvent {
+  /** 감시 폴더 기준 상대 경로 */
+  file: string
+  ok: boolean
+  reason?: WatchFolderFailure
+  presetId?: number
+  presetName?: string
+  /** JSON의 `preset` 이름으로 프리셋을 새로 만듦 */
+  presetCreated?: boolean
+  added?: number
+  updated?: number
+  unchanged?: number
+  /** 새로 추가했거나 내용이 바뀐 씬 (자동 생성 대상) */
+  sceneIds?: number[]
+  /** 메모가 바뀐 씬 수 */
+  memos?: number
+  /** 메모만 적은 줄(prompt 칸 없음)인데 같은 이름 씬이 없어 건너뜀 */
+  skipped?: number
+}
+
+/** [custom] 대표 세트 받기 결과 — 씬마다 카드에 보이는 대표 이미지(최신 즐겨찾기, 없으면 최신) 한 장씩 */
+export interface TopSetResult {
+  presetId: number
+  presetName: string
+  /** 받은 폴더 */
+  dir: string
+  /** 대표 이미지가 있는 씬 수 (= 받을 그림 수) */
+  total: number
+  /** 새로 넣은 그림 */
+  written: number
+  /** 같은 이름의 다른 그림을 휴지통으로 보내고 바꾼 그림 */
+  replaced: number
+  /** 똑같은 그림이 이미 있어 건너뜀 */
+  same: number
+  /** 복사하지 못함 (원본 없음·쓰기 실패 등) */
+  failed: number
+  /** 그림이 없어 건너뛴 씬 */
+  noImage: number
+  /** 받은 그림 중 미생성 표시된 씬 (예전 그림일 수 있음) */
+  pending: number
+}
+
+/** [custom] 검열(흰칠)할 그림을 연 결과 */
+export interface CensorOpenResult {
+  /** 바탕 그림 — 전에 칠해 둔 그림이면 그 원본 */
+  basePath: string
+  width: number
+  height: number
+  /** 전에 칠해 둔 자리 (한 채널 PNG, base64). 없으면 null */
+  maskBase64: string | null
+}
+
+/** [custom] 칠한 그림을 저장한 결과 */
+export interface CensorSaveResult {
+  /** 이제 대표 이미지인 그림 (칠한 그림) */
+  filePath: string
+  sceneId: number | null
+  /** 새 그림을 만들었는지 (false = 전에 만든 그림을 다시 썼거나, 칠한 게 없어 그대로) */
+  created: boolean
+}
+
+/** [custom] 콕 찍기 결과 — 찍은 자리의 모양 후보 (작은 것부터) */
+export interface CensorPickResult {
+  /** 그림 좌표의 네모와, 그 안의 모양 (흰색 + 알파 PNG, base64) */
+  shapes: { x: number; y: number; width: number; height: number; png: string }[]
+  /** 처음 칠할 후보의 번호 */
+  pick: number
+}
+
+/** [custom] 감시 폴더의 요청 파일(*.request.json) 하나를 처리한 결과 */
+export interface WatchRequestEvent {
+  /** 감시 폴더 기준 상대 경로 */
+  file: string
+  ok: boolean
+  exports: TopSetResult[]
+  errors: string[]
+  /** `"action": "autoGenerate"` 요청으로 바뀐 불러온 씬 자동 생성 값 */
+  autoGenerate?: boolean
+  /** `"action": "sortScenes"` 요청으로 번호순 정렬한 프리셋 */
+  sorted?: { presetId: number; preset: string; scenes: number; moved: number }[]
+  /** `"action": "fragments"` 요청의 결과 — 조각 내용 자체는 결과 파일의 fragmentItems에만 담는다 */
+  fragments?: FragmentRequestOutcome
+}
+
+/** [custom] 조각 고치기 요청의 결과 수 */
+export interface FragmentRequestOutcome {
+  created: number
+  updated: number
+  unchanged: number
+  /** 읽어 달라고 했지만 없는 조각 이름 */
+  missing: string[]
+}
+
+/** [custom] 조각 고치기 요청의 결과 파일에 담는 조각 하나 */
+export interface FragmentRequestItem {
+  name: string
+  content: string
+  folder?: string
+  /** 네거 짝 조각 이름 */
+  negative?: string
+}
+
 export interface IpcInvokeMap {
+  /** [custom] 검열(흰칠): 그림 열기 · 칠한 그림 저장 · 콕 찍기 · 모양 따기 모델 미리 준비 */
+  'custom:censorOpen': { req: { filePath: string }; res: CensorOpenResult }
+  'custom:censorSave': { req: { filePath: string; maskBase64: string }; res: CensorSaveResult }
+  'custom:censorPick': { req: { filePath: string; x: number; y: number }; res: CensorPickResult }
+  'custom:censorWarm': { req: void; res: void }
+  /** [custom] 씬 프리셋 폴더: 프리셋 id → 폴더 이름 · 폴더에 넣기(folder가 null이면 빼기) · 폴더 이름 바꾸기 */
+  'custom:presetFolders': { req: void; res: { folders: Record<number, string> } }
+  'custom:presetFolderSet': { req: { presetIds: number[]; folder: string | null }; res: void }
+  'custom:presetFolderRename': { req: { from: string; to: string }; res: void }
+  /** [custom] 바탕 그림의 픽셀을 읽을 수 있게 data: 주소로 (색 맞춤 붓) */
+  'custom:censorBase': { req: { filePath: string }; res: { dataUrl: string } }
   'db:status': { req: void; res: { version: number; path: string } }
   /** 앱 버전 */
   'app:version': { req: void; res: { version: string } }
@@ -628,6 +811,24 @@ export interface IpcInvokeMap {
   'chars:clearThumbnail': { req: { id: number }; res: void }
   'chars:reorder': { req: { order: CharacterOrderEntry[] }; res: void }
   'chars:folderCreate': { req: { name: string }; res: { id: number } }
+  /** [custom] 여러 계정으로 동시 생성 */
+  'custom:parallelGet': { req: void; res: ParallelConfig }
+  'custom:parallelSet': { req: Partial<ParallelConfig>; res: ParallelConfig }
+  /** [custom] 상위 폴더 */
+  'custom:folderGroups:list': {
+    req: { kind: FolderGroupKind }
+    res: { groups: FolderGroup[]; links: FolderGroupLink[] }
+  }
+  'custom:folderGroups:create': {
+    req: { kind: FolderGroupKind; name: string }
+    res: { id: number }
+  }
+  'custom:folderGroups:update': { req: { id: number; patch: FolderGroupPatch }; res: void }
+  'custom:folderGroups:delete': { req: { id: number }; res: void }
+  'custom:folderGroups:arrange': {
+    req: { kind: FolderGroupKind; groupIds: number[]; links: FolderGroupLink[] }
+    res: void
+  }
   'chars:folderRename': { req: { id: number; name: string }; res: void }
   'chars:folderCollapse': { req: { id: number; collapsed: boolean }; res: void }
   'chars:folderColor': { req: { id: number; color: string | null }; res: void }
@@ -667,7 +868,8 @@ export interface IpcInvokeMap {
   /** 파일 탐색기에서 해당 파일 위치 열기 (파일 선택 상태로) */
   'images:showInFolder': { req: { filePath: string }; res: void }
   /** 다른 이름으로 저장 — 파일 저장 다이얼로그로 복사 */
-  'images:saveAs': { req: { filePath: string }; res: { saved: boolean } }
+  /** [custom] defaultName — 저장 창의 파일 이름 기본값 (씬 대표 이미지 저장: 씬 이름) */
+  'images:saveAs': { req: { filePath: string; defaultName?: string }; res: { saved: boolean } }
   /** 편집기(모자이크 등)의 결과 base64 PNG를 곧바로 원하는 위치에 저장 — 적용/저장 단계 없이 바로 내려받기 */
   'images:saveBase64As': { req: { base64: string; defaultName?: string }; res: { saved: boolean } }
   /** 이미지를 클립보드로 복사 */
@@ -797,6 +999,9 @@ export interface IpcInvokeMap {
   }
   'scenes:duplicate': { req: { id: number }; res: { id: number } }
   'scenes:delete': { req: { id: number }; res: void }
+  /** [custom] '변경 후 미생성' 표시를 수동으로 끈다 (다음 내용 변경 때 다시 켜짐) */
+  'scenes:clearPending': { req: { id: number }; res: void }
+  'scenes:clearPendingMany': { req: { ids: number[] }; res: void }
   'scenes:reorder': { req: { ids: number[] }; res: void }
   /** 예약: 전체 취소(count=0 등 절대값 설정 — 출연 내역도 함께 초기화) */
   'scenes:setReserveAll': { req: { presetId: number; count: number }; res: void }
@@ -831,14 +1036,63 @@ export interface IpcInvokeMap {
   'scenes:openFolder': { req: { sceneId: number }; res: { ok: boolean } }
   /** 씬 JSON 내보내기/불러오기 (파일 다이얼로그, 활성 프리셋 기준) */
   'scenes:exportJson': { req: { presetId: number }; res: { saved: boolean } }
+  /** [custom] 감시 폴더 설정 읽기 / 켜고 끄기 / 폴더 고르기(다이얼로그) */
+  'custom:watchGet': { req: void; res: WatchFolderConfig }
+  'custom:watchSetEnabled': { req: { enabled: boolean }; res: WatchFolderConfig }
+  'custom:watchPickDir': { req: void; res: WatchFolderConfig }
   'scenes:importJson': {
     req: { presetId: number }
-    /** unrecognized = 알 수 없는 JSON 형식, canceled = 파일을 고르지 않음 */
-    res: { count: number; unrecognized?: boolean; canceled?: boolean }
+    /**
+     * unrecognized = 알 수 없는 JSON 형식, canceled = 파일을 고르지 않음.
+     * [custom] memos = 메모가 바뀐 씬 수, skipped = 메모만 적은 줄인데 같은 이름 씬이 없어 건너뜀 (count에서 뺌)
+     */
+    res: {
+      count: number
+      unrecognized?: boolean
+      canceled?: boolean
+      memos?: number
+      skipped?: number
+    }
   }
   /** 즐겨찾기 이미지 또는 각 씬 최상단 이미지를 ZIP으로 (파일 다이얼로그) */
   /** 활성 프리셋 ZIP 내보내기 (NAIS2 방식 — 씬별 즐겨찾기 전부, 없으면 최상단 1장) */
   'scenes:exportZip': { req: { presetId: number }; res: { count: number } }
+  /**
+   * [custom] 대표 세트 받기 — 기본 폴더 안 프리셋 이름 폴더로 (기본 폴더가 없으면 먼저 고른다).
+   * pick = 이번만 다른 폴더를 골라 그 폴더에 바로 받는다
+   */
+  'custom:topSetExport': {
+    req: { presetId: number; pick?: boolean }
+    res: TopSetResult | { canceled: true }
+  }
+  'custom:topSetGetDir': { req: void; res: { dir: string; format: 'original' | 'webp' } }
+  /** [custom] 창 포커스를 한 번 놓았다 다시 잡는다 — 웹뷰(Claude 창)에서 한/영 전환이 안 먹는 것을 푸는 용도 */
+  'custom:windowRefocus': { req: void; res: void }
+  /** [custom] 대표 세트 받는 형식 — webp = 줄여서 받기 */
+  'custom:topSetFormat': { req: { format: 'original' | 'webp' }; res: void }
+  /** [custom] 씬 메모(별명) 저장 — 빈 글자면 지운다 */
+  'custom:sceneMemo': { req: { id: number; memo: string }; res: void }
+  /** [custom] 조각의 네거 짝(조각 id → 네거 조각 id)과, 네거 짝을 붙이지 않는 씬 */
+  'custom:fragmentNegatives': {
+    req: void
+    res: { pairs: Record<number, number>; offScenes: number[] }
+  }
+  'custom:fragmentNegativeSet': {
+    req: { fragmentId: number; negativeId: number | null }
+    res: void
+  }
+  'custom:sceneNegativeOff': { req: { id: number; off: boolean }; res: void }
+  /** [custom] 씬별 투명 배경 켜기·끄기 */
+  'custom:sceneTransparent': { req: { id: number; on: boolean }; res: void }
+  /** [custom] 미생성인 씬이 바뀌기 전 내용 — 바뀐 태그를 노랗게 칠하는 기준 (없으면 null) */
+  'custom:sceneBase': {
+    req: { id: number }
+    res: { prompt: string; negativePrompt: string } | null
+  }
+  /** 기본 폴더 고르기 (다이얼로그) */
+  'custom:topSetPickDir': { req: void; res: { dir: string; canceled?: boolean } }
+  /** 이 프리셋의 대표 세트 폴더 열기 (아직 없으면 기본 폴더) */
+  'custom:topSetOpenDir': { req: { presetId: number }; res: { ok: boolean } }
   'vibes:list': { req: void; res: { folders: ListFolder[]; items: VibeItem[] } }
   /** 파일 다이얼로그(다중)로 추가 */
   'vibes:add': { req: { folderId: number | null }; res: { count: number } }
@@ -943,6 +1197,13 @@ export interface IpcEventMap {
     tier?: SubscriptionInfo['tier'] | null
     usage?: OpusUsageStatus
   }
+  /** [custom] 동시 생성 중 계정별 잔액·게이지 */
+  'custom:laneBalance': {
+    accountId: string
+    anlas: number | null
+    tier: SubscriptionInfo['tier'] | null
+    usage?: OpusUsageStatus
+  }
   /** 수동 선택 또는 V5 게이지 소진으로 활성 계정이 바뀜 */
   'nai:accountChanged': {
     accountId: string | null
@@ -959,6 +1220,12 @@ export interface IpcEventMap {
   /** 씬에 새 이미지가 생성됨 (목록/상세 갱신). filePath로 카드 즉시 낙관적 갱신 */
   'scenes:changed': { sceneId: number; filePath: string }
   'scenes:reservationsChanged': Record<string, never>
+  /** [custom] 감시 폴더가 파일 하나를 처리함 */
+  'custom:watchImported': WatchFolderEvent
+  /** [custom] 모양 따기 모델을 받는 정도 (0~100, 100 = 준비됨) */
+  'custom:censorModel': { percent: number }
+  /** [custom] 감시 폴더가 요청 파일 하나를 처리함 (대표 세트 받기 등) */
+  'custom:watchRequestDone': WatchRequestEvent
   /** 단축키로 앱 화면 배율이 바뀜 */
   'window:zoomChanged': { factor: number }
   /** 바이브 인코딩 완료 — 카드의 인코딩 표시 갱신용 */

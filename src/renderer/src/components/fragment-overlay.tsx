@@ -1,5 +1,7 @@
 import {
+  CircleMinus,
   Copy,
+  CornerDownRight,
   Download,
   FileDown,
   FileUp,
@@ -7,7 +9,6 @@ import {
   Maximize2,
   Pencil,
   Plus,
-  Puzzle,
   RotateCcw,
   Search,
   Trash2,
@@ -19,6 +20,9 @@ import { cn } from '../lib/utils'
 import { useT } from '../lib/i18n'
 import { buildDisplayRows } from '../lib/folder-list'
 import { useFragmentsStore } from '../stores/fragments-store'
+import { insertIntoPrompt } from '../lib/custom-prompt-target'
+import { useFragmentNegativeStore } from '../stores/custom-fragment-negative-store'
+import { FragmentNegativePicker } from './custom-fragment-negative'
 import { toast } from '../stores/toast-store'
 import { FragmentNameInput } from './fragment-name-input'
 import { FolderListView } from './folder-list-view'
@@ -67,6 +71,17 @@ export function FragmentOverlay(): React.JSX.Element {
     const q = search.trim().toLowerCase()
     return all.filter((r) => r.type === 'item' && r.item.name.toLowerCase().includes(q))
   }, [folders, items, searching, search])
+  // [custom] 네거 짝이 있는 조각만 보기 — 묶어 둔 세트를 한눈에 확인
+  const negativePairs = useFragmentNegativeStore((s) => s.pairs)
+  const pairCount = items.filter((f) => negativePairs[f.id] != null).length
+  const [pairedOnly, setPairedOnly] = useState(false)
+  const shownRows = useMemo(
+    () =>
+      pairedOnly && pairCount > 0
+        ? rows.filter((r) => r.type === 'item' && negativePairs[r.item.id] != null)
+        : rows,
+    [rows, pairedOnly, pairCount, negativePairs]
+  )
 
   const folderName = useMemo(() => new Map(folders.map((f) => [f.id, f.name])), [folders])
   const pathOf = (f: Fragment): string =>
@@ -74,11 +89,39 @@ export function FragmentOverlay(): React.JSX.Element {
       ? `${folderName.get(f.folderId)}/${f.name}`
       : f.name
 
+  // [custom] 프롬프트에 적을 참조 — 이름이 겹치면 폴더까지 적는다
+  const nameCount = useMemo(() => {
+    const count = new Map<string, number>()
+    for (const f of items)
+      count.set(f.name.toLowerCase(), (count.get(f.name.toLowerCase()) ?? 0) + 1)
+    return count
+  }, [items])
+  const refOf = (f: Fragment): string =>
+    `<${(nameCount.get(f.name.toLowerCase()) ?? 0) > 1 ? pathOf(f) : f.name}>`
+
   const renderHeader = (fragment: Fragment): React.ReactNode => {
     const lines = lineCount(fragment.content)
     return (
       <div className="flex h-10 items-center gap-2 px-2.5">
-        <Puzzle size={14} className="shrink-0 text-faint" />
+        {/* [custom] 커서 자리에 넣기 — 누르면 마지막으로 커서를 둔 프롬프트 칸에, 끌면 놓은 자리에 */}
+        <button
+          type="button"
+          draggable
+          className="-ml-1 grid size-7 shrink-0 cursor-grab place-items-center rounded-md text-accent-ink hover:bg-accent/15 active:cursor-grabbing"
+          title={t('ui.customFragmentInsertHint', refOf(fragment))}
+          aria-label={t('ui.customFragmentInsert')}
+          onPointerDown={(e) => e.stopPropagation()}
+          onDragStart={(e) => {
+            e.dataTransfer.setData('text/plain', `${refOf(fragment)}, `)
+            e.dataTransfer.effectAllowed = 'copy'
+          }}
+          onClick={() => {
+            if (!insertIntoPrompt(refOf(fragment)))
+              toast(t('ui.customFragmentInsertNoTarget'), 'info')
+          }}
+        >
+          <CornerDownRight size={15} />
+        </button>
         {renamingId === fragment.id ? (
           <FragmentNameInput fragment={fragment} onDone={() => setRenamingId(null)} />
         ) : (
@@ -94,6 +137,7 @@ export function FragmentOverlay(): React.JSX.Element {
             {fragment.name}
           </button>
         )}
+        <FragmentNegativePicker fragment={fragment} />
         <Button
           size="sm"
           variant="ghost"
@@ -219,7 +263,9 @@ export function FragmentOverlay(): React.JSX.Element {
         </Button>
       </div>
 
-      <p className="px-1 text-[11px] text-faint">{t('ui.fragmentQuickEditHint')}</p>
+      <p className="px-1 text-[11px] text-faint">
+        {t('ui.customFragmentInsertTip')} {t('ui.fragmentQuickEditHint')}
+      </p>
 
       <div className="flex items-center gap-1.5">
         <div className="relative flex-1">
@@ -231,6 +277,18 @@ export function FragmentOverlay(): React.JSX.Element {
             onChange={(e) => setSearch(e.target.value)}
           />
         </div>
+        {pairCount > 0 && (
+          <Button
+            size="sm"
+            variant={pairedOnly ? 'accent' : 'ghost'}
+            className="gap-1 px-2 text-[11.5px]"
+            title={t('ui.customFragmentNegativeOnlyHint')}
+            aria-pressed={pairedOnly}
+            onClick={() => setPairedOnly((v) => !v)}
+          >
+            <CircleMinus size={13} /> {t('ui.customFragmentNegativeCountValue', pairCount)}
+          </Button>
+        )}
         <Button
           size="sm"
           variant="ghost"
@@ -253,8 +311,8 @@ export function FragmentOverlay(): React.JSX.Element {
 
       <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden no-scrollbar">
         <FolderListView
-          rows={rows}
-          searching={searching}
+          rows={shownRows}
+          searching={searching || (pairedOnly && pairCount > 0)}
           expandedId={expandedId}
           renderKey={renderKey}
           folderActions={{

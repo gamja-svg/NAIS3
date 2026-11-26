@@ -1,12 +1,37 @@
 import { create } from 'zustand'
 import { applySceneRequest } from '@shared/scene-request'
+import { WATCH_AUTOGEN_KEY, WATCH_AUTOGEN_LIMIT, canAutoGenerate } from '@shared/custom-watch'
 import { toast } from './toast-store'
+import { useAutoGenStore } from './custom-autogen-store'
+import { t } from '../lib/i18n'
+import { topSetSummary } from '../lib/custom-top-set'
 import { recordNav } from '../lib/nav-history'
-import type { GenerationRequest, Scene, SceneCast, SceneImage, ScenePreset } from '@shared/types'
+import type { MessageId } from '@shared/i18n'
+import type {
+  GenerationRequest,
+  Scene,
+  SceneCast,
+  SceneImage,
+  ScenePreset,
+  WatchFolderFailure
+} from '@shared/types'
 import { enabledCharacters, useCharactersStore } from './characters-store'
+import { useFragmentNegativeStore } from './custom-fragment-negative-store'
+import { useFragmentsStore } from './fragments-store'
 import { randomSeed, useGenerationStore } from './generation-store'
+import { useLayoutStore } from './layout-store'
 
 export { appendPrompt } from '@shared/scene-request'
+
+// [custom] 감시 폴더 실패 사유 문구
+const WATCH_FAILURE_TEXT: Record<WatchFolderFailure, MessageId> = {
+  unrecognized: 'ui.unrecognizedSceneJson',
+  empty: 'ui.noScenesToImport',
+  noPreset: 'ui.customWatchNoPreset',
+  ambiguousPreset: 'ui.customWatchAmbiguousPreset',
+  tooLarge: 'ui.customWatchTooLarge',
+  readError: 'ui.customWatchReadError'
+}
 
 const PAGE = 80 // 씬 상세 이미지 페이지 크기 (수만 장 대비: 한 번에 전부 로드 금지)
 let reserving = false
@@ -33,12 +58,29 @@ interface ScenesState {
 
   loadPresets: () => Promise<void>
   setActivePreset: (id: number) => Promise<void>
+  /** [custom] 씬 목록에서 찾아가 강조할 씬 (히스토리 '씬 위치로 이동') — 목록이 스크롤한 뒤 비운다 */
+  focusSceneId: number | null
+  goToScene: (presetId: number, sceneId: number) => Promise<void>
+  clearFocusScene: () => void
+  /** [custom] 변경 후 미생성 씬만 보기 (씬 위치로 이동이 가려진 씬을 보여 주려고 끌 수 있게 스토어에 둔다) */
+  pendingOnly: boolean
+  setPendingOnly: (on: boolean) => void
+  /** [custom] 검수 모드에서 보고 있는 씬 (null = 꺼짐) — 대표 이미지를 한 장씩 넘겨 본다 */
+  reviewSceneId: number | null
+  setReviewScene: (id: number | null) => void
   createPreset: (name: string) => Promise<void>
   renamePreset: (id: number, name: string) => Promise<void>
   deletePreset: (id: number) => Promise<void>
   /** 프리셋 순서 이동 (dir: -1 위 / +1 아래) */
   /** 프리셋 드래그 정렬 — 새 id 순서 반영 */
   reorderPresets: (ids: number[]) => Promise<void>
+  /** [custom] 프리셋을 목록에서 한 칸 위(-1)·아래(+1)로 옮긴다 */
+  movePreset: (id: number, dir: -1 | 1) => Promise<void>
+  /**
+   * [custom] 이전(-1)·다음(+1) 프리셋으로 넘어간다 (끝에서는 그대로).
+   * 검수 모드에서 넘기면 넘어간 프리셋의 첫 그림으로 검수를 이어 간다.
+   */
+  stepPreset: (dir: -1 | 1) => Promise<void>
 
   load: () => Promise<void>
   select: (id: number | null) => void
@@ -76,6 +118,8 @@ interface ScenesState {
   /** 예약 수 직접 지정 — 배지 숫자를 클릭해 입력 (배치 단위 증감과 달리 입력값 그대로) */
   setReserve: (id: number, count: number) => Promise<void>
   adjustReserveAll: (delta: number) => Promise<void>
+  /** [custom] 고른 씬들만 예약 증감 (미생성만 보기에서 '전체 1장 예약'이 쓰는 경로) */
+  adjustReserveScenes: (ids: number[], delta: number) => Promise<void>
   clearReserveAll: () => Promise<void>
 
   // 편집 모드 일괄
@@ -102,6 +146,14 @@ interface ScenesState {
   /** 프리셋 캐릭터 바인드 (null = 해제) */
   /** 이 씬 1장 바로 생성 (예약 없이 — NAIS2식 즉석 생성) */
   generateOne: (sceneId: number) => Promise<void>
+  /** [custom] 검수 모드의 바로 다시 뽑기 — 이 씬 1장, 시드 고정이어도 새 시드 */
+  regenerateScene: (sceneId: number) => Promise<void>
+  /** [custom] 일괄 확인 — 이 씬들의 미생성 표시를 한 번에 끈다 (남은 게 없으면 미생성만 보기도 끈다) */
+  ackPendingScenes: (ids: number[]) => Promise<void>
+  /** [custom] 씬 메모(별명) — 화면은 바로 바꾸고 저장은 뒤따른다. 빈 글자면 지운다 */
+  setMemo: (id: number, memo: string) => Promise<void>
+  /** [custom] 씬별 투명 배경 켜기·끄기 */
+  setTransparent: (id: number, on: boolean) => Promise<void>
 }
 
 /**
@@ -171,9 +223,32 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
     }
     await get().load()
   },
+  focusSceneId: null,
+  goToScene: async (presetId, sceneId) => {
+    // [custom] 검수 중에 히스토리에서 고르면 검수 화면이 그 씬으로 간다
+    const reviewing = get().reviewSceneId != null
+    useLayoutStore.getState().setCenterMode('scene')
+    if (get().activePresetId !== presetId) await get().setActivePreset(presetId)
+    else if (get().selectedId != null) get().select(null) // 씬 상세를 닫고 목록으로
+    // 히스토리를 연 뒤에 씬이 지워졌을 수 있다
+    const target = get().scenes.find((s) => s.id === sceneId)
+    if (!target) {
+      toast(t('ui.customSceneNotFound'), 'error')
+      return
+    }
+    // 미생성만 보는 중이라 안 보이는 씬이면 필터를 끈다
+    if (get().pendingOnly && !target.pending) set({ pendingOnly: false })
+    set({ focusSceneId: sceneId })
+    if (reviewing && target.thumbnailPath) set({ reviewSceneId: sceneId })
+  },
+  pendingOnly: false,
+  setPendingOnly: (on) => set({ pendingOnly: on }),
+  clearFocusScene: () => set({ focusSceneId: null }),
+  reviewSceneId: null,
+  setReviewScene: (id) => set({ reviewSceneId: id }),
   setActivePreset: async (id) => {
     selectionAnchor = null
-    set({ activePresetId: id, selectedId: null, selection: new Set() })
+    set({ activePresetId: id, selectedId: null, selection: new Set(), reviewSceneId: null })
     await get().load()
   },
   createPreset: async (name) => {
@@ -193,6 +268,41 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
     const byId = new Map(get().presets.map((p) => [p.id, p]))
     set({ presets: ids.map((pid) => byId.get(pid)!).filter(Boolean) })
     await window.nais.invoke('scenePresets:reorder', { ids })
+  },
+  movePreset: async (id, dir) => {
+    const ids = get().presets.map((p) => p.id)
+    const from = ids.indexOf(id)
+    const to = from + dir
+    if (from < 0 || to < 0 || to >= ids.length) return
+    ids.splice(to, 0, ...ids.splice(from, 1))
+    await get().reorderPresets(ids)
+  },
+  stepPreset: async (dir) => {
+    const { presets, activePresetId, reviewSceneId } = get()
+    const next = presets[presets.findIndex((p) => p.id === activePresetId) + dir]
+    if (!next || next.id === activePresetId) return
+    const reviewing = reviewSceneId != null
+    // 보던 씬의 자리 — 넘어간 프리셋에서도 같은 씬(같은 이름, 없으면 같은 순서)을 이어서 본다
+    const before = get().scenes
+    const at = Math.max(
+      0,
+      before.findIndex((s) => s.id === reviewSceneId)
+    )
+    const name = before[at]?.name
+    await get().setActivePreset(next.id) // 검수는 여기서 닫힌다 (씬 목록이 바뀐다)
+    if (!reviewing || get().activePresetId !== next.id) return
+    const { scenes, pendingOnly } = get()
+    const ok = (s: Scene | undefined): s is Scene =>
+      !!s && !!s.thumbnailPath && (!pendingOnly || s.pending === true)
+    let first = scenes.find((s) => s.name === name && ok(s))
+    // 그 자리에 그림이 없으면 가장 가까운 그림 있는 씬 (뒤쪽 먼저)
+    for (let d = 0; !first && d < scenes.length; d++) {
+      const after = scenes[at + d]
+      const earlier = scenes[at - d]
+      first = ok(after) ? after : ok(earlier) ? earlier : undefined
+    }
+    if (first) set({ reviewSceneId: first.id })
+    else toast(t('ui.customPresetNoPicturesValue', next.name), 'info')
   },
   setPresetDefaultResolution: async (id, width, height) => {
     set({
@@ -256,7 +366,17 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
     await get().load()
   },
   update: async (id, patch) => {
-    set({ scenes: get().scenes.map((s) => (s.id === id ? { ...s, ...patch } : s)) })
+    // [custom] 내용이 실제로 달라지면 카드의 '미생성' 표시도 바로 켠다 (서버 판정과 같은 기준)
+    const changesContent = (s: Scene): boolean =>
+      (patch.prompt !== undefined && patch.prompt !== s.prompt) ||
+      (patch.negativePrompt !== undefined && patch.negativePrompt !== s.negativePrompt) ||
+      (patch.width !== undefined && patch.width !== s.width) ||
+      (patch.height !== undefined && patch.height !== s.height)
+    set({
+      scenes: get().scenes.map((s) =>
+        s.id === id ? { ...s, ...patch, pending: s.pending || changesContent(s) } : s
+      )
+    })
     await window.nais.invoke('scenes:update', {
       id,
       patch: {
@@ -320,6 +440,25 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
       scenes: get().scenes.map((s) => (s.id === id ? { ...s, reserves, reserveCount } : s))
     })
     await window.nais.invoke('scenes:setReserves', { id, reserves })
+    void get().refreshReservedTotal()
+  },
+  adjustReserveScenes: async (ids, delta) => {
+    const castId = get().activeCastId
+    const step = delta * (useGenerationStore.getState().batchCount || 1)
+    const wanted = new Set(ids)
+    const changed: { id: number; reserves: Record<string, number> }[] = []
+    set({
+      scenes: get().scenes.map((s) => {
+        if (!wanted.has(s.id)) return s
+        const reserves = { ...s.reserves }
+        const next = Math.max(0, (reserves[castId] ?? 0) + step)
+        if (next > 0) reserves[castId] = next
+        else delete reserves[castId]
+        changed.push({ id: s.id, reserves })
+        return { ...s, reserves, reserveCount: Object.values(reserves).reduce((a, b) => a + b, 0) }
+      })
+    })
+    for (const item of changed) await window.nais.invoke('scenes:setReserves', item)
     void get().refreshReservedTotal()
   },
   adjustReserveAll: async (delta) => {
@@ -402,8 +541,14 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
       scenes: get().scenes.map((s) =>
         s.id === sceneId
           ? s.hasFavorite
-            ? { ...s, imageCount: s.imageCount + 1 }
-            : { ...s, thumbnailUrl: '', thumbnailPath: filePath, imageCount: s.imageCount + 1 }
+            ? { ...s, imageCount: s.imageCount + 1, pending: false }
+            : {
+                ...s,
+                thumbnailUrl: '',
+                thumbnailPath: filePath,
+                imageCount: s.imageCount + 1,
+                pending: false
+              }
           : s
       )
     }),
@@ -447,6 +592,8 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
     // 씬 상세의 명시적 삭제 — 파일까지 삭제 (히스토리 삭제와 달리)
     await window.nais.invoke('images:delete', { id: imageId, deleteFile: true })
     void gen.refreshHistory()
+    // [custom] 지운 그림이 대표 그림이었을 수 있다 — 카드의 그림·장수를 바로 맞춘다 (F5 없이)
+    void get().load()
   },
   setFavoritesOnly: (v) => {
     if (v === get().favoritesOnly) return
@@ -504,6 +651,46 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
       count: 1
     })
     if (blocked) toast(blocked, 'error')
+  },
+
+  regenerateScene: async (sceneId) => {
+    const scene = get().scenes.find((s) => s.id === sceneId)
+    if (!scene) return
+    // 바로 생성과 같이 지금 선택된 출연으로. 다시 뽑기라서 시드 고정이어도 새 시드 —
+    // 고정 시드 그대로면 같은 그림이 또 나온다
+    const castId = get().activeCastId
+    const cast = castId === '' ? null : (get().casts.find((c) => c.id === castId) ?? null)
+    await window.nais.invoke('queue:enqueue', {
+      request: { ...applySceneRequest(buildCastRequest(cast), scene), seed: randomSeed() },
+      count: 1
+    })
+  },
+
+  ackPendingScenes: async (ids) => {
+    if (ids.length === 0) return
+    await window.nais.invoke('scenes:clearPendingMany', { ids })
+    const done = new Set(ids)
+    set((st) => {
+      const scenes = st.scenes.map((s) => (done.has(s.id) ? { ...s, pending: false } : s))
+      return {
+        scenes,
+        pendingOnly: st.pendingOnly && scenes.some((s) => s.pending)
+      }
+    })
+  },
+
+  setMemo: async (id, memo) => {
+    set((st) => ({
+      scenes: st.scenes.map((s) => (s.id === id ? { ...s, memo: memo || undefined } : s))
+    }))
+    await window.nais.invoke('custom:sceneMemo', { id, memo })
+  },
+
+  setTransparent: async (id, on) => {
+    set((st) => ({
+      scenes: st.scenes.map((s) => (s.id === id ? { ...s, transparent: on || undefined } : s))
+    }))
+    await window.nais.invoke('custom:sceneTransparent', { id, on })
   },
 
   // ── 출연(Cast) ──────────────────────────────────────────
@@ -603,6 +790,45 @@ export async function loadCasts(): Promise<void> {
 }
 
 /**
+ * [custom] 감시 폴더가 바꾼 씬을 1장씩 자동 생성한다 (설정에서 켰을 때만).
+ * 지금 화면에 골라 둔 출연·사이드바 설정으로 뽑는다 — 손으로 씬 하나를 생성할 때와 같다.
+ */
+async function autoGenerateWatched(
+  presetId: number | undefined,
+  sceneIds: number[]
+): Promise<void> {
+  if (presetId == null || sceneIds.length === 0) return
+  try {
+    const { value } = await window.nais.invoke('settings:get', { key: WATCH_AUTOGEN_KEY })
+    if (value !== '1') return
+    const status = await window.nais.invoke('queue:status', undefined)
+    const pending = status.items.filter((i) => i.state === 'pending' || i.state === 'generating')
+    if (!canAutoGenerate(sceneIds.length, pending.length)) {
+      toast(t('ui.customWatchAutoGenSkippedValue', sceneIds.length, WATCH_AUTOGEN_LIMIT), 'error')
+      return
+    }
+    const wanted = new Set(sceneIds)
+    const { items } = await window.nais.invoke('scenes:list', { presetId })
+    const st = useScenesStore.getState()
+    const cast =
+      st.activeCastId === '' ? null : (st.casts.find((c) => c.id === st.activeCastId) ?? null)
+    const base = buildCastRequest(cast)
+    let count = 0
+    for (const scene of items) {
+      if (!wanted.has(scene.id)) continue
+      await window.nais.invoke('queue:enqueue', {
+        request: { ...applySceneRequest(base, scene), seed: sceneSeed(0) },
+        count: 1
+      })
+      count++
+    }
+    if (count > 0) toast(t('ui.customWatchAutoGenStartedValue', count), 'info')
+  } catch (error) {
+    toast(error instanceof Error ? error.message : String(error), 'error')
+  }
+}
+
+/**
  * 씬 생성 완료 이벤트 바인딩 (목록 썸네일/개수 + 열린 상세 이미지 갱신).
  * 대량 배치 시 이벤트가 쏟아지므로 디바운스로 DB 부하·리렌더를 줄인다.
  */
@@ -627,9 +853,84 @@ export function bindSceneEvents(): () => void {
     // Reservation-only changes must not increment image counts or replace thumbnails.
     void useScenesStore.getState().load()
   })
+  // [custom] 감시 폴더가 파일을 불러옴 — 결과를 알리고 목록을 다시 읽는다
+  const offWatch = window.nais.on('custom:watchImported', (event) => {
+    if (!event.ok) {
+      const reason = t(WATCH_FAILURE_TEXT[event.reason ?? 'readError'])
+      toast(t('ui.customWatchFailedValue', event.file, reason), 'error')
+      return
+    }
+    const counts = [
+      event.file,
+      event.presetName ?? '',
+      event.added ?? 0,
+      event.updated ?? 0,
+      event.unchanged ?? 0
+    ] as const
+    const memos = event.memos ?? 0
+    const skipped = event.skipped ?? 0
+    toast(
+      // 메모가 바뀌었거나 이름이 맞는 씬을 못 찾았을 때만 그 수까지 보인다
+      memos > 0 || skipped > 0
+        ? t('ui.customWatchImportedMemoValue', ...counts, memos, skipped)
+        : t('ui.customWatchImportedValue', ...counts),
+      'success'
+    )
+    const st = useScenesStore.getState()
+    void (event.presetCreated ? st.loadPresets() : Promise.resolve()).then(() => st.load())
+    void autoGenerateWatched(event.presetId, event.sceneIds ?? [])
+  })
+  // [custom] 감시 폴더의 요청 파일을 처리함 (Claude가 넣은 대표 세트 받기 요청 등)
+  const offRequest = window.nais.on('custom:watchRequestDone', (event) => {
+    for (const result of event.exports)
+      toast(
+        t('ui.customRequestDoneValue', event.file, topSetSummary(result)),
+        result.failed > 0 ? 'error' : 'success'
+      )
+    // 요청 파일로 자동 생성을 켜거나 끔 — 값은 이미 저장됐으니 버튼·설정 화면만 맞춘다
+    if (event.autoGenerate !== undefined) {
+      useAutoGenStore.getState().sync(event.autoGenerate)
+      toast(
+        t(
+          event.autoGenerate ? 'ui.customRequestAutoGenOnValue' : 'ui.customRequestAutoGenOffValue',
+          event.file
+        ),
+        'info'
+      )
+    }
+    // 요청 파일로 씬을 번호순 정렬 — 보고 있는 프리셋이면 목록을 새로 읽는다
+    for (const sorted of event.sorted ?? []) {
+      const scenes = useScenesStore.getState()
+      if (sorted.presetId === scenes.activePresetId && sorted.moved > 0) void scenes.load()
+      toast(
+        t(
+          sorted.moved > 0 ? 'ui.customRequestSortedValue' : 'ui.customRequestSortedSameValue',
+          sorted.preset,
+          sorted.moved
+        ),
+        'success'
+      )
+    }
+    // 요청 파일로 조각을 고침 — 조각 화면을 새로 읽는다
+    if (event.fragments) {
+      const f = event.fragments
+      if (f.created + f.updated > 0) void useFragmentsStore.getState().load()
+      void useFragmentNegativeStore.getState().hydrate() // 요청이 네거 짝을 바꿨을 수 있다
+      toast(
+        t('ui.customRequestFragmentsDoneValue', event.file, f.updated, f.created, f.unchanged),
+        'success'
+      )
+      if (f.missing.length > 0)
+        toast(t('ui.customRequestFragmentsMissingValue', event.file, f.missing.join(', ')), 'info')
+    }
+    if (event.errors.length > 0)
+      toast(t('ui.customRequestFailedValue', event.file, event.errors.join(' / ')), 'error')
+  })
   return () => {
     clearTimeout(timer)
     offImages()
     offReservations()
+    offWatch()
+    offRequest()
   }
 }

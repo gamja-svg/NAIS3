@@ -1,3 +1,5 @@
+import { placeScenesByNumber, sortScenesByNumber } from '../../shared/custom-scene-order'
+import { setSceneNegativeOff } from '../custom/fragment-negatives'
 import { BrowserWindow } from 'electron'
 import { showOpenDialog, showSaveDialog } from '../dialogs'
 import { readFileSync, unlinkSync, writeFileSync } from 'fs'
@@ -17,7 +19,7 @@ import { getDb } from '../db'
 import { dropMemoryImage, isMemoryPath, libraryRoot, storedThumbnailUrl } from '../images/storage'
 import { t } from '../i18n'
 import { sceneEvents } from './events'
-import { parseSceneImport } from './import-formats'
+import { parseSceneImport, type ImportedScene } from './import-formats'
 
 interface Row {
   id: number
@@ -29,6 +31,9 @@ interface Row {
   height: number
   reserve_count: number
   reserve_json?: string | null
+  pending?: number
+  memo?: string | null
+  transparent?: number | null
 }
 
 /** 출연별 예약 내역 파싱 (키 '' = 사이드바) */
@@ -84,8 +89,185 @@ function toScene(
     thumbnailUrl: storedThumbnailUrl('image', r.thumb_id, r.thumb_created_at, r.thumb_size),
     thumbnailPath: r.thumb_path ?? '',
     imageCount: r.image_count,
-    hasFavorite: r.has_favorite === 1
+    hasFavorite: r.has_favorite === 1,
+    pending: r.pending === 1,
+    ...(r.memo ? { memo: r.memo } : {}), // [custom] 씬 메모
+    ...(r.transparent ? { transparent: true } : {}) // [custom] 씬별 투명 배경
   }
+}
+
+// ── [custom] 변경 후 미생성 표시 ────────────────────────────
+// 원본의 마이그레이션 번호와 겹치지 않도록 gen_scenes에 칸을 추가하지 않고 전용 표를 따로 둔다.
+// changed_at = 씬 내용(프롬프트·네거티브·크기)이 마지막으로 실제로 달라진 시각, acked = 수동 확인 여부.
+// base_prompt·base_negative = 미생성이 되기 직전(마지막으로 뽑았거나 확인한 때)의 내용 — 바뀐 태그 표시용.
+const marksReady = new WeakSet<object>()
+function marksDb(): ReturnType<typeof getDb> {
+  const db = getDb()
+  if (!marksReady.has(db)) {
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS custom_scene_marks (
+         scene_id INTEGER PRIMARY KEY,
+         changed_at TEXT NOT NULL DEFAULT (datetime('now')),
+         acked INTEGER NOT NULL DEFAULT 0,
+         base_prompt TEXT,
+         base_negative TEXT
+       )`
+    )
+    // 씬 메모(별명) — 카드·검수 화면에 이름과 함께 보인다. 파일 이름에는 쓰지 않는다
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS custom_scene_memos (
+         scene_id INTEGER PRIMARY KEY,
+         memo TEXT NOT NULL
+       )`
+    )
+    // 씬별 투명 배경 — 줄이 있으면 그 씬은 늘 투명 배경으로 뽑는다
+    db.exec('CREATE TABLE IF NOT EXISTS custom_scene_transparent (scene_id INTEGER PRIMARY KEY)')
+    // 기준 칸이 없던 때 만든 표에 더한다
+    const cols = db.prepare('PRAGMA table_info(custom_scene_marks)').all() as { name: string }[]
+    for (const col of ['base_prompt', 'base_negative'])
+      if (!cols.some((c) => c.name === col))
+        db.exec(`ALTER TABLE custom_scene_marks ADD COLUMN ${col} TEXT`)
+    marksReady.add(db)
+  }
+  return db
+}
+
+/** 미생성 판정 SQL — ref는 gen_scenes 행을 가리키는 별칭(또는 표 이름) */
+function pendingSql(ref: string): string {
+  return `(CASE
+    WHEN COALESCE((SELECT acked FROM custom_scene_marks WHERE scene_id = ${ref}.id), 0) = 1 THEN 0
+    WHEN NOT EXISTS (SELECT 1 FROM images WHERE scene_id = ${ref}.id) THEN 1
+    WHEN EXISTS (
+      SELECT 1 FROM custom_scene_marks m
+      WHERE m.scene_id = ${ref}.id
+        AND NOT EXISTS (SELECT 1 FROM images i WHERE i.scene_id = ${ref}.id AND i.created_at > m.changed_at)
+    ) THEN 1
+    ELSE 0
+  END)`
+}
+
+/**
+ * 씬 내용이 달라졌음을 기록한다. before = 바뀌기 직전 내용.
+ * 미생성이 아니던 씬(뽑은 그림·확인이 지금 내용과 맞던 씬)이면 그 내용을 기준으로 남기고,
+ * 이미 미생성이면 기준을 그대로 둔다 — 다시 뽑기 전까지 바뀐 태그가 모두 쌓여 보이게.
+ * 한 번도 뽑지 않은 씬은 기준이 없다 (전부 새 태그).
+ */
+function markSceneChanged(id: number, before: { prompt: string; negative: string }): void {
+  const db = marksDb()
+  const state = db
+    .prepare(`SELECT ${pendingSql('s')} AS pending FROM gen_scenes s WHERE s.id = ?`)
+    .get(id) as { pending: number } | undefined
+  const fresh = state?.pending === 0
+  db.prepare(
+    `INSERT INTO custom_scene_marks (scene_id, changed_at, acked, base_prompt, base_negative)
+     VALUES (@id, datetime('now'), 0, @prompt, @negative)
+     ON CONFLICT(scene_id) DO UPDATE SET
+       changed_at = excluded.changed_at,
+       acked = 0,
+       base_prompt = CASE WHEN @fresh = 1 THEN excluded.base_prompt ELSE base_prompt END,
+       base_negative = CASE WHEN @fresh = 1 THEN excluded.base_negative ELSE base_negative END`
+  ).run({
+    id,
+    prompt: fresh ? before.prompt : null,
+    negative: fresh ? before.negative : null,
+    fresh: fresh ? 1 : 0
+  })
+}
+
+/** [custom] 미생성인 씬의 기준 내용 (바뀐 태그 표시용). 미생성이 아니거나 기준이 없으면 null */
+export function getSceneBase(id: number): { prompt: string; negativePrompt: string } | null {
+  const row = marksDb()
+    .prepare(
+      `SELECT m.base_prompt AS prompt, m.base_negative AS negative, ${pendingSql('s')} AS pending
+       FROM gen_scenes s JOIN custom_scene_marks m ON m.scene_id = s.id WHERE s.id = ?`
+    )
+    .get(id) as { prompt: string | null; negative: string | null; pending: number } | undefined
+  if (!row || row.pending !== 1 || row.prompt === null) return null
+  return { prompt: row.prompt, negativePrompt: row.negative ?? '' }
+}
+
+const MEMO_MAX = 200
+
+/**
+ * [custom] 씬 메모(별명) 저장 — 한 줄로 줄이고, 비우면 지운다. 내용 변경이 아니라 미생성 표시는 건드리지 않는다.
+ * 메모가 실제로 바뀌었으면 true.
+ */
+export function setSceneMemo(id: number, memo: string): boolean {
+  const text = memo.replace(/\s+/g, ' ').trim().slice(0, MEMO_MAX)
+  const db = marksDb()
+  const before = db.prepare('SELECT memo FROM custom_scene_memos WHERE scene_id = ?').get(id) as
+    { memo: string } | undefined
+  if ((before?.memo ?? '') === text) return false
+  if (!text) db.prepare('DELETE FROM custom_scene_memos WHERE scene_id = ?').run(id)
+  else
+    db.prepare(
+      `INSERT INTO custom_scene_memos (scene_id, memo) VALUES (?, ?)
+       ON CONFLICT(scene_id) DO UPDATE SET memo = excluded.memo`
+    ).run(id, text)
+  return true
+}
+
+/** [custom] 프리셋의 씬을 지금 순서대로 (id·이름만) */
+function sceneOrder(presetId: number): { id: number; name: string }[] {
+  return getDb()
+    .prepare('SELECT id, name FROM gen_scenes WHERE preset_id = ? ORDER BY sort_order, id')
+    .all(presetId) as { id: number; name: string }[]
+}
+
+/** [custom] 프리셋의 씬을 번호순으로 정렬한다. 자리가 바뀐 씬 수를 돌려준다 */
+export function sortPresetScenesByNumber(presetId: number): { scenes: number; moved: number } {
+  const before = sceneOrder(presetId)
+  const after = sortScenesByNumber(before)
+  const moved = after.filter((id, i) => before[i].id !== id).length
+  if (moved > 0) reorderScenes(after)
+  return { scenes: before.length, moved }
+}
+
+/**
+ * [custom] 씬별 투명 배경 켜기·끄기 — 켠 씬은 사이드바 설정과 상관없이 투명 배경으로 뽑는다 (V5 모델).
+ * 값이 실제로 바뀌었으면 true.
+ */
+export function setSceneTransparent(id: number, on: boolean): boolean {
+  const db = marksDb()
+  if (isSceneTransparent(id) === on) return false
+  if (on) db.prepare('INSERT OR IGNORE INTO custom_scene_transparent (scene_id) VALUES (?)').run(id)
+  else db.prepare('DELETE FROM custom_scene_transparent WHERE scene_id = ?').run(id)
+  return true
+}
+
+export function isSceneTransparent(id: number): boolean {
+  return (
+    marksDb().prepare('SELECT 1 FROM custom_scene_transparent WHERE scene_id = ?').get(id) !==
+    undefined
+  )
+}
+
+// [custom] 지운 씬의 메모·미생성 표시를 치운다 — 씬 번호(id)는 새 씬에 다시 쓰일 수 있다.
+// 씬을 지우는 모든 길(하나·여럿·프리셋째·백업 복원)이 이 알림을 낸다.
+sceneEvents.on('deleted', (ids: number[]) => {
+  if (ids.length === 0) return
+  const db = marksDb()
+  const list = placeholders(ids.length)
+  db.prepare(`DELETE FROM custom_scene_memos WHERE scene_id IN (${list})`).run(...ids)
+  db.prepare(`DELETE FROM custom_scene_transparent WHERE scene_id IN (${list})`).run(...ids)
+  db.prepare(`DELETE FROM custom_scene_marks WHERE scene_id IN (${list})`).run(...ids)
+})
+
+/** '변경 후 미생성' 표시를 수동으로 끈다. 다음 내용 변경 때 다시 켜진다. */
+export function clearScenePending(id: number): void {
+  clearScenesPending([id])
+}
+
+/** [custom] 일괄 확인 — 여러 씬의 '변경 후 미생성' 표시를 한 번에 끈다 */
+export function clearScenesPending(ids: number[]): void {
+  const db = marksDb()
+  const ack = db.prepare(
+    `INSERT INTO custom_scene_marks (scene_id, acked) VALUES (?, 1)
+     ON CONFLICT(scene_id) DO UPDATE SET acked = 1`
+  )
+  db.transaction(() => {
+    for (const id of ids) ack.run(id)
+  })()
 }
 
 // ── 프리셋 ──────────────────────────────────────────────
@@ -159,10 +341,13 @@ export function listScenes(presetId: number): Scene[] {
   // 카드 썸네일: 즐겨찾기가 있으면 최상단(최신) 즐겨찾기, 없으면 최신 이미지 (NAIS2 방식)
   // The cover row is looked up once and joined. Because favorites sort first, the cover
   // is a favorite exactly when the scene has one, so it also answers has_favorite.
-  const rows = getDb()
+  const rows = marksDb()
     .prepare(
       `SELECT s.id, s.preset_id, s.name, s.prompt, s.negative_prompt, s.width, s.height, s.reserve_count, s.reserve_json,
               (SELECT COUNT(*) FROM images WHERE scene_id = s.id) AS image_count,
+              ${pendingSql('s')} AS pending,
+              (SELECT memo FROM custom_scene_memos WHERE scene_id = s.id) AS memo,
+              (SELECT 1 FROM custom_scene_transparent WHERE scene_id = s.id) AS transparent,
               cover.id AS thumb_id,
               cover.created_at AS thumb_created_at,
               length(cover.thumbnail) AS thumb_size,
@@ -202,10 +387,13 @@ export function getPresetName(id: number): string | null {
 }
 
 export function getScene(id: number): Scene | null {
-  const r = getDb()
+  const r = marksDb()
     .prepare(
       `SELECT id, preset_id, name, prompt, negative_prompt, width, height, reserve_count, reserve_json,
-              (SELECT COUNT(*) FROM images WHERE scene_id = ?) AS image_count
+              (SELECT COUNT(*) FROM images WHERE scene_id = ?) AS image_count,
+              ${pendingSql('gen_scenes')} AS pending,
+              (SELECT memo FROM custom_scene_memos WHERE scene_id = gen_scenes.id) AS memo,
+              (SELECT 1 FROM custom_scene_transparent WHERE scene_id = gen_scenes.id) AS transparent
        FROM gen_scenes WHERE id = ?`
     )
     .get(id, id) as (Row & { image_count: number }) | undefined
@@ -273,6 +461,22 @@ export function updateScene(id: number, patch: Record<string, unknown>): void {
     values.push(patch[key])
   }
   if (sets.length === 0) return
+  // [custom] 내용이 실제로 달라졌을 때만 '변경 후 미생성' 시각을 찍는다 (이름·예약 수 변경은 제외)
+  const contentKeys = ['prompt', 'negativePrompt', 'width', 'height'] as const
+  if (contentKeys.some((k) => patch[k] !== undefined)) {
+    const cur = getDb()
+      .prepare('SELECT prompt, negative_prompt, width, height FROM gen_scenes WHERE id = ?')
+      .get(id) as
+      { prompt: string; negative_prompt: string; width: number; height: number } | undefined
+    if (
+      cur &&
+      ((patch.prompt !== undefined && patch.prompt !== cur.prompt) ||
+        (patch.negativePrompt !== undefined && patch.negativePrompt !== cur.negative_prompt) ||
+        (patch.width !== undefined && patch.width !== cur.width) ||
+        (patch.height !== undefined && patch.height !== cur.height))
+    )
+      markSceneChanged(id, { prompt: cur.prompt, negative: cur.negative_prompt })
+  }
   sets.push(`updated_at = datetime('now')`)
   getDb()
     .prepare(`UPDATE gen_scenes SET ${sets.join(', ')} WHERE id = ?`)
@@ -281,6 +485,7 @@ export function updateScene(id: number, patch: Record<string, unknown>): void {
 
 export function deleteScene(id: number): void {
   getDb().prepare('DELETE FROM gen_scenes WHERE id = ?').run(id)
+  marksDb().prepare('DELETE FROM custom_scene_marks WHERE scene_id = ?').run(id) // [custom]
   sceneEvents.emit('deleted', [id])
 }
 
@@ -585,9 +790,12 @@ export function deleteImage(id: number, deleteFile: boolean): void {
 
 // ── JSON / ZIP ──────────────────────────────────────────
 export async function exportScenesJson(presetId: number): Promise<boolean> {
-  const scenes = getDb()
+  const scenes = marksDb() // [custom] 메모 표가 있게
     .prepare(
-      'SELECT name, prompt, negative_prompt, width, height FROM gen_scenes WHERE preset_id = ? ORDER BY sort_order, id'
+      `SELECT name, prompt, negative_prompt, width, height,
+              (SELECT memo FROM custom_scene_memos WHERE scene_id = gen_scenes.id) AS memo,
+              (SELECT 1 FROM custom_scene_transparent WHERE scene_id = gen_scenes.id) AS transparent
+       FROM gen_scenes WHERE preset_id = ? ORDER BY sort_order, id`
     )
     .all(presetId) as Row[]
   const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
@@ -602,9 +810,17 @@ export async function exportScenesJson(presetId: number): Promise<boolean> {
     prompt: s.prompt,
     negativePrompt: s.negative_prompt,
     width: s.width,
-    height: s.height
+    height: s.height,
+    ...(s.memo ? { memo: s.memo } : {}), // [custom] 씬 메모
+    ...(s.transparent ? { transparent: true } : {}) // [custom] 씬별 투명 배경
   }))
-  writeFileSync(result.filePath, JSON.stringify({ version: 1, scenes: data }, null, 2), 'utf-8')
+  // [custom] 프리셋 이름을 같이 적는다 — 감시 폴더가 이 이름으로 넣을 프리셋을 정한다
+  const preset = getPresetName(presetId)
+  writeFileSync(
+    result.filePath,
+    JSON.stringify({ version: 1, ...(preset ? { preset } : {}), scenes: data }, null, 2),
+    'utf-8'
+  )
   return true
 }
 
@@ -620,6 +836,58 @@ export async function importScenesJson(
   if (result.canceled || result.filePaths.length === 0) return { count: 0, canceled: true }
   const scenes = parseSceneImport(readFileSync(result.filePaths[0], 'utf-8'))
   if (!scenes) return { count: 0, unrecognized: true }
+  const outcome = applyImportedScenes(presetId, scenes)
+  return {
+    // [custom] 같은 이름 씬이 없어 건너뛴 메모 줄은 세지 않는다
+    count: outcome.added + outcome.updated + outcome.unchanged,
+    ...(outcome.memos > 0 ? { memos: outcome.memos } : {}),
+    ...(outcome.skipped > 0 ? { skipped: outcome.skipped } : {})
+  }
+}
+
+/** [custom] 불러온 씬을 프리셋에 반영한 결과 (감시 폴더 알림용) */
+export interface ImportApplyResult {
+  added: number
+  updated: number
+  /** 내용이 같았던 씬 + 메모만 적은 줄(prompt 칸 없음)이 가리킨 씬 */
+  unchanged: number
+  /** 새로 추가했거나 내용이 바뀐 씬 (자동 생성 대상) */
+  sceneIds: number[]
+  /** 메모가 바뀐 씬 수 — 메모는 내용 변경이 아니라 다시 뽑지 않는다 */
+  memos: number
+  /** 메모만 적은 줄인데 같은 이름 씬이 없어 건너뛴 수 (씬을 새로 만들지 않는다) */
+  skipped: number
+}
+
+/**
+ * [custom] 해석이 끝난 씬 목록을 프리셋에 반영한다 — 파일 고르기(importScenesJson)와
+ * 감시 폴더(custom/watch-folder)가 같이 쓴다.
+ */
+export function applyImportedScenes(
+  presetId: number,
+  scenes: ImportedScene[],
+  // [custom] 새 씬을 끝이 아니라 번호 자리에 끼운다 (감시 폴더)
+  { placeByNumber = false }: { placeByNumber?: boolean } = {}
+): ImportApplyResult {
+  const addedIds: number[] = []
+  const outcome: ImportApplyResult = {
+    added: 0,
+    updated: 0,
+    unchanged: 0,
+    sceneIds: [],
+    memos: 0,
+    skipped: 0
+  }
+  // [custom] 씬별 투명 배경 — 칸이 있을 때만 맞춘다. 바뀌면 다시 뽑을 씬으로 친다 (그림이 달라진다)
+  const applyTransparent = (sceneId: number, value: boolean | undefined): void => {
+    if (value === undefined || !setSceneTransparent(sceneId, value)) return
+    if (!outcome.sceneIds.includes(sceneId)) outcome.sceneIds.push(sceneId)
+  }
+  // [custom] 네거 짝 자동 붙이기 — 칸이 있을 때만 맞춘다. 바뀌면 다시 뽑을 씬으로 친다
+  const applyAutoNegative = (sceneId: number, value: boolean | undefined): void => {
+    if (value === undefined || !setSceneNegativeOff(sceneId, !value)) return
+    if (!outcome.sceneIds.includes(sceneId)) outcome.sceneIds.push(sceneId)
+  }
   const db = getDb()
   const max = db
     .prepare('SELECT COALESCE(MAX(sort_order), 0) AS m FROM gen_scenes WHERE preset_id = ?')
@@ -628,20 +896,87 @@ export async function importScenesJson(
   const stmt = db.prepare(
     'INSERT INTO gen_scenes (preset_id, name, prompt, negative_prompt, width, height, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?)'
   )
+  // [custom] 같은 프리셋에 같은 이름의 씬이 있으면 새로 추가하지 않고 그 씬의 내용만 교체한다.
+  // 이름이 겹치는 씬이 여럿이면 가장 앞(sort_order 최소)의 것만 교체. 생성 이력·순서는 유지.
+  const findByName = db.prepare(
+    'SELECT id, prompt, negative_prompt, width, height FROM gen_scenes WHERE preset_id = ? AND name = ? ORDER BY sort_order ASC LIMIT 1'
+  )
+  const update = db.prepare(
+    "UPDATE gen_scenes SET prompt = ?, negative_prompt = ?, width = ?, height = ?, updated_at = datetime('now') WHERE id = ?"
+  )
   db.transaction(() => {
     for (const s of scenes) {
-      stmt.run(
+      // [custom] prompt 칸이 없는 줄 — 같은 이름 씬의 내용은 그대로 두고 메모만 바꾼다.
+      // 다른 내용 칸(negativePrompt·width·height)도 보지 않고, 같은 이름 씬이 없으면 만들지 않는다.
+      if (s.prompt === undefined) {
+        const target = s.name
+          ? (findByName.get(presetId, s.name) as { id: number } | undefined)
+          : undefined
+        if (!target) {
+          outcome.skipped++
+          continue
+        }
+        outcome.unchanged++
+        if (s.memo !== undefined && setSceneMemo(target.id, s.memo)) outcome.memos++
+        applyTransparent(target.id, s.transparent)
+        applyAutoNegative(target.id, s.autoNegative)
+        continue
+      }
+      const name = s.name ?? t('ui.scene')
+      const existing = s.name
+        ? (findByName.get(presetId, name) as
+            | { id: number; prompt: string; negative_prompt: string; width: number; height: number }
+            | undefined)
+        : undefined
+      if (existing) {
+        const next = {
+          prompt: s.prompt,
+          negative: s.negativePrompt ?? '',
+          width: s.width ?? 832,
+          height: s.height ?? 1216
+        }
+        // 내용이 같으면 건드리지 않는다 — 전체 JSON을 다시 불러와도 실제로 바뀐 씬에만 표시가 붙는다
+        if (
+          existing.prompt !== next.prompt ||
+          existing.negative_prompt !== next.negative ||
+          existing.width !== next.width ||
+          existing.height !== next.height
+        ) {
+          markSceneChanged(existing.id, {
+            prompt: existing.prompt,
+            negative: existing.negative_prompt
+          })
+          update.run(next.prompt, next.negative, next.width, next.height, existing.id)
+          outcome.updated++
+          outcome.sceneIds.push(existing.id)
+        } else outcome.unchanged++
+        // [custom] 메모가 적혀 있으면 바꾼다 (빈 글자면 지움, 칸이 없으면 그대로) — 다시 뽑을 일은 아니다
+        if (s.memo !== undefined && setSceneMemo(existing.id, s.memo)) outcome.memos++
+        applyTransparent(existing.id, s.transparent)
+        applyAutoNegative(existing.id, s.autoNegative)
+        continue
+      }
+      outcome.added++
+      const inserted = stmt.run(
         presetId,
-        s.name ?? t('ui.scene'),
+        name,
         s.prompt,
         s.negativePrompt ?? '',
         s.width ?? 832,
         s.height ?? 1216,
         ++order
       )
+      outcome.sceneIds.push(Number(inserted.lastInsertRowid))
+      addedIds.push(Number(inserted.lastInsertRowid)) // [custom]
+      if (s.memo && setSceneMemo(Number(inserted.lastInsertRowid), s.memo)) outcome.memos++ // [custom]
+      if (s.transparent) setSceneTransparent(Number(inserted.lastInsertRowid), true) // [custom]
+      if (s.autoNegative === false) setSceneNegativeOff(Number(inserted.lastInsertRowid), true) // [custom]
     }
   })()
-  return { count: scenes.length }
+  // [custom] 새 씬을 번호 자리에 — 있던 씬의 순서는 그대로 둔다
+  if (placeByNumber && addedIds.length > 0)
+    reorderScenes(placeScenesByNumber(sceneOrder(presetId), addedIds))
+  return outcome
 }
 
 type ZipEntry = { file_path: string; name: string }

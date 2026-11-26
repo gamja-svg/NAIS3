@@ -5,6 +5,8 @@ allowBuilds:
   electron-winstaller: true
   esbuild: true
   fsevents: true
+  # [custom] 설치 스크립트는 Linux CUDA 파일을 받는 용도 — 쓰지 않는다 (CPU로 돌린다)
+  onnxruntime-node: false
 
 # Don't resolve a package version until it has been published for 3 days
 # (in minutes). pnpm 11 defaults to 1 day.

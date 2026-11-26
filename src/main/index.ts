@@ -38,7 +38,10 @@ import { localPromptMetadata } from './nai/payload'
 import { prepareCharRefs, prepareVibes } from './refs/prepare'
 import { referencesSentFor } from '../shared/precise-reference'
 import { GenerationQueue } from './queue/generation-queue'
-import { getPresetName, getScene } from './scenes/repo'
+import { laneSelection, parallelLanes, parallelTarget, refreshLaneBalance } from './custom/parallel'
+import { guardClaudeChatGuest } from './custom/claude-chat'
+import { withFragmentNegatives } from './custom/fragment-negatives'
+import { getPresetName, getScene, isSceneTransparent } from './scenes/repo'
 
 // 앱 이름 (dev 메뉴바·dock에서 'Electron' 대신 표시). 패키징 앱은 productName 사용
 app.setName('NAIS3')
@@ -105,6 +108,7 @@ function createWindow(): void {
     webPreferences.contextIsolation = true
   })
   mainWindow.webContents.on('did-attach-webview', (_event, webContents) => {
+    if (guardClaudeChatGuest(webContents)) return // [custom] Claude 창: 새 창 링크는 기본 브라우저로
     webContents.setWindowOpenHandler(({ url }) => {
       // 같은 뷰에서 열 수 있는 링크는 그대로, window.open류는 현재 뷰에서 로드
       if (url.startsWith('http')) void webContents.loadURL(url)
@@ -195,8 +199,10 @@ const startup = app.whenReady().then(async () => {
   }
 
   // 생성 파이프라인: 큐 → 조각/와일드카드 치환 → 바이브/캐릭레퍼 준비 → 스트리밍 생성 → 저장
-  const queue = new GenerationQueue(async (rawRequest, id, signal) => {
-    const selection = await previewNaiAccountForGeneration(requestUsesV5Usage(rawRequest))
+  const queue = new GenerationQueue(async (rawRequest, id, signal, laneAccountId) => {
+    const selection = laneAccountId
+      ? await laneSelection(laneAccountId, rawRequest) // [custom] 동시 생성: 정해진 계정 (못 뽑으면 쉼)
+      : await previewNaiAccountForGeneration(requestUsesV5Usage(rawRequest))
     if (!selection) throw new Error(t('ui.naiTokenIsNotConfigured'))
     // 무료 범위 지킴이 — 바이브 인코딩을 포함해 Anlas가 드는 요청은 보내기 전에 막는다.
     // 막히면 계정 자동 전환도 반영하지 않는다
@@ -221,7 +227,11 @@ const startup = app.whenReady().then(async () => {
     // 배치 항목마다 여기서 치환 — 매 장 다른 와일드카드 결과가 나온다.
     // 주석 제거가 반드시 먼저 — 주석 줄이 조각을 소모하거나(순차 카운터),
     // 와일드카드 처리의 재조립이 개행을 지워 주석 범위가 전체로 번지는 것 방지 (NAIS2와 동일 순서)
-    let request = preprocessRequest(rawRequest, fragmentSource())
+    // [custom] 네거 짝 — 프롬프트에 쓰인 조각의 네거 조각을 네거티브에 붙인 뒤 치환한다
+    let request = preprocessRequest(withFragmentNegatives(rawRequest), fragmentSource())
+    // [custom] 씬별 투명 배경 — 켠 씬은 사이드바 설정이 꺼져 있어도 투명 배경으로 (V5가 아니면 payload가 무시)
+    if (rawRequest.sceneId !== undefined && isSceneTransparent(rawRequest.sceneId))
+      request = { ...request, transparentBackground: true }
 
     // 바이브/캐릭레퍼 준비 — 요청이 id를 지정하면(출연 예약) 그것으로, 아니면 DB enabled 항목
     // (바이브는 필요 시 인코딩 — 2 Anlas, 캐시됨)
@@ -342,12 +352,15 @@ const startup = app.whenReady().then(async () => {
       broadcast('scenes:changed', { sceneId: saved.sceneId, filePath: saved.filePath })
 
     // 생성 후 잔액 갱신 (실사용량 추적의 진실 공급원) — 실패해도 생성 흐름엔 영향 없음
-    void fetchAnlasBalance(token).then(({ anlas, tier, usage }) => {
-      if (anlas !== null) {
-        logBalance(anlas, selection.account.id)
-        broadcast('anlas:balance', { anlas, tier, ...(usage ? { usage } : {}) })
-      }
-    })
+    // [custom] 동시 생성이면 계정별로 알리고 기록한다
+    if (laneAccountId) refreshLaneBalance(laneAccountId, token)
+    else
+      void fetchAnlasBalance(token).then(({ anlas, tier, usage }) => {
+        if (anlas !== null) {
+          logBalance(anlas, selection.account.id)
+          broadcast('anlas:balance', { anlas, tier, ...(usage ? { usage } : {}) })
+        }
+      })
 
     return saved.filePath
   })
@@ -356,6 +369,7 @@ const startup = app.whenReady().then(async () => {
   const savedDelay = Number(getSetting('gen_delay_ms'))
   const savedDelayMinus = Number(getSetting('gen_delay_minus_ms'))
   const savedDelayPlus = Number(getSetting('gen_delay_plus_ms'))
+  queue.setParallel(parallelLanes, parallelTarget) // [custom] 여러 계정으로 동시 생성
   queue.setDelayMs(Number.isFinite(savedDelay) && savedDelay >= 0 ? savedDelay : 600, {
     enabled: getSetting('gen_delay_random_enabled') === '1',
     minusMs: Number.isFinite(savedDelayMinus) ? savedDelayMinus : 0,

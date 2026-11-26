@@ -946,6 +946,15 @@ async function dispatch(channel: string, rawRequest: unknown): Promise<unknown> 
   if (channel.startsWith('promptPresets:')) return promptPresetsDispatch(channel, request)
   if (channel.startsWith('library:')) return libraryDispatch(channel, request)
 
+  // [custom] 감시 폴더는 데스크톱 전용
+  if (channel.startsWith('custom:watch')) return { enabled: false, dir: '' }
+  // [custom] 동시 생성은 데스크톱 전용
+  if (channel === 'custom:parallelGet' || channel === 'custom:parallelSet')
+    return { enabled: false, target: null }
+  // [custom] 상위 폴더도 데스크톱 전용 (브라우저 체험판에서는 저장하지 않는다)
+  if (channel === 'custom:folderGroups:list') return { groups: [], links: [] }
+  if (channel === 'custom:folderGroups:create') return { id: -Date.now() }
+  if (channel.startsWith('custom:folderGroups:')) return undefined
   if (channel === 'settings:getSaveDir') return { dir: 'Browser downloads', isDefault: true }
   if (channel === 'settings:pickSaveDir') return { dir: null }
   if (channel === 'settings:resetSaveDir') return { dir: 'Browser downloads' }

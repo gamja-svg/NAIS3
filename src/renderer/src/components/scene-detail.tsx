@@ -1,5 +1,5 @@
-import { ArrowLeft, Loader2, Minus, Play, Plus, Star, Trash2 } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { ArrowLeft, Loader2, Minus, Play, Plus, Star, StickyNote, Trash2 } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Scene } from '@shared/types'
 import { isMediumEffortModel, promptTokenLimit } from '@shared/nai-models'
 import { imageUrl } from '../lib/constants'
@@ -16,6 +16,15 @@ import { PromptEditor } from './prompt-editor'
 import { ReserveCount } from './reserve-count'
 import { Button } from './ui/button'
 import { useT } from '../lib/i18n'
+import {
+  useSceneFrame,
+  useSceneGenerating,
+  useSceneHasFrame
+} from '../stores/custom-parallel-store'
+import { changedTagRanges } from '../lib/custom-prompt-diff'
+import { useSceneBase } from '../lib/custom-scene-base'
+import { ChangedTagsNote } from './custom-changed-tags'
+import { SceneNegativePairs } from './custom-fragment-negative'
 
 export function SceneDetail({ scene }: { scene: Scene }): React.JSX.Element {
   const t = useT()
@@ -36,6 +45,7 @@ export function SceneDetail({ scene }: { scene: Scene }): React.JSX.Element {
   const favoritesOnly = useScenesStore((s) => s.favoritesOnly)
   const setFavoritesOnly = useScenesStore((s) => s.setFavoritesOnly)
   const deleteNonFavorites = useScenesStore((s) => s.deleteNonFavorites)
+  const setMemo = useScenesStore((s) => s.setMemo) // [custom] 씬 메모
 
   const source = useGenerationStore((s) => s.source)
   const basePrompt = useGenerationStore((s) => s.request.prompt)
@@ -43,13 +53,28 @@ export function SceneDetail({ scene }: { scene: Scene }): React.JSX.Element {
   const model = useGenerationStore((s) => s.request.model)
   const tokenLimit = promptTokenLimit(model)
   const charItems = useCharactersStore((s) => s.items)
+  // [custom] 네거 짝을 찾을 글 — 이 씬을 뽑을 때 쓰이는 프롬프트 전부
+  const pairPrompts = useMemo(
+    () => [basePrompt, scene.prompt, ...charItems.filter((c) => c.enabled).map((c) => c.prompt)],
+    [basePrompt, scene.prompt, charItems]
+  )
+  const pairNegative = `${baseNegative}\n${scene.negativePrompt}`
   // Only whether a frame exists — the frame itself is read by StreamingFrame so per-step
   // previews don't re-render the whole image grid
-  const hasPreview = useGenerationStore((s) => s.previewPng != null)
-  const generatingSceneId = useGenerationStore(
-    (s) => s.queue?.items.find((i) => i.state === 'generating')?.request.sceneId ?? null
+  // [custom] 동시 생성이면 여러 씬을 함께 뽑으므로 이 씬을 뽑는 항목 기준
+  const streaming = useSceneGenerating(scene.id)
+  const hasPreview = useSceneHasFrame(scene.id, streaming)
+  // [custom] 미생성이면 마지막으로 뽑은 뒤 바뀐 태그를 노랗게
+  const sceneBase = useSceneBase(scene)
+  const promptMarks = useMemo(
+    () => (sceneBase ? changedTagRanges(scene.prompt, sceneBase.prompt) : undefined),
+    [sceneBase, scene.prompt]
   )
-  const streaming = generatingSceneId === scene.id
+  const negativeMarks = useMemo(
+    () =>
+      sceneBase ? changedTagRanges(scene.negativePrompt, sceneBase.negativePrompt) : undefined,
+    [sceneBase, scene.negativePrompt]
+  )
   const sentinelRef = useRef<HTMLDivElement>(null)
   const [cols, setCols] = useState(3)
   const [lightboxIdx, setLightboxIdx] = useState(-1)
@@ -145,7 +170,7 @@ export function SceneDetail({ scene }: { scene: Scene }): React.JSX.Element {
   }, [scene.id, images.length, imagesTotal, imagesLoading, loadImages])
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col rounded-xl border border-line bg-surface">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col rounded-xl border border-line bg-surface">
       {/* 헤더 */}
       <div className="flex items-center gap-2 border-b border-line px-3 py-2">
         <Button size="sm" variant="ghost" className="gap-1" onClick={() => select(null)}>
@@ -208,6 +233,18 @@ export function SceneDetail({ scene }: { scene: Scene }): React.JSX.Element {
           </button>
         </div>
       </div>
+      {/* [custom] 씬 메모(별명) — 카드·검수 화면에 이름과 함께 보인다 (파일 이름은 그대로) */}
+      <label className="flex items-center gap-2 border-b border-line px-3 py-1.5">
+        <StickyNote size={14} className="shrink-0 text-muted" />
+        <input
+          className="min-w-0 flex-1 rounded-md bg-transparent px-2 py-1 text-[13px] outline-none placeholder:text-faint focus:bg-surface-2"
+          value={scene.memo ?? ''}
+          placeholder={t('ui.customSceneMemoPlaceholder')}
+          aria-label={t('ui.customSceneMemo')}
+          maxLength={200}
+          onChange={(e) => void setMemo(scene.id, e.target.value)}
+        />
+      </label>
 
       {source && (
         <p className="border-b border-line bg-surface-2 px-3 py-1 text-[11px] text-muted">
@@ -230,7 +267,9 @@ export function SceneDetail({ scene }: { scene: Scene }): React.JSX.Element {
             tokensOverride={sceneTokens.pos}
             tokenLimit={tokenLimit}
             className="h-32 max-h-[520px] min-h-24 resize-y"
+            marks={promptMarks}
           />
+          {sceneBase && <ChangedTagsNote current={scene.prompt} base={sceneBase.prompt} />}
           {isMediumEffortModel(model) && (
             // Medium effort는 씬 네거티브도 보내지 않는다
             <p className="text-[11.5px] leading-snug text-faint">
@@ -245,7 +284,13 @@ export function SceneDetail({ scene }: { scene: Scene }): React.JSX.Element {
             tokensOverride={isMediumEffortModel(model) ? null : sceneTokens.neg}
             tokenLimit={tokenLimit}
             className="h-20 max-h-96 min-h-16 resize-y"
+            marks={negativeMarks}
           />
+          {sceneBase && (
+            <ChangedTagsNote current={scene.negativePrompt} base={sceneBase.negativePrompt} />
+          )}
+          {/* [custom] 뽑을 때 자동으로 붙는 네거 짝 + 이 씬에는 안 넣기 */}
+          <SceneNegativePairs scene={scene} prompts={pairPrompts} negative={pairNegative} />
         </div>
 
         <div className="mt-4 mb-2 flex items-center gap-2 text-[12px] text-muted">
@@ -318,7 +363,7 @@ export function SceneDetail({ scene }: { scene: Scene }): React.JSX.Element {
                 className="relative overflow-hidden rounded-md bg-surface-2 ring-2 ring-accent/50"
                 style={{ aspectRatio: `${scene.width} / ${scene.height}` }}
               >
-                <StreamingFrame key={scene.id} streaming={streaming} />
+                <StreamingFrame key={scene.id} sceneId={scene.id} streaming={streaming} />
                 {streaming && (
                   <span className="absolute bottom-1 left-1 rounded bg-black/55 px-1.5 py-0.5 text-[10px] font-medium text-white">
                     {t('ui.generating')}
@@ -405,8 +450,14 @@ export function SceneDetail({ scene }: { scene: Scene }): React.JSX.Element {
  * Streaming tile image. Subscribes to the preview frame on its own so each step re-renders
  * only this tile, and keeps the last frame after streaming ends until the parent releases it.
  */
-function StreamingFrame({ streaming }: { streaming: boolean }): React.JSX.Element {
-  const previewPng = useGenerationStore((s) => s.previewPng)
+function StreamingFrame({
+  sceneId,
+  streaming
+}: {
+  sceneId: number
+  streaming: boolean
+}): React.JSX.Element {
+  const previewPng = useSceneFrame(sceneId, streaming) // [custom] 동시 생성이면 이 씬을 뽑는 계정 것
   const [heldFrame, setHeldFrame] = useState<string | null>(null)
   // Remember the latest frame during render (no extra effect pass per step)
   if (streaming && previewPng && previewPng !== heldFrame) setHeldFrame(previewPng)

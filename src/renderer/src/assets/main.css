@@ -274,6 +274,32 @@ input {
   display: none;
 }
 
+/* [custom] 스크롤바 표시(설정) — 숨긴 스크롤바를 잡아 끌 수 있는 굵기로 되살린다 (휠 없는 원격·터치용) */
+:root[data-custom-scrollbars='on'] .no-scrollbar {
+  scrollbar-width: auto;
+  scrollbar-color: auto;
+}
+:root[data-custom-scrollbars='on'] .no-scrollbar::-webkit-scrollbar {
+  display: block;
+  width: 16px;
+  height: 16px;
+}
+:root[data-custom-scrollbars='on'] .no-scrollbar::-webkit-scrollbar-track {
+  background: color-mix(in srgb, var(--muted) 10%, transparent);
+}
+:root[data-custom-scrollbars='on'] .no-scrollbar::-webkit-scrollbar-thumb {
+  min-height: 48px;
+  min-width: 48px;
+  border: 3px solid transparent;
+  border-radius: 8px;
+  background-color: color-mix(in srgb, var(--muted) 60%, transparent);
+  background-clip: content-box;
+}
+:root[data-custom-scrollbars='on'] .no-scrollbar::-webkit-scrollbar-thumb:hover,
+:root[data-custom-scrollbars='on'] .no-scrollbar::-webkit-scrollbar-thumb:active {
+  background-color: color-mix(in srgb, var(--muted) 85%, transparent);
+}
+
 /* frameless 창 드래그 영역 */
 .drag {
   -webkit-app-region: drag;

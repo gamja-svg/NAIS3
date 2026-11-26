@@ -4,6 +4,7 @@ import {
   Crosshair,
   Dices,
   FolderPlus,
+  FolderTree,
   ImageOff,
   ImagePlus,
   Pencil,
@@ -27,7 +28,7 @@ import {
 import { cn } from '../lib/utils'
 import { useT } from '../lib/i18n'
 import { applyClickSelection, useSelectAllShortcut } from '../lib/edit-selection'
-import { buildDisplayRows } from '../lib/folder-list'
+import { buildGroupedRows } from '../lib/custom-folder-groups'
 import {
   DEFAULT_POSITION_GUIDES,
   getPositionableCharacters,
@@ -47,6 +48,8 @@ import { Dialog, DialogContent, DialogTitle } from './ui/dialog'
 import { Input } from './ui/input'
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover'
 import { Switch } from './ui/switch'
+import { useFolderGroupsStore } from '../stores/custom-folder-groups-store'
+import { FolderGroupMenu } from './custom-folder-group-row'
 
 /** V4/V4.5 웹의 5×5 수동 배치 그리드 (실캡처: 0.1~0.9). V5는 자유 배치 편집기를 쓴다. */
 const GRID = [0.1, 0.3, 0.5, 0.7, 0.9]
@@ -95,7 +98,16 @@ export function CharacterOverlay(): React.JSX.Element {
   const toggleCollapse = useCharactersStore((s) => s.toggleCollapse)
   const setFolderColor = useCharactersStore((s) => s.setFolderColor)
   const removeFolder = useCharactersStore((s) => s.removeFolder)
-  const move = useCharactersStore((s) => s.move)
+  // [custom] 상위 폴더 — 끌어 놓기는 상위 폴더를 아는 쪽으로 처리한다
+  const groups = useFolderGroupsStore((s) => s.groups)
+  const groupLinks = useFolderGroupsStore((s) => s.links)
+  const move = useFolderGroupsStore((s) => s.move)
+  const createGroup = useFolderGroupsStore((s) => s.createGroup)
+  const renameGroup = useFolderGroupsStore((s) => s.renameGroup)
+  const toggleGroup = useFolderGroupsStore((s) => s.toggleGroup)
+  const setGroupColor = useFolderGroupsStore((s) => s.setGroupColor)
+  const removeGroup = useFolderGroupsStore((s) => s.removeGroup)
+  const addFolderToGroup = useFolderGroupsStore((s) => s.addFolderToGroup)
   const useCoords = useGenerationStore((s) => s.request.useCoords)
   const model = useGenerationStore((s) => s.request.model)
   const outputWidth = useGenerationStore((s) => s.request.width)
@@ -145,7 +157,7 @@ export function CharacterOverlay(): React.JSX.Element {
 
   const searching = search.trim().length > 0
   const rows = useMemo(() => {
-    const all = buildDisplayRows(folders, items)
+    const all = buildGroupedRows(groups, groupLinks, folders, items)
     if (!searching) return all
     const q = search.trim().toLowerCase()
     return all.filter(
@@ -153,7 +165,7 @@ export function CharacterOverlay(): React.JSX.Element {
         r.type === 'item' &&
         (r.item.name.toLowerCase().includes(q) || r.item.prompt.toLowerCase().includes(q))
     )
-  }, [folders, items, searching, search])
+  }, [groups, groupLinks, folders, items, searching, search])
 
   const enabledCount = items.filter((c) => c.enabled && c.prompt.trim()).length
   const positionableCharacters = useMemo(
@@ -522,6 +534,15 @@ export function CharacterOverlay(): React.JSX.Element {
         >
           <FolderPlus size={14} />
         </Button>
+        {/* [custom] 상위 폴더 추가 */}
+        <Button
+          size="sm"
+          variant="ghost"
+          title={t('ui.customAddFolderGroup')}
+          onClick={() => void createGroup()}
+        >
+          <FolderTree size={14} />
+        </Button>
         <Button
           size="sm"
           variant={randomMode ? 'accent' : 'ghost'}
@@ -640,6 +661,14 @@ export function CharacterOverlay(): React.JSX.Element {
             addItem: (folderId) => void createCard(folderId, maxCharacters)
           }}
           onMove={move}
+          groupActions={{
+            rename: renameGroup,
+            toggleCollapse: toggleGroup,
+            setColor: setGroupColor,
+            remove: removeGroup,
+            addFolder: (groupId) => void addFolderToGroup(groupId)
+          }}
+          folderMenuExtra={(folder) => <FolderGroupMenu folderId={folder.id} />}
           itemClassName={(char) =>
             cn(
               'transition-colors hover:border-muted/60', // F2: 호버 강조

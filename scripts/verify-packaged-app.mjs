@@ -35,8 +35,14 @@ const asarEntries = listPackage(asar, { isPack: false }).map((file) =>
   file.replace(/\\/g, '/').replace(/^\//, '')
 )
 for (const directory of ['dist', '.git', 'src', 'tests']) {
-  const leaked = asarEntries.filter((file) => file === directory || file.startsWith(`${directory}/`))
-  assert.equal(leaked.length, 0, `app.asar contains ${directory}/: ${leaked.slice(0, 5).join(', ')}`)
+  const leaked = asarEntries.filter(
+    (file) => file === directory || file.startsWith(`${directory}/`)
+  )
+  assert.equal(
+    leaked.length,
+    0,
+    `app.asar contains ${directory}/: ${leaked.slice(0, 5).join(', ')}`
+  )
 }
 const MAX_ASAR_BYTES = 40 * 1024 * 1024
 const asarBytes = statSync(asar).size
@@ -95,6 +101,47 @@ const output = execFileSync(
   }
 )
 console.log(output.trim())
+
+// [custom] onnxruntime-node (tap-to-shape censoring) loads its binding and the runtime
+// library next to it from app.asar.unpacked. Only the target platform's binaries ship.
+const ortBinaries = asarEntries.filter((file) =>
+  file.startsWith('node_modules/onnxruntime-node/bin/napi-v6/')
+)
+assert.ok(
+  ortBinaries.length > 0 &&
+    ortBinaries.every(
+      (file) =>
+        file === 'node_modules/onnxruntime-node/bin/napi-v6' ||
+        file === `node_modules/onnxruntime-node/bin/napi-v6/${platform}` ||
+        file.startsWith(`node_modules/onnxruntime-node/bin/napi-v6/${platform}/${arch}`)
+    ),
+  `onnxruntime-node binaries for other platforms are packaged: ${ortBinaries
+    .filter((file) => !file.includes(`/${platform}/${arch}`))
+    .slice(0, 5)
+    .join(', ')}`
+)
+const ortOutput = execFileSync(
+  executable,
+  [
+    '-e',
+    `
+    const assert = require('node:assert/strict');
+    const path = require('node:path');
+    const ort = require(path.join(process.argv[1], 'node_modules/onnxruntime-node'));
+    assert.equal(typeof ort.InferenceSession.create, 'function');
+    const tensor = new ort.Tensor('float32', [1, 2], [2]);
+    assert.equal(tensor.data.length, 2);
+    console.log('Packaged onnxruntime passed: ' + process.platform + ' ' + process.arch);
+  `,
+    asar
+  ],
+  {
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+    encoding: 'utf8',
+    timeout: 60_000
+  }
+)
+console.log(ortOutput.trim())
 
 // On Linux the app hides sharp's native binary and runs @img/sharp-wasm32 instead
 // (src/main/sharp-loader.ts). Repeat that hook here without the native fallback, so a

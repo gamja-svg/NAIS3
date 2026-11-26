@@ -1,4 +1,4 @@
-import { History, Trash2 } from 'lucide-react'
+import { History, LocateFixed, Trash2 } from 'lucide-react'
 import { thumbnailFallback } from '../lib/constants'
 import { cn } from '../lib/utils'
 import { useT } from '../lib/i18n'
@@ -8,6 +8,9 @@ import { useLayoutStore } from '../stores/layout-store'
 import { askConfirm } from '../stores/dialog-store'
 import { toast } from '../stores/toast-store'
 import { ImageContextMenu } from './image-context-menu'
+import { ContextMenuItem, ContextMenuSeparator } from './ui/context-menu'
+import { useScenesStore } from '../stores/scenes-store'
+import { useTouchMode } from '../lib/custom-touch-mode'
 
 export function HistoryPanel(): React.JSX.Element {
   const t = useT()
@@ -17,11 +20,16 @@ export function HistoryPanel(): React.JSX.Element {
   const view = useGenerationStore((s) => s.view)
   const refreshHistory = useGenerationStore((s) => s.refreshHistory)
   const setCenterMode = useLayoutStore((s) => s.setCenterMode)
+  const goToScene = useScenesStore((s) => s.goToScene)
+  // [custom] 터치·원격 모드에서는 끌면 목록이 넘어가야 한다 — 그림을 집어 끄는 동작(메타데이터 열기)을 끈다
+  const touchMode = useTouchMode()
 
   const deleteOne = async (id: number, filePath: string): Promise<void> => {
     await window.nais.invoke('images:delete', { id })
     if (viewingFilePath === filePath) view(null)
     void refreshHistory()
+    // [custom] 씬의 대표 그림을 지웠을 수 있다 — 씬 카드도 바로 맞춘다
+    void useScenesStore.getState().load()
   }
 
   const clearAll = async (): Promise<void> => {
@@ -68,16 +76,39 @@ export function HistoryPanel(): React.JSX.Element {
                 key={item.id}
                 filePath={item.filePath}
                 onDelete={() => void deleteOne(item.id, item.filePath)}
+                extra={
+                  // [custom] 이 이미지를 만든 씬이 있는 곳으로 이동
+                  item.sceneId != null && item.presetId != null ? (
+                    <>
+                      <ContextMenuSeparator />
+                      <ContextMenuItem
+                        onSelect={() => void goToScene(item.presetId!, item.sceneId!)}
+                      >
+                        <LocateFixed size={13} className="text-hue-emerald" />{' '}
+                        {t('ui.customGoToScene')}
+                      </ContextMenuItem>
+                    </>
+                  ) : undefined
+                }
               >
                 <button
                   className={cn(
                     'group relative aspect-square overflow-hidden rounded-md border border-line bg-paper transition-all',
                     viewingFilePath === item.filePath && 'ring-2 ring-accent'
                   )}
-                  title={`seed ${item.seed ?? '?'}`}
+                  title={
+                    item.sceneName != null
+                      ? `${item.presetName ?? ''} · ${item.sceneName}\nseed ${item.seed ?? '?'}`
+                      : `seed ${item.seed ?? '?'}`
+                  }
                   onClick={() => {
                     view(item.filePath)
                     setCenterMode('main') // 씬/디렉터 페이지에서도 클릭 시 메인으로 이동해 원본 표시
+                  }}
+                  // [custom] 두 번 누르면 이 그림을 만든 씬이 있는 곳으로 (씬 그림만)
+                  onDoubleClick={() => {
+                    if (item.sceneId != null && item.presetId != null)
+                      void goToScene(item.presetId, item.sceneId)
                   }}
                 >
                   {item.thumbnailUrl && (
@@ -87,13 +118,24 @@ export function HistoryPanel(): React.JSX.Element {
                       loading="lazy"
                       {...thumbnailFallback(item.filePath)}
                       // 프리뷰로 드래그해서 메타데이터 열기
-                      draggable
+                      draggable={!touchMode}
                       onDragStart={(e) => {
                         e.dataTransfer.setData('nais/file-path', item.filePath)
                         e.dataTransfer.effectAllowed = 'copy'
                       }}
                       alt=""
                     />
+                  )}
+                  {/* [custom] 씬 이미지의 출처 — 프리셋 이름 / 씬 이름 */}
+                  {item.sceneName != null && (
+                    <span className="pointer-events-none absolute inset-x-0 bottom-0 flex flex-col bg-gradient-to-t from-black/80 via-black/55 to-transparent pb-1 pl-8 pr-2 pt-5 text-left text-white">
+                      <span className="truncate text-[10.5px] leading-tight opacity-85">
+                        {item.presetName ?? ''}
+                      </span>
+                      <span className="truncate text-[12.5px] font-semibold leading-tight">
+                        {item.sceneName}
+                      </span>
+                    </span>
                   )}
                   <KindBadge kind={item.kind} />
                   {/* 호버 삭제 — 기록만 삭제 (파일 보존) */}

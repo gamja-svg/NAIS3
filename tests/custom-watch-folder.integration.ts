@@ -19,6 +19,7 @@ import {
   setWatchFolderEnabled,
   stopWatchFolder
 } from '../src/main/custom/watch-folder'
+import { writeWatchGenerationReport } from '../src/main/custom/watch-result'
 import {
   createPreset,
   createScene,
@@ -133,11 +134,67 @@ describe('custom: watch folder', () => {
     })
     expect(getScene(kept)?.prompt).toBe('new prompt')
     expect(listScenes(preset).map((s) => s.name)).toEqual(['001', '002'])
-    // 파일은 그 자리에 그대로, 다른 파일·폴더도 생기지 않는다
-    expect(tree()).toEqual(['옆집 뒷계/json 모음/0NURA_D1_001-175_v21.json'])
+    // 파일은 그 자리에 그대로, 옆에 결과 파일만 생긴다
+    expect(tree()).toEqual([
+      '옆집 뒷계/json 모음/0NURA_D1_001-175_v21.json',
+      '옆집 뒷계/json 모음/0NURA_D1_001-175_v21.result.json'
+    ])
     expect(JSON.parse(readFileSync(join(watchDir, event.file), 'utf-8'))).toEqual(body)
     expect(scanWatchFolder()).toEqual([])
     expect(scanWatchFolder()).toEqual([])
+  })
+
+  it('leaves a result file next to the scene JSON, and adds the generation report to it', () => {
+    const preset = createPreset('결과 프리셋')
+    createScene(preset, '001')
+    drop('sub/v1.json', {
+      preset: '결과 프리셋',
+      scenes: [
+        { name: '001', prompt: 'changed' },
+        { name: '002', prompt: 'added' }
+      ]
+    })
+    settle()
+    const path = join(watchDir, 'sub/v1.result.json')
+    const first = JSON.parse(readFileSync(path, 'utf-8'))
+    expect(first).toMatchObject({
+      file: 'sub/v1.json',
+      ok: true,
+      presetName: '결과 프리셋',
+      added: 1,
+      updated: 1,
+      changedScenes: ['001', '002']
+    })
+    expect(first.sceneIds).toBeUndefined()
+    expect(first.generation).toBeUndefined()
+
+    writeWatchGenerationReport(watchDir, 'sub/v1.json', {
+      done: true,
+      generated: 1,
+      failed: 1,
+      scenes: [
+        { scene: '001', state: 'generated', tries: 1, image: 'a.png' },
+        { scene: '002', state: 'blocked', tries: 1, reason: 'guard' }
+      ]
+    })
+    const second = JSON.parse(readFileSync(path, 'utf-8'))
+    expect(second.changedScenes).toEqual(['001', '002'])
+    expect(second.generation).toMatchObject({ done: true, generated: 1, failed: 1 })
+    expect(second.generation.scenes[1]).toEqual({
+      scene: '002',
+      state: 'blocked',
+      tries: 1,
+      reason: 'guard'
+    })
+    // 결과 파일은 씬 JSON으로 다시 읽지 않고, 폴더 밖 이름에는 쓰지 않는다
+    expect(scanWatchFolder()).toEqual([])
+    writeWatchGenerationReport(watchDir, '../out.json', {
+      done: true,
+      generated: 0,
+      failed: 0,
+      scenes: []
+    })
+    expect(existsSync(join(watchDir, '../out.result.json'))).toBe(false)
   })
 
   it('puts new scenes at their number instead of the end', () => {
@@ -234,7 +291,19 @@ describe('custom: watch folder', () => {
       ['settings.json', false, 'unrecognized']
     ])
     expect(listScenes(preset)).toHaveLength(0)
-    expect(tree().sort()).toEqual(['D1_N1.json', 'broken.json', 'empty.json', 'settings.json'])
+    // 씬 JSON인데 못 쓴 파일에만 이유를 적은 결과 파일이 생긴다
+    expect(tree().sort()).toEqual([
+      'D1_N1.json',
+      'D1_N1.result.json',
+      'broken.json',
+      'empty.json',
+      'empty.result.json',
+      'settings.json'
+    ])
+    expect(JSON.parse(readFileSync(join(watchDir, 'empty.result.json'), 'utf-8'))).toMatchObject({
+      ok: false,
+      reason: 'empty'
+    })
     expect(settle()).toEqual([])
   })
 

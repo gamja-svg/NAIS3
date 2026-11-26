@@ -39,6 +39,9 @@ const LANE_POLL_MS = 5000
  * [custom] 동시 생성에서 계정 하나가 지금 뽑으면 안 될 때 생성 함수가 던진다
  * (게이지 소진·Opus 아님·조회 실패). 큐는 그 계정을 retryAfterMs 동안 쉬게 하고 항목을 대기로 돌린다.
  */
+/** [custom] Anlas 가드에 막힌 계정이 쉬는 시간 — 지나면 다시 물어본다 (날이 바뀌면 풀릴 수 있다) */
+const GUARD_PAUSE_MS = 10 * 60_000
+
 export class LanePauseError extends Error {
   constructor(
     readonly reason: LanePauseReason,
@@ -349,10 +352,31 @@ export class GenerationQueue extends EventEmitter {
             delete next.laneAccountId
             this.lanePause.set(lane, { until: Date.now() + e.retryAfterMs, reason: e.reason })
           } else if (!controller.signal.aborted && isHaltError(e)) {
-            // 보내기 전에 막힌 요청(Anlas 가드) — 한 장씩과 같이 취소로 돌리고 남은 예약도 멈춘다
-            next.state = 'cancelled'
-            next.error = e.message
-            halt = e.message
+            // 보내기 전에 막힌 요청(Anlas 가드). 가드는 계정마다 판정하므로(오늘 쓴 Anlas·게이지가 다르다)
+            // 다른 계정이 뽑을 수 있으면 이 계정만 쉬게 하고 항목을 돌려준다 — 전에는 한 계정이 막히면
+            // 남은 예약을 전부 취소해, 감시 폴더 자동 생성이 몇 장만 뽑히고 조용히 멈췄다.
+            const elsewhere =
+              next.accountId !== lane &&
+              lanes.some((other) => {
+                if (other === lane) return false
+                const otherPause = this.lanePause.get(other)
+                return !(
+                  otherPause &&
+                  otherPause.reason === 'guard' &&
+                  otherPause.until > Date.now()
+                )
+              })
+            if (elsewhere) {
+              paused = new LanePauseError('guard', GUARD_PAUSE_MS)
+              next.state = 'pending'
+              delete next.laneAccountId
+              this.lanePause.set(lane, { until: Date.now() + GUARD_PAUSE_MS, reason: 'guard' })
+            } else {
+              // 뽑을 계정이 없다 — 한 장씩과 같이 취소로 돌리고 남은 예약도 멈춘다
+              next.state = 'cancelled'
+              next.error = e.message
+              halt = e.message
+            }
           } else if (controller.signal.aborted || isAbortError(e)) {
             next.state = 'cancelled'
             this.emit('cancelled', [next])

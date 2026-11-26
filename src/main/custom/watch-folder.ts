@@ -5,6 +5,7 @@ import { getSetting, setSetting } from '../db/settings'
 import { parseSceneImport } from '../scenes/import-formats'
 import { applyImportedScenes, createPreset, listPresets } from '../scenes/repo'
 import { isWatchRequestFile, isWatchResultFile } from './top-set'
+import { writeWatchImportResult } from './watch-result'
 
 /**
  * [custom] 감시 폴더 — 지정한 폴더(하위 폴더 포함)에 씬 JSON이 새로 생기거나 바뀌면 자동으로 불러온다.
@@ -247,7 +248,12 @@ export function scanWatchFolder(): WatchFolderEvent[] {
     }
     seen.delete(file)
     if (isWatchRequestFile(file)) requestHandler?.(dir, file)
-    else events.push(importWatchFile(dir, file))
+    else {
+      const event = importWatchFile(dir, file)
+      // 씬 JSON 옆에 결과 파일을 남긴다 — 자동 생성이 돌면 씬마다의 결과가 여기에 더해진다
+      writeWatchImportResult(dir, event)
+      events.push(event)
+    }
     processed[file] = signature
     dirty = true
   }

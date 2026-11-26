@@ -9,7 +9,8 @@ const PAUSE_LABEL: Record<NonNullable<QueueLane['pauseReason']>, MessageId> = {
   exhausted: 'ui.customLanePausedExhausted',
   noAnlas: 'ui.customLanePausedNoAnlas',
   notOpus: 'ui.customLanePausedNotOpus',
-  unknown: 'ui.customLanePausedUnknown'
+  unknown: 'ui.customLanePausedUnknown',
+  guard: 'ui.customLanePausedGuard'
 }
 
 /**

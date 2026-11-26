@@ -135,6 +135,7 @@ import {
   importScenesJson,
   exportZip
 } from './scenes/repo'
+import { writeWatchGenerationReport } from './custom/watch-result'
 import {
   getWatchFolderConfig,
   setWatchFolderDir,
@@ -764,6 +765,9 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
   handle('custom:sceneReferencesOff', ({ id, off }) => {
     setSceneReferencesOff(id, off)
   })
+  handle('custom:watchGenerationReport', ({ file, report }) =>
+    writeWatchGenerationReport(getWatchFolderConfig().dir, file, report)
+  )
   handle('custom:sceneTransparent', ({ id, on }) => {
     setSceneTransparent(id, on)
   })

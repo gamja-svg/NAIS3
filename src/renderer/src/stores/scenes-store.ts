@@ -1,3 +1,4 @@
+import { runWatchGeneration } from '../lib/custom-watch-generation'
 import { create } from 'zustand'
 import { applySceneRequest } from '@shared/scene-request'
 import { WATCH_AUTOGEN_KEY, WATCH_AUTOGEN_LIMIT, canAutoGenerate } from '@shared/custom-watch'
@@ -13,7 +14,8 @@ import type {
   SceneCast,
   SceneImage,
   ScenePreset,
-  WatchFolderFailure
+  WatchFolderFailure,
+  WatchGenerationReport
 } from '@shared/types'
 import { enabledCharacters, useCharactersStore } from './characters-store'
 import { useFragmentNegativeStore } from './custom-fragment-negative-store'
@@ -798,23 +800,33 @@ export async function loadCasts(): Promise<void> {
   if (st.activeCastId && !st.casts.some((c) => c.id === st.activeCastId)) st.setActiveCast('')
 }
 
+/** [custom] 큐가 멈춘 마지막 이유 — 자동 생성 결과 파일에 취소 이유로 적는다 */
+let queueHaltReason: string | null = null
+const lastQueueHaltReason = (): string | null => queueHaltReason
+
 /**
  * [custom] 감시 폴더가 바꾼 씬을 1장씩 자동 생성한다 (설정에서 켰을 때만).
  * 지금 화면에 골라 둔 출연·사이드바 설정으로 뽑는다 — 손으로 씬 하나를 생성할 때와 같다.
+ * 씬마다의 결과(뽑힘·실패·막힘과 이유)는 씬 JSON 옆의 결과 파일에 남긴다.
  */
 async function autoGenerateWatched(
+  file: string,
   presetId: number | undefined,
   sceneIds: number[]
 ): Promise<void> {
   if (presetId == null || sceneIds.length === 0) return
+  const report = (body: WatchGenerationReport): Promise<void> =>
+    window.nais.invoke('custom:watchGenerationReport', { file, report: body }).catch(() => {})
+  const skip = (reason: string): Promise<void> =>
+    report({ done: true, skipped: reason, generated: 0, failed: 0, scenes: [] })
   try {
     const { value } = await window.nais.invoke('settings:get', { key: WATCH_AUTOGEN_KEY })
-    if (value !== '1') return
+    if (value !== '1') return skip('autoGenerateOff')
     const status = await window.nais.invoke('queue:status', undefined)
     const pending = status.items.filter((i) => i.state === 'pending' || i.state === 'generating')
     if (!canAutoGenerate(sceneIds.length, pending.length)) {
       toast(t('ui.customWatchAutoGenSkippedValue', sceneIds.length, WATCH_AUTOGEN_LIMIT), 'error')
-      return
+      return skip(`overLimit: ${sceneIds.length} + ${pending.length} > ${WATCH_AUTOGEN_LIMIT}`)
     }
     const wanted = new Set(sceneIds)
     const { items } = await window.nais.invoke('scenes:list', { presetId })
@@ -822,18 +834,26 @@ async function autoGenerateWatched(
     const cast =
       st.activeCastId === '' ? null : (st.casts.find((c) => c.id === st.activeCastId) ?? null)
     const base = buildCastRequest(cast)
-    let count = 0
-    for (const scene of items) {
-      if (!wanted.has(scene.id)) continue
-      await window.nais.invoke('queue:enqueue', {
-        request: { ...applySceneRequest(base, scene), seed: sceneSeed(0) },
-        count: 1
-      })
-      count++
-    }
-    if (count > 0) toast(t('ui.customWatchAutoGenStartedValue', count), 'info')
+    const jobs = items
+      .filter((scene) => wanted.has(scene.id))
+      .map((scene) => ({
+        scene: scene.name,
+        request: { ...applySceneRequest(base, scene), seed: sceneSeed(0) }
+      }))
+    if (jobs.length > 0) toast(t('ui.customWatchAutoGenStartedValue', jobs.length), 'info')
+    const done = await runWatchGeneration(jobs, {
+      enqueue: (request) => window.nais.invoke('queue:enqueue', { request, count: 1 }),
+      status: () => window.nais.invoke('queue:status', undefined),
+      report,
+      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      haltReason: lastQueueHaltReason
+    })
+    if (done.failed > 0)
+      toast(t('ui.customWatchAutoGenFailedValue', file, done.generated, done.failed), 'error')
   } catch (error) {
-    toast(error instanceof Error ? error.message : String(error), 'error')
+    const message = error instanceof Error ? error.message : String(error)
+    toast(message, 'error')
+    await skip(`error: ${message}`)
   }
 }
 
@@ -862,6 +882,10 @@ export function bindSceneEvents(): () => void {
     // Reservation-only changes must not increment image counts or replace thumbnails.
     void useScenesStore.getState().load()
   })
+  // [custom] 큐가 멈춘 이유를 기억해 둔다 (자동 생성 결과 파일용)
+  const offWatchHalt = window.nais.on('queue:halted', ({ reason }) => {
+    queueHaltReason = reason
+  })
   // [custom] 감시 폴더가 파일을 불러옴 — 결과를 알리고 목록을 다시 읽는다
   const offWatch = window.nais.on('custom:watchImported', (event) => {
     if (!event.ok) {
@@ -887,7 +911,7 @@ export function bindSceneEvents(): () => void {
     )
     const st = useScenesStore.getState()
     void (event.presetCreated ? st.loadPresets() : Promise.resolve()).then(() => st.load())
-    void autoGenerateWatched(event.presetId, event.sceneIds ?? [])
+    void autoGenerateWatched(event.file, event.presetId, event.sceneIds ?? [])
   })
   // [custom] 감시 폴더의 요청 파일을 처리함 (Claude가 넣은 대표 세트 받기 요청 등)
   const offRequest = window.nais.on('custom:watchRequestDone', (event) => {
@@ -939,6 +963,7 @@ export function bindSceneEvents(): () => void {
     clearTimeout(timer)
     offImages()
     offReservations()
+    offWatchHalt()
     offWatch()
     offRequest()
   }

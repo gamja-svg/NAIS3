@@ -153,7 +153,8 @@ export interface ParallelConfig {
  * [custom] 동시 생성에서 계정이 쉬는 이유 — 게이지 소진 / 게이지 소진에 Anlas도 모자람 /
  * Opus 아님 / 계정 상태 조회 실패
  */
-export type LanePauseReason = 'exhausted' | 'noAnlas' | 'notOpus' | 'unknown'
+// guard: Anlas 가드가 그 계정의 생성을 막음 (다른 계정은 이어서 뽑는다)
+export type LanePauseReason = 'exhausted' | 'noAnlas' | 'notOpus' | 'unknown' | 'guard'
 
 /** [custom] 동시 생성 계정(레인) 하나의 상태 */
 export interface QueueLane {
@@ -574,6 +575,33 @@ export type WatchFolderFailure =
   'unrecognized' | 'empty' | 'noPreset' | 'ambiguousPreset' | 'tooLarge' | 'readError'
 
 /** [custom] 감시 폴더가 파일 하나를 처리한 결과 */
+/** [custom] 감시 폴더 자동 생성에서 씬 하나의 결과 */
+export interface WatchGenerationScene {
+  scene: string
+  /**
+   * queued = 뽑을 차례를 기다림, generating = 뽑는 중, generated = 뽑힘, failed = 다시 시도해도 실패,
+   * blocked = Anlas 가드가 예약을 막음, cancelled = 큐가 멈추거나 취소됨, unknown = 결과를 확인하지 못함
+   */
+  state: 'queued' | 'generating' | 'generated' | 'failed' | 'blocked' | 'cancelled' | 'unknown'
+  /** 실패·막힘·취소의 이유 */
+  reason?: string
+  /** 뽑은 횟수 (다시 시도 포함) */
+  tries: number
+  /** 뽑힌 그림 파일 이름 */
+  image?: string
+}
+
+/** [custom] 감시 폴더 자동 생성의 진행·결과 — 결과 파일의 `generation` */
+export interface WatchGenerationReport {
+  /** false면 아직 도는 중 (같은 파일에 다시 적힌다) */
+  done: boolean
+  /** 자동 생성을 시작하지 않았을 때의 이유 (꺼짐, 한도 초과 등) */
+  skipped?: string
+  generated: number
+  failed: number
+  scenes: WatchGenerationScene[]
+}
+
 export interface WatchFolderEvent {
   /** 감시 폴더 기준 상대 경로 */
   file: string
@@ -1086,6 +1114,8 @@ export interface IpcInvokeMap {
   'custom:sceneNegativeOff': { req: { id: number; off: boolean }; res: void }
   /** [custom] 씬별 레퍼런스 끄기·켜기 */
   'custom:sceneReferencesOff': { req: { id: number; off: boolean }; res: void }
+  /** [custom] 감시 폴더 자동 생성의 진행·결과를 씬 JSON의 결과 파일에 적는다 */
+  'custom:watchGenerationReport': { req: { file: string; report: WatchGenerationReport }; res: void }
   /** [custom] 씬별 투명 배경 켜기·끄기 */
   'custom:sceneTransparent': { req: { id: number; on: boolean }; res: void }
   /** [custom] 미생성인 씬이 바뀌기 전 내용 — 바뀐 태그를 노랗게 칠하는 기준 (없으면 null) */

@@ -219,6 +219,7 @@ export const KO = {
   'ui.customLanePausedNoAnlas': '쉬는 중 · Anlas 부족',
   'ui.customLanePausedNotOpus': '쉬는 중 · Opus 아님',
   'ui.customLanePausedUnknown': '쉬는 중 · 확인 실패',
+  'ui.customLanePausedGuard': '쉬는 중 · Anlas 가드',
   'ui.customLaneDoneValue': '이번에 {0}장',
   'ui.customLaneGaugeValue': '게이지 {0}%',
   'ui.customParallelAccounts': '여러 계정으로 동시에 생성',
@@ -254,6 +255,7 @@ export const KO = {
   'ui.customWatchAutoGenerateHint':
     '감시 폴더가 추가하거나 바꾼 씬을 지금 화면의 설정으로 1장씩 생성합니다. 대기 중인 생성과 합쳐 30장을 넘으면 생성하지 않습니다.',
   'ui.customWatchAutoGenStartedValue': '감시 폴더: 바뀐 씬 {0}장 자동 생성 시작',
+  'ui.customWatchAutoGenFailedValue': '{0}: 자동 생성 {1}장 뽑힘 · {2}장 못 뽑음 (이유는 결과 파일에)',
   'ui.customWatchAutoGenSkippedValue':
     '감시 폴더: 자동 생성하지 않음 — 바뀐 씬 {0}장이 한도({1}장, 대기 중 포함)를 넘습니다.',
   'ui.customClaudePanel': 'Claude 창',

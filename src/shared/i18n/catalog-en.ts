@@ -220,6 +220,7 @@ export const EN = {
   'ui.customLanePausedNoAnlas': 'Resting · not enough Anlas',
   'ui.customLanePausedNotOpus': 'Resting · not Opus',
   'ui.customLanePausedUnknown': 'Resting · check failed',
+  'ui.customLanePausedGuard': 'Paused · Anlas guard',
   'ui.customLaneDoneValue': '{0} this session',
   'ui.customLaneGaugeValue': 'Gauge {0}%',
   'ui.customParallelAccounts': 'Generate with several accounts at once',
@@ -258,6 +259,7 @@ export const EN = {
   'ui.customWatchAutoGenerateHint':
     'Generates one image for each scene the watch folder added or changed, using the settings currently on screen. Nothing is generated when that plus the pending queue would exceed 30.',
   'ui.customWatchAutoGenStartedValue': 'Watch folder: auto-generating {0} changed scene(s)',
+  'ui.customWatchAutoGenFailedValue': '{0}: auto-generated {1}, {2} not generated (see the result file for why)',
   'ui.customWatchAutoGenSkippedValue':
     'Watch folder: not auto-generating — {0} changed scene(s) exceed the limit ({1}, including pending).',
   'ui.customClaudePanel': 'Claude window',

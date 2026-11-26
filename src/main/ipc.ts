@@ -111,6 +111,7 @@ import {
   clearScenesPending,
   getSceneBase,
   setSceneMemo,
+  setSceneReferencesOff,
   setSceneTransparent,
   deleteScene,
   reorderScenes,
@@ -759,6 +760,9 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
   )
   handle('custom:sceneNegativeOff', ({ id, off }) => {
     setSceneNegativeOff(id, off)
+  })
+  handle('custom:sceneReferencesOff', ({ id, off }) => {
+    setSceneReferencesOff(id, off)
   })
   handle('custom:sceneTransparent', ({ id, on }) => {
     setSceneTransparent(id, on)

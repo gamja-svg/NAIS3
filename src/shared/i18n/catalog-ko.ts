@@ -318,6 +318,11 @@ export const KO = {
   'ui.customRemovedTags': '빠진 태그',
   'ui.customSceneMemo': '씬 메모',
   'ui.customSceneMemoEdit': '메모…',
+  'ui.customSceneReferencesOff': '레퍼런스 끄기',
+  'ui.customSceneReferencesOn': '레퍼런스 켜기',
+  'ui.customSceneReferencesOffBadge': '레퍼 끔',
+  'ui.customSceneReferencesOffHint':
+    '이 씬은 정밀 레퍼런스를 보내지 않습니다 (레퍼런스 비용도 들지 않음).',
   'ui.customFragmentNegativeSet': '네거 짝 지정',
   'ui.customFragmentNegativeHintValue':
     '네거 짝: {0} — 프롬프트에 이 조각이 있으면 뽑을 때 네거티브에 자동으로 붙습니다. 눌러서 바꾸기.',
@@ -537,6 +542,7 @@ export const KO = {
   'ui.anlasPaidReasonOpusUsage': 'V5 게이지 소진 또는 확인 실패',
   'ui.anlasPaidReasonResolution': '해상도 1024² 초과',
   'ui.anlasPaidReasonSteps': '스텝 28 초과',
+  'ui.customAnlasPaidReasonReferenceV5': 'V5에서 정밀 레퍼런스 사용 (무료 생성 제외)',
   'ui.anlasPaidReasonCharacterReference': '캐릭터 레퍼런스',
   'ui.anlasPaidReasonVibeEncoding': '새 바이브 인코딩',
   'ui.anlasPaidReasonMultiVibe': '바이브 5개 이상',

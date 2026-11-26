@@ -205,7 +205,7 @@ function normalizeDirectorDimensions(
 }
 
 /** Opus 무료 조건 중 어긋난 것 (eX). Opus가 아니면 게이지 조건은 따지지 않는다 */
-export type OpusFreeMiss = 'notOpus' | 'opusUsage' | 'resolution' | 'steps'
+export type OpusFreeMiss = 'notOpus' | 'opusUsage' | 'resolution' | 'steps' | 'referenceV5'
 
 /** 빈 배열이면 무료 범위 — 생성 비용과 가드 사유가 같은 조건을 쓴다 */
 export function opusFreeMisses(input: AnlasEstimateInput): OpusFreeMiss[] {
@@ -218,6 +218,9 @@ export function opusFreeMisses(input: AnlasEstimateInput): OpusFreeMiss[] {
   else if (isV5 && input.opusUsageExhausted !== false) misses.push('opusUsage')
   if (px > 1048576) misses.push('resolution')
   if (steps > 28) misses.push('steps')
+  // [custom] V5는 정밀 레퍼런스를 쓰면 무료 생성이 적용되지 않는다 (NovelAI 2026-11-24 공지) —
+  // 가드가 실제보다 싸게 보지 않게 유료로 센다
+  if (isV5 && input.isOpus && (input.charRefCount ?? 0) > 0) misses.push('referenceV5')
   return misses
 }
 
@@ -234,7 +237,7 @@ export function estimateAnlas(input: AnlasEstimateInput): AnlasEstimate {
   if (isV5) base *= 1.5
   const perImage = Math.max(Math.ceil(base * strength), 2)
 
-  // 캐릭레퍼는 무료 조건을 깨지 않는다 (실측) — 대신 아래에서 별도 사용료 부과
+  // 캐릭레퍼는 V4.5에서 무료 조건을 깨지 않는다 (실측, [custom] V5는 깨진다) — 대신 아래에서 별도 사용료 부과
   const freeEligible = opusFreeMisses(input).length === 0
 
   const generation = freeEligible ? 0 : perImage * input.batchCount

@@ -1144,6 +1144,7 @@ const SceneCard = memo(function SceneCard({
   // [custom] 씬 메모(별명)
   const setMemo = useScenesStore((s) => s.setMemo)
   const setTransparent = useScenesStore((s) => s.setTransparent)
+  const setReferencesOff = useScenesStore((s) => s.setReferencesOff)
   const editMemo = async (): Promise<void> => {
     const memo = await askText(
       t('ui.customSceneMemoTitleValue', scene.name),
@@ -1311,6 +1312,15 @@ const SceneCard = memo(function SceneCard({
                   onClick={() => void setTransparent(scene.id, !scene.transparent)}
                 />
                 <MenuItem
+                  icon={<ImageOff size={13} />}
+                  label={t(
+                    scene.referencesOff
+                      ? 'ui.customSceneReferencesOn'
+                      : 'ui.customSceneReferencesOff'
+                  )}
+                  onClick={() => void setReferencesOff(scene.id, !scene.referencesOff)}
+                />
+                <MenuItem
                   icon={<Copy size={13} />}
                   label={t('ui.duplicate')}
                   onClick={() => void duplicate(scene.id)}
@@ -1355,6 +1365,15 @@ const SceneCard = memo(function SceneCard({
                     title={t('ui.customSceneTransparentHint')}
                   >
                     <Grid2x2 size={10} /> {t('ui.transparentBackground')}
+                  </div>
+                )}
+                {/* [custom] 레퍼런스를 끈 씬 표시 */}
+                {scene.referencesOff && (
+                  <div
+                    className="mt-0.5 flex w-fit items-center gap-1 rounded bg-black/70 px-1 text-[10.5px] font-medium leading-4 text-white"
+                    title={t('ui.customSceneReferencesOffHint')}
+                  >
+                    <ImageOff size={10} /> {t('ui.customSceneReferencesOffBadge')}
                   </div>
                 )}
                 {/* [custom] 씬 메모 — 어떤 장면인지 한눈에 */}
@@ -1419,6 +1438,10 @@ const SceneCard = memo(function SceneCard({
         <ContextMenuItem onSelect={() => void setTransparent(scene.id, !scene.transparent)}>
           <Grid2x2 size={13} />{' '}
           {t(scene.transparent ? 'ui.customSceneTransparentOff' : 'ui.customSceneTransparentOn')}
+        </ContextMenuItem>
+        <ContextMenuItem onSelect={() => void setReferencesOff(scene.id, !scene.referencesOff)}>
+          <ImageOff size={13} />{' '}
+          {t(scene.referencesOff ? 'ui.customSceneReferencesOn' : 'ui.customSceneReferencesOff')}
         </ContextMenuItem>
         {scene.memo && (
           <ContextMenuItem onSelect={() => void setMemo(scene.id, '')}>

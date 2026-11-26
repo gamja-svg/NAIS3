@@ -15,6 +15,8 @@ export interface ImportedScene {
   transparent?: boolean
   /** [custom] 네거 짝 자동 붙이기 — false면 이 씬은 붙이지 않고 true면 다시 붙인다 (칸이 없으면 그대로) */
   autoNegative?: boolean
+  /** [custom] 정밀 레퍼런스 — false면 이 씬은 레퍼런스를 보내지 않고 true면 다시 보낸다 (칸이 없으면 그대로) */
+  references?: boolean
 }
 
 type Obj = Record<string, unknown>
@@ -60,7 +62,8 @@ export function parseSceneImport(raw: string): ImportedScene[] | null {
       height: num(s.height),
       ...(str(s.memo) !== undefined ? { memo: str(s.memo) } : {}), // [custom]
       ...(typeof s.transparent === 'boolean' ? { transparent: s.transparent } : {}), // [custom]
-      ...(typeof s.autoNegative === 'boolean' ? { autoNegative: s.autoNegative } : {}) // [custom]
+      ...(typeof s.autoNegative === 'boolean' ? { autoNegative: s.autoNegative } : {}), // [custom]
+      ...(typeof s.references === 'boolean' ? { references: s.references } : {}) // [custom]
     }))
   }
 

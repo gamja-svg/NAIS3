@@ -1,3 +1,4 @@
+import { isSceneReferencesOff } from '../scenes/repo'
 import { effectiveGenerationStrength } from '../../shared/anlas'
 import {
   anlasGuardEnabled,
@@ -74,15 +75,18 @@ export function requestCharge(
       : request.model
   // 생성 파이프라인과 같이, 보낼 모델 기준으로 실제 전송될 레퍼런스만 센다
   const hasMask = Boolean(source?.maskBase64)
-  const charRefCount = referencesSentFor(model, hasMask)
-    ? sentReferenceCount(
-        (request.charRefIds ? charRefRowsByIds(request.charRefIds) : enabledCharRefRows()).map(
-          (row) => row.refType as CharRefType
-        ),
-        model,
-        hasMask
-      )
-    : 0
+  // [custom] 레퍼런스를 끈 씬은 세지 않는다 (index.ts와 같은 규칙)
+  const referencesOff = request.sceneId !== undefined && isSceneReferencesOff(request.sceneId)
+  const charRefCount =
+    referencesSentFor(model, hasMask) && !referencesOff
+      ? sentReferenceCount(
+          (request.charRefIds ? charRefRowsByIds(request.charRefIds) : enabledCharRefRows()).map(
+            (row) => row.refType as CharRefType
+          ),
+          model,
+          hasMask
+        )
+      : 0
   return generationCharge(
     {
       model,

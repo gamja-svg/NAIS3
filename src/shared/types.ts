@@ -496,6 +496,8 @@ export interface Scene {
   memo?: string
   /** [custom] 씬별 투명 배경 — 켠 씬은 사이드바 설정과 상관없이 투명 배경으로 뽑는다 (V5 모델) */
   transparent?: boolean
+  /** [custom] 씬별 레퍼런스 끄기 — 켜면 이 씬은 정밀 레퍼런스를 보내지 않는다 */
+  referencesOff?: boolean
 }
 
 /** 씬 상세의 생성 이미지 (페이지네이션 단위) */
@@ -1082,6 +1084,8 @@ export interface IpcInvokeMap {
     res: void
   }
   'custom:sceneNegativeOff': { req: { id: number; off: boolean }; res: void }
+  /** [custom] 씬별 레퍼런스 끄기·켜기 */
+  'custom:sceneReferencesOff': { req: { id: number; off: boolean }; res: void }
   /** [custom] 씬별 투명 배경 켜기·끄기 */
   'custom:sceneTransparent': { req: { id: number; on: boolean }; res: void }
   /** [custom] 미생성인 씬이 바뀌기 전 내용 — 바뀐 태그를 노랗게 칠하는 기준 (없으면 null) */

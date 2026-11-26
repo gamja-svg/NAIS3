@@ -2131,10 +2131,10 @@ index 0000000000000000000000000000000000000000..24c95625f75c8a73caab59128c580cd6
 +}
 diff --git a/src/main/custom/watch-folder.ts b/src/main/custom/watch-folder.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..cce04a9f6ee385be85157e5c10de59899c60ebcd
+index 0000000000000000000000000000000000000000..8db5be8c32fc5cdf71d945fee5f62447e8179c8f
 --- /dev/null
 +++ b/src/main/custom/watch-folder.ts
-@@ -0,0 +1,283 @@
+@@ -0,0 +1,289 @@
 +import { readFileSync, readdirSync, statSync } from 'fs'
 +import { basename, extname, join } from 'path'
 +import type { WatchFolderConfig, WatchFolderEvent, WatchFolderFailure } from '../../shared/types'
@@ -2142,6 +2142,7 @@ index 0000000000000000000000000000000000000000..cce04a9f6ee385be85157e5c10de5989
 +import { parseSceneImport } from '../scenes/import-formats'
 +import { applyImportedScenes, createPreset, listPresets } from '../scenes/repo'
 +import { isWatchRequestFile, isWatchResultFile } from './top-set'
++import { writeWatchImportResult } from './watch-result'
 +
 +/**
 + * [custom] 감시 폴더 — 지정한 폴더(하위 폴더 포함)에 씬 JSON이 새로 생기거나 바뀌면 자동으로 불러온다.
@@ -2384,7 +2385,12 @@ index 0000000000000000000000000000000000000000..cce04a9f6ee385be85157e5c10de5989
 +    }
 +    seen.delete(file)
 +    if (isWatchRequestFile(file)) requestHandler?.(dir, file)
-+    else events.push(importWatchFile(dir, file))
++    else {
++      const event = importWatchFile(dir, file)
++      // 씬 JSON 옆에 결과 파일을 남긴다 — 자동 생성이 돌면 씬마다의 결과가 여기에 더해진다
++      writeWatchImportResult(dir, event)
++      events.push(event)
++    }
 +    processed[file] = signature
 +    dirty = true
 +  }
@@ -2417,6 +2423,71 @@ index 0000000000000000000000000000000000000000..cce04a9f6ee385be85157e5c10de5989
 +  timer = undefined
 +  seen.clear()
 +  done = null
++}
+diff --git a/src/main/custom/watch-result.ts b/src/main/custom/watch-result.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..5fa45fd8ae3763249fea6592c9558229cb30d052
+--- /dev/null
++++ b/src/main/custom/watch-result.ts
+@@ -0,0 +1,59 @@
++import { existsSync, readFileSync, writeFileSync } from 'fs'
++import { join, normalize, resolve, sep } from 'path'
++import type { WatchFolderEvent, WatchGenerationReport } from '../../shared/types'
++import { getScene } from '../scenes/repo'
++
++/**
++ * [custom] 감시 폴더의 씬 JSON 결과 파일 — `이름.json` 옆에 `이름.result.json`을 남긴다.
++ * 불러오기 결과(프리셋·추가·수정 수, 다시 뽑을 씬)를 먼저 쓰고, 자동 생성이 돌면 씬마다
++ * 뽑힘/실패/막힘과 이유를 `generation`에 채운다 — 화면을 못 보는 Claude가 읽고 확인할 수 있게.
++ */
++const RESULT_SUFFIX = '.result.json'
++
++/** 결과 파일 경로 — 감시 폴더 밖으로 나가는 이름은 null */
++function resultPath(dir: string, file: string): string | null {
++  if (!file.toLowerCase().endsWith('.json')) return null
++  const root = resolve(dir)
++  const out = normalize(join(root, file.slice(0, -'.json'.length) + RESULT_SUFFIX))
++  return out.startsWith(root + sep) ? out : null
++}
++
++function write(path: string, body: Record<string, unknown>): void {
++  try {
++    writeFileSync(path, JSON.stringify(body, null, 2) + '\n', 'utf8')
++  } catch {
++    // 결과 파일을 못 써도 불러오기·생성은 그대로다
++  }
++}
++
++/** 불러오기 직후 — 결과 파일을 새로 쓴다 (전의 generation은 지운다) */
++export function writeWatchImportResult(dir: string, event: WatchFolderEvent): void {
++  // 씬 JSON이 아닌 파일(다른 프로그램의 JSON)에는 결과 파일을 남기지 않는다
++  if (!event.ok && event.reason === 'unrecognized') return
++  const path = resultPath(dir, event.file)
++  if (!path) return
++  const { sceneIds, ...rest } = event
++  write(path, {
++    ...rest,
++    // 다시 뽑을 씬 (새로 들어왔거나 내용이 바뀐 씬) — 자동 생성이 켜져 있으면 이 씬들을 뽑는다
++    ...(sceneIds ? { changedScenes: sceneIds.map((id) => getScene(id)?.name ?? `#${id}`) } : {}),
++    finishedAt: new Date().toISOString()
++  })
++}
++
++/** 자동 생성의 진행·결과를 결과 파일의 `generation`에 적는다 */
++export function writeWatchGenerationReport(
++  dir: string,
++  file: string,
++  report: WatchGenerationReport
++): void {
++  const path = dir ? resultPath(dir, file) : null
++  if (!path) return
++  let body: Record<string, unknown> = { file }
++  try {
++    if (existsSync(path)) body = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>
++  } catch {
++    // 깨진 결과 파일은 새로 쓴다
++  }
++  write(path, { ...body, generation: { ...report, updatedAt: new Date().toISOString() } })
 +}
 diff --git a/src/main/images/storage.ts b/src/main/images/storage.ts
 index 80c405dfd3ac1ab2e960e47fac7a1bd2cb4a1647..ce2cca38fdbcfb7215f694d1e485bfd8d8957d68 100644
@@ -2560,7 +2631,7 @@ index 7e02c46492ba14bc70eed22d1170156fbef9ba83..a6a32473f5c6e24b036ff3c6c71264c1
      enabled: getSetting('gen_delay_random_enabled') === '1',
      minusMs: Number.isFinite(savedDelayMinus) ? savedDelayMinus : 0,
 diff --git a/src/main/ipc.ts b/src/main/ipc.ts
-index a4f58395a2cae0e254fedaed86ad518faf584339..1437f9d67c2e559790cee15cdf580f6046a00fdf 100644
+index a4f58395a2cae0e254fedaed86ad518faf584339..11d06734fa540cf52c2dc0c5a31d52a1992c6282 100644
 --- a/src/main/ipc.ts
 +++ b/src/main/ipc.ts
 @@ -107,6 +107,12 @@ import {
@@ -2576,10 +2647,11 @@ index a4f58395a2cae0e254fedaed86ad518faf584339..1437f9d67c2e559790cee15cdf580f60
    deleteScene,
    reorderScenes,
    setReserveAll,
-@@ -129,6 +135,40 @@ import {
+@@ -129,6 +135,41 @@ import {
    importScenesJson,
    exportZip
  } from './scenes/repo'
++import { writeWatchGenerationReport } from './custom/watch-result'
 +import {
 +  getWatchFolderConfig,
 +  setWatchFolderDir,
@@ -2617,7 +2689,7 @@ index a4f58395a2cae0e254fedaed86ad518faf584339..1437f9d67c2e559790cee15cdf580f60
  import {
    listPromptPresets,
    createPromptPreset,
-@@ -188,7 +228,7 @@ import {
+@@ -188,7 +229,7 @@ import {
    scenesRoot
  } from './images/storage'
  import { copyFileSync, existsSync, readFileSync, writeFileSync } from 'fs'
@@ -2626,7 +2698,7 @@ index a4f58395a2cae0e254fedaed86ad518faf584339..1437f9d67c2e559790cee15cdf580f60
  import sharp from './sharp'
  import { verifyToken } from './nai/client'
  import { t } from './i18n'
-@@ -320,6 +360,7 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
+@@ -320,6 +361,7 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
        reason: 'added',
        label: account.label
      })
@@ -2634,7 +2706,7 @@ index a4f58395a2cae0e254fedaed86ad518faf584339..1437f9d67c2e559790cee15cdf580f60
      return { ...result, accountId: account.id, label: account.label }
    })
    handle('nai:setActiveAccount', async ({ id }) => {
-@@ -350,6 +391,7 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
+@@ -350,6 +392,7 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
        () => {
          const activeId = deleteNaiAccount(id)
          broadcast('nai:accountChanged', { accountId: activeId, reason: 'deleted' })
@@ -2642,7 +2714,7 @@ index a4f58395a2cae0e254fedaed86ad518faf584339..1437f9d67c2e559790cee15cdf580f60
          return { activeId, locked: false, lockReason: null }
        },
        (lockReason) => ({ activeId: null, locked: true, lockReason })
-@@ -566,6 +608,12 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
+@@ -566,6 +609,12 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
    handle('scenes:delete', ({ id }) => {
      deleteScene(id)
    })
@@ -2655,7 +2727,7 @@ index a4f58395a2cae0e254fedaed86ad518faf584339..1437f9d67c2e559790cee15cdf580f60
    handle('scenes:reorder', ({ ids }) => {
      reorderScenes(ids)
    })
-@@ -645,7 +693,123 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
+@@ -645,7 +694,126 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
  
    handle('scenes:exportJson', async ({ presetId }) => ({ saved: await exportScenesJson(presetId) }))
    handle('scenes:importJson', ({ presetId }) => importScenesJson(presetId))
@@ -2730,6 +2802,9 @@ index a4f58395a2cae0e254fedaed86ad518faf584339..1437f9d67c2e559790cee15cdf580f60
 +  handle('custom:sceneReferencesOff', ({ id, off }) => {
 +    setSceneReferencesOff(id, off)
 +  })
++  handle('custom:watchGenerationReport', ({ file, report }) =>
++    writeWatchGenerationReport(getWatchFolderConfig().dir, file, report)
++  )
 +  handle('custom:sceneTransparent', ({ id, on }) => {
 +    setSceneTransparent(id, on)
 +  })
@@ -2779,7 +2854,7 @@ index a4f58395a2cae0e254fedaed86ad518faf584339..1437f9d67c2e559790cee15cdf580f60
  
    handle('settings:get', ({ key }) => ({ value: getSetting(key) }))
    handle('settings:set', ({ key, value }) => {
-@@ -731,19 +895,36 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
+@@ -731,19 +899,36 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
      if (isUnderImagesRoot(filePath)) shell.showItemInFolder(filePath)
    })
  
@@ -2820,7 +2895,7 @@ index a4f58395a2cae0e254fedaed86ad518faf584339..1437f9d67c2e559790cee15cdf580f60
      else copyFileSync(filePath, result.filePath)
      return { saved: true }
    })
-@@ -1125,6 +1306,13 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
+@@ -1125,6 +1310,13 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
    })
  
    bindSceneReservationRecovery(ctx.queue, () => broadcast('scenes:reservationsChanged', {}))
@@ -2872,7 +2947,7 @@ index 9433dfb9a60c3b3e22ea8ca68f8755c45fec72f8..312514c8d427e23b806296d804162ce1
      {
        model,
 diff --git a/src/main/queue/generation-queue.ts b/src/main/queue/generation-queue.ts
-index 73b903dbbf31ad3875454bb56ef8eb5dc47201f3..2155fd0bcb5952a075ae92646ccfc39faa759b17 100644
+index 73b903dbbf31ad3875454bb56ef8eb5dc47201f3..6addfb2acfaf26a8e093cec829db7ee7d463a83d 100644
 --- a/src/main/queue/generation-queue.ts
 +++ b/src/main/queue/generation-queue.ts
 @@ -11,6 +11,7 @@ import type {
@@ -2883,7 +2958,7 @@ index 73b903dbbf31ad3875454bb56ef8eb5dc47201f3..2155fd0bcb5952a075ae92646ccfc39f
    QueueHalt,
    QueueItem,
    QueueStatus,
-@@ -31,6 +32,22 @@ const MAX_RETRIES = 3
+@@ -31,6 +32,25 @@ const MAX_RETRIES = 3
  /** 백오프 기준·상한 (ms) — 실제 대기는 지수 백오프 + 지터, Retry-After가 더 크면 그걸 따름 */
  const RETRY_BASE_MS = 2000
  const RETRY_MAX_MS = 20000
@@ -2894,6 +2969,9 @@ index 73b903dbbf31ad3875454bb56ef8eb5dc47201f3..2155fd0bcb5952a075ae92646ccfc39f
 + * [custom] 동시 생성에서 계정 하나가 지금 뽑으면 안 될 때 생성 함수가 던진다
 + * (게이지 소진·Opus 아님·조회 실패). 큐는 그 계정을 retryAfterMs 동안 쉬게 하고 항목을 대기로 돌린다.
 + */
++/** [custom] Anlas 가드에 막힌 계정이 쉬는 시간 — 지나면 다시 물어본다 (날이 바뀌면 풀릴 수 있다) */
++const GUARD_PAUSE_MS = 10 * 60_000
++
 +export class LanePauseError extends Error {
 +  constructor(
 +    readonly reason: LanePauseReason,
@@ -2906,7 +2984,7 @@ index 73b903dbbf31ad3875454bb56ef8eb5dc47201f3..2155fd0bcb5952a075ae92646ccfc39f
  
  export class GenerationQueue extends EventEmitter {
    private items = new Map<string, QueueItem>()
-@@ -43,12 +60,21 @@ export class GenerationQueue extends EventEmitter {
+@@ -43,12 +63,21 @@ export class GenerationQueue extends EventEmitter {
      minusMs: 0,
      plusMs: 0
    }
@@ -2929,7 +3007,7 @@ index 73b903dbbf31ad3875454bb56ef8eb5dc47201f3..2155fd0bcb5952a075ae92646ccfc39f
      ) => Promise<string>,
      private readonly random: () => number = Math.random
    ) {
-@@ -61,6 +87,7 @@ export class GenerationQueue extends EventEmitter {
+@@ -61,6 +90,7 @@ export class GenerationQueue extends EventEmitter {
      randomCharacterPrompts: readonly CharacterPromptInput[] = []
    ): string[] {
      const ids: string[] = []
@@ -2937,7 +3015,7 @@ index 73b903dbbf31ad3875454bb56ef8eb5dc47201f3..2155fd0bcb5952a075ae92646ccfc39f
      for (let i = 0; i < count; i++) {
        const id = randomUUID()
        // 배치는 장마다 시드+i — 같은 시드 N장(동일 그림 N장) 방지, 시드 고정 시에도 각 장 재현 가능
-@@ -68,7 +95,7 @@ export class GenerationQueue extends EventEmitter {
+@@ -68,7 +98,7 @@ export class GenerationQueue extends EventEmitter {
          i === 0 ? request : { ...request, seed: (request.seed + i) % 4294967296 }
        const req = applyRandomCharacterPrompt(seededRequest, randomCharacterPrompts)
        // Each item owns its request object so detachDeletedScenes can edit one item in place.
@@ -2946,7 +3024,7 @@ index 73b903dbbf31ad3875454bb56ef8eb5dc47201f3..2155fd0bcb5952a075ae92646ccfc39f
        ids.push(id)
      }
      this.emitChanged()
-@@ -85,11 +112,13 @@ export class GenerationQueue extends EventEmitter {
+@@ -85,11 +115,13 @@ export class GenerationQueue extends EventEmitter {
      if (reservations && reservations.length !== requests.length) {
        throw new Error('Reservation count must match request count')
      }
@@ -2961,7 +3039,7 @@ index 73b903dbbf31ad3875454bb56ef8eb5dc47201f3..2155fd0bcb5952a075ae92646ccfc39f
      }))
      try {
        for (const item of entries) this.items.set(item.id, item)
-@@ -167,19 +196,70 @@ export class GenerationQueue extends EventEmitter {
+@@ -167,19 +199,70 @@ export class GenerationQueue extends EventEmitter {
    }
  
    status(): QueueStatus {
@@ -3036,7 +3114,7 @@ index 73b903dbbf31ad3875454bb56ef8eb5dc47201f3..2155fd0bcb5952a075ae92646ccfc39f
          next.state = 'generating'
          const controller = new AbortController()
          this.controllers.set(next.id, controller)
-@@ -220,6 +300,89 @@ export class GenerationQueue extends EventEmitter {
+@@ -220,6 +303,110 @@ export class GenerationQueue extends EventEmitter {
      } finally {
        this.running = false
        this.emitChanged()
@@ -3089,10 +3167,31 @@ index 73b903dbbf31ad3875454bb56ef8eb5dc47201f3..2155fd0bcb5952a075ae92646ccfc39f
 +            delete next.laneAccountId
 +            this.lanePause.set(lane, { until: Date.now() + e.retryAfterMs, reason: e.reason })
 +          } else if (!controller.signal.aborted && isHaltError(e)) {
-+            // 보내기 전에 막힌 요청(Anlas 가드) — 한 장씩과 같이 취소로 돌리고 남은 예약도 멈춘다
-+            next.state = 'cancelled'
-+            next.error = e.message
-+            halt = e.message
++            // 보내기 전에 막힌 요청(Anlas 가드). 가드는 계정마다 판정하므로(오늘 쓴 Anlas·게이지가 다르다)
++            // 다른 계정이 뽑을 수 있으면 이 계정만 쉬게 하고 항목을 돌려준다 — 전에는 한 계정이 막히면
++            // 남은 예약을 전부 취소해, 감시 폴더 자동 생성이 몇 장만 뽑히고 조용히 멈췄다.
++            const elsewhere =
++              next.accountId !== lane &&
++              lanes.some((other) => {
++                if (other === lane) return false
++                const otherPause = this.lanePause.get(other)
++                return !(
++                  otherPause &&
++                  otherPause.reason === 'guard' &&
++                  otherPause.until > Date.now()
++                )
++              })
++            if (elsewhere) {
++              paused = new LanePauseError('guard', GUARD_PAUSE_MS)
++              next.state = 'pending'
++              delete next.laneAccountId
++              this.lanePause.set(lane, { until: Date.now() + GUARD_PAUSE_MS, reason: 'guard' })
++            } else {
++              // 뽑을 계정이 없다 — 한 장씩과 같이 취소로 돌리고 남은 예약도 멈춘다
++              next.state = 'cancelled'
++              next.error = e.message
++              halt = e.message
++            }
 +          } else if (controller.signal.aborted || isAbortError(e)) {
 +            next.state = 'cancelled'
 +            this.emit('cancelled', [next])
@@ -3126,7 +3225,7 @@ index 73b903dbbf31ad3875454bb56ef8eb5dc47201f3..2155fd0bcb5952a075ae92646ccfc39f
      }
    }
  
-@@ -228,11 +391,15 @@ export class GenerationQueue extends EventEmitter {
+@@ -228,11 +415,15 @@ export class GenerationQueue extends EventEmitter {
     * 재시도 대기 중엔 retrying 플래그로 UI에 알린다 (state는 'generating' 유지).
     * 같은 controller를 재시도 내내 공유하므로 대기 중 취소도 정상 반영된다.
     */
@@ -3144,7 +3243,7 @@ index 73b903dbbf31ad3875454bb56ef8eb5dc47201f3..2155fd0bcb5952a075ae92646ccfc39f
        } catch (e) {
          if (signal.aborted || isAbortError(e)) throw e
          if (attempt >= MAX_RETRIES || !isRetryableError(e)) throw e
-@@ -258,6 +425,16 @@ export class GenerationQueue extends EventEmitter {
+@@ -258,6 +449,16 @@ export class GenerationQueue extends EventEmitter {
      return undefined
    }
  
@@ -5716,10 +5815,10 @@ index 0000000000000000000000000000000000000000..342cd4c27920325bb7ff955662e33c77
 +}
 diff --git a/src/renderer/src/components/custom-lane-tabs.tsx b/src/renderer/src/components/custom-lane-tabs.tsx
 new file mode 100644
-index 0000000000000000000000000000000000000000..f9c03239aa3b8b66688fd1511b9afc06832cf07c
+index 0000000000000000000000000000000000000000..e3de06dd75257af736320bd6377a195c961578b3
 --- /dev/null
 +++ b/src/renderer/src/components/custom-lane-tabs.tsx
-@@ -0,0 +1,104 @@
+@@ -0,0 +1,105 @@
 +import { displayOpusUsagePercent } from '@shared/anlas'
 +import type { MessageId } from '@shared/i18n'
 +import type { QueueLane } from '@shared/types'
@@ -5731,7 +5830,8 @@ index 0000000000000000000000000000000000000000..f9c03239aa3b8b66688fd1511b9afc06
 +  exhausted: 'ui.customLanePausedExhausted',
 +  noAnlas: 'ui.customLanePausedNoAnlas',
 +  notOpus: 'ui.customLanePausedNotOpus',
-+  unknown: 'ui.customLanePausedUnknown'
++  unknown: 'ui.customLanePausedUnknown',
++  guard: 'ui.customLanePausedGuard'
 +}
 +
 +/**
@@ -9575,6 +9675,148 @@ index 0000000000000000000000000000000000000000..0613e8c3db57ca1e9572c87255b4112c
 +    window.removeEventListener('click', onClick, true)
 +  }
 +}
+diff --git a/src/renderer/src/lib/custom-watch-generation.ts b/src/renderer/src/lib/custom-watch-generation.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..d6f2c2ac74dc809a5163aec56bb298c44aa29a3a
+--- /dev/null
++++ b/src/renderer/src/lib/custom-watch-generation.ts
+@@ -0,0 +1,136 @@
++import type {
++  GenerationRequest,
++  QueueItem,
++  WatchGenerationReport,
++  WatchGenerationScene
++} from '@shared/types'
++
++/**
++ * [custom] 감시 폴더 자동 생성 — 바뀐 씬을 한 장씩 예약하고, 끝날 때까지 지켜보며 씬마다의 결과를
++ * 결과 파일에 남긴다. 실패한 씬은 다시 예약한다 (가드에 막히거나 취소된 씬은 다시 하지 않는다).
++ */
++export interface WatchJob {
++  scene: string
++  request: GenerationRequest
++}
++
++export interface WatchGenerationDeps {
++  enqueue: (request: GenerationRequest) => Promise<{ ids: string[]; blocked?: string }>
++  status: () => Promise<{ items: QueueItem[] }>
++  report: (report: WatchGenerationReport) => Promise<void>
++  sleep: (ms: number) => Promise<void>
++  /** 큐가 멈춘 마지막 이유 (Anlas 가드) — 취소된 씬의 이유로 적는다 */
++  haltReason: () => string | null
++}
++
++/** 실패한 씬을 다시 뽑는 횟수 (처음 한 번 + 이만큼) */
++export const WATCH_RETRIES = 2
++const POLL_MS = 2000
++/** 이만큼 지나도 안 끝난 씬은 확인 못 함으로 적고 지켜보기를 끝낸다 */
++const GIVE_UP_MS = 2 * 60 * 60_000
++
++interface Tracked extends WatchGenerationScene {
++  id: string | null
++  request: GenerationRequest
++}
++
++function summary(tracked: Tracked[], done: boolean): WatchGenerationReport {
++  return {
++    done,
++    generated: tracked.filter((s) => s.state === 'generated').length,
++    failed: tracked.filter(
++      (s) => s.state !== 'generated' && s.state !== 'queued' && s.state !== 'generating'
++    ).length,
++    scenes: tracked.map(({ scene, state, reason, tries, image }) => ({
++      scene,
++      state,
++      tries,
++      ...(reason ? { reason } : {}),
++      ...(image ? { image } : {})
++    }))
++  }
++}
++
++const baseName = (path: string): string => path.split(/[\\/]/).pop() ?? path
++
++export async function runWatchGeneration(
++  jobs: WatchJob[],
++  deps: WatchGenerationDeps,
++  now: () => number = Date.now
++): Promise<WatchGenerationReport> {
++  const tracked: Tracked[] = jobs.map((job) => ({
++    scene: job.scene,
++    request: job.request,
++    id: null,
++    state: 'queued',
++    tries: 0
++  }))
++  const book = async (scene: Tracked): Promise<void> => {
++    scene.tries++
++    try {
++      const result = await deps.enqueue(scene.request)
++      if (result.ids.length > 0) {
++        scene.id = result.ids[0]
++        scene.state = 'queued'
++        delete scene.reason
++      } else {
++        scene.id = null
++        scene.state = 'blocked'
++        scene.reason = result.blocked ?? ''
++      }
++    } catch (error) {
++      scene.id = null
++      scene.state = 'failed'
++      scene.reason = error instanceof Error ? error.message : String(error)
++    }
++  }
++  for (const scene of tracked) await book(scene)
++  await deps.report(summary(tracked, false))
++
++  const started = now()
++  let written = JSON.stringify(summary(tracked, false))
++  for (;;) {
++    const open = tracked.filter(
++      (s) => s.id !== null && (s.state === 'queued' || s.state === 'generating')
++    )
++    if (open.length === 0) break
++    if (now() - started > GIVE_UP_MS) {
++      for (const scene of open) {
++        scene.state = 'unknown'
++        scene.reason = 'timeout'
++      }
++      break
++    }
++    await deps.sleep(POLL_MS)
++    const items = new Map((await deps.status()).items.map((item) => [item.id, item]))
++    for (const scene of open) {
++      const item = items.get(scene.id as string)
++      if (!item) {
++        // 끝난 기록에서도 밀려난 항목 — 결과를 알 수 없다
++        scene.state = 'unknown'
++        scene.reason = 'lost'
++      } else if (item.state === 'pending') scene.state = 'queued'
++      else if (item.state === 'generating') scene.state = 'generating'
++      else if (item.state === 'done') {
++        scene.state = 'generated'
++        if (item.filePath) scene.image = baseName(item.filePath)
++      } else if (item.state === 'cancelled') {
++        scene.state = 'cancelled'
++        scene.reason = item.error ?? deps.haltReason() ?? ''
++      } else {
++        // 실패 — 몇 번은 다시 예약한다
++        scene.reason = item.error ?? ''
++        if (scene.tries <= WATCH_RETRIES) await book(scene)
++        else scene.state = 'failed'
++      }
++    }
++    const next = JSON.stringify(summary(tracked, false))
++    if (next !== written) {
++      written = next
++      await deps.report(summary(tracked, false))
++    }
++  }
++  const final = summary(tracked, true)
++  await deps.report(final)
++  return final
++}
 diff --git a/src/renderer/src/lib/folder-list.ts b/src/renderer/src/lib/folder-list.ts
 index 900c06c586fa56f7d7d4ca4000a0b74eed13b42e..d3e714f6a512c4564c2c35a0aa17ab9be6663aea 100644
 --- a/src/renderer/src/lib/folder-list.ts
@@ -10391,10 +10633,11 @@ index 0000000000000000000000000000000000000000..586b2083b2781ba53c25c573a80dcbb9
 +  }
 +})
 diff --git a/src/renderer/src/stores/scenes-store.ts b/src/renderer/src/stores/scenes-store.ts
-index 7edbfbb0004cf4774d2461aa35cb9570102797aa..37385d8a4553cb7a485fd74c04207b9c905ec542 100644
+index 7edbfbb0004cf4774d2461aa35cb9570102797aa..c7ee1f0a20c7edd9684d7997dfcaa3afa9acb310 100644
 --- a/src/renderer/src/stores/scenes-store.ts
 +++ b/src/renderer/src/stores/scenes-store.ts
-@@ -1,13 +1,38 @@
+@@ -1,13 +1,40 @@
++import { runWatchGeneration } from '../lib/custom-watch-generation'
  import { create } from 'zustand'
  import { applySceneRequest } from '@shared/scene-request'
 +import { WATCH_AUTOGEN_KEY, WATCH_AUTOGEN_LIMIT, canAutoGenerate } from '@shared/custom-watch'
@@ -10411,7 +10654,8 @@ index 7edbfbb0004cf4774d2461aa35cb9570102797aa..37385d8a4553cb7a485fd74c04207b9c
 +  SceneCast,
 +  SceneImage,
 +  ScenePreset,
-+  WatchFolderFailure
++  WatchFolderFailure,
++  WatchGenerationReport
 +} from '@shared/types'
  import { enabledCharacters, useCharactersStore } from './characters-store'
 +import { useFragmentNegativeStore } from './custom-fragment-negative-store'
@@ -10434,7 +10678,7 @@ index 7edbfbb0004cf4774d2461aa35cb9570102797aa..37385d8a4553cb7a485fd74c04207b9c
  const PAGE = 80 // 씬 상세 이미지 페이지 크기 (수만 장 대비: 한 번에 전부 로드 금지)
  let reserving = false
  let loadSeq = 0 // load() 비동기 응답 순서 보장용
-@@ -33,12 +58,29 @@ interface ScenesState {
+@@ -33,12 +60,29 @@ interface ScenesState {
  
    loadPresets: () => Promise<void>
    setActivePreset: (id: number) => Promise<void>
@@ -10464,7 +10708,7 @@ index 7edbfbb0004cf4774d2461aa35cb9570102797aa..37385d8a4553cb7a485fd74c04207b9c
  
    load: () => Promise<void>
    select: (id: number | null) => void
-@@ -76,6 +118,8 @@ interface ScenesState {
+@@ -76,6 +120,8 @@ interface ScenesState {
    /** 예약 수 직접 지정 — 배지 숫자를 클릭해 입력 (배치 단위 증감과 달리 입력값 그대로) */
    setReserve: (id: number, count: number) => Promise<void>
    adjustReserveAll: (delta: number) => Promise<void>
@@ -10473,7 +10717,7 @@ index 7edbfbb0004cf4774d2461aa35cb9570102797aa..37385d8a4553cb7a485fd74c04207b9c
    clearReserveAll: () => Promise<void>
  
    // 편집 모드 일괄
-@@ -102,6 +146,16 @@ interface ScenesState {
+@@ -102,6 +148,16 @@ interface ScenesState {
    /** 프리셋 캐릭터 바인드 (null = 해제) */
    /** 이 씬 1장 바로 생성 (예약 없이 — NAIS2식 즉석 생성) */
    generateOne: (sceneId: number) => Promise<void>
@@ -10490,7 +10734,7 @@ index 7edbfbb0004cf4774d2461aa35cb9570102797aa..37385d8a4553cb7a485fd74c04207b9c
  }
  
  /**
-@@ -171,9 +225,32 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
+@@ -171,9 +227,32 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
      }
      await get().load()
    },
@@ -10524,7 +10768,7 @@ index 7edbfbb0004cf4774d2461aa35cb9570102797aa..37385d8a4553cb7a485fd74c04207b9c
      await get().load()
    },
    createPreset: async (name) => {
-@@ -194,6 +271,41 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
+@@ -194,6 +273,41 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
      set({ presets: ids.map((pid) => byId.get(pid)!).filter(Boolean) })
      await window.nais.invoke('scenePresets:reorder', { ids })
    },
@@ -10566,7 +10810,7 @@ index 7edbfbb0004cf4774d2461aa35cb9570102797aa..37385d8a4553cb7a485fd74c04207b9c
    setPresetDefaultResolution: async (id, width, height) => {
      set({
        presets: get().presets.map((p) =>
-@@ -256,7 +368,17 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
+@@ -256,7 +370,17 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
      await get().load()
    },
    update: async (id, patch) => {
@@ -10585,7 +10829,7 @@ index 7edbfbb0004cf4774d2461aa35cb9570102797aa..37385d8a4553cb7a485fd74c04207b9c
      await window.nais.invoke('scenes:update', {
        id,
        patch: {
-@@ -322,6 +444,25 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
+@@ -322,6 +446,25 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
      await window.nais.invoke('scenes:setReserves', { id, reserves })
      void get().refreshReservedTotal()
    },
@@ -10611,7 +10855,7 @@ index 7edbfbb0004cf4774d2461aa35cb9570102797aa..37385d8a4553cb7a485fd74c04207b9c
    adjustReserveAll: async (delta) => {
      const castId = get().activeCastId
      const step = delta * (useGenerationStore.getState().batchCount || 1)
-@@ -402,8 +543,14 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
+@@ -402,8 +545,14 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
        scenes: get().scenes.map((s) =>
          s.id === sceneId
            ? s.hasFavorite
@@ -10628,7 +10872,7 @@ index 7edbfbb0004cf4774d2461aa35cb9570102797aa..37385d8a4553cb7a485fd74c04207b9c
            : s
        )
      }),
-@@ -447,6 +594,8 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
+@@ -447,6 +596,8 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
      // 씬 상세의 명시적 삭제 — 파일까지 삭제 (히스토리 삭제와 달리)
      await window.nais.invoke('images:delete', { id: imageId, deleteFile: true })
      void gen.refreshHistory()
@@ -10637,7 +10881,7 @@ index 7edbfbb0004cf4774d2461aa35cb9570102797aa..37385d8a4553cb7a485fd74c04207b9c
    },
    setFavoritesOnly: (v) => {
      if (v === get().favoritesOnly) return
-@@ -506,6 +655,53 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
+@@ -506,6 +657,53 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
      if (blocked) toast(blocked, 'error')
    },
  
@@ -10691,27 +10935,37 @@ index 7edbfbb0004cf4774d2461aa35cb9570102797aa..37385d8a4553cb7a485fd74c04207b9c
    // ── 출연(Cast) ──────────────────────────────────────────
    casts: [],
    activeCastId: localStorage.getItem('scene_active_cast') ?? '',
-@@ -602,6 +798,45 @@ export async function loadCasts(): Promise<void> {
+@@ -602,6 +800,63 @@ export async function loadCasts(): Promise<void> {
    if (st.activeCastId && !st.casts.some((c) => c.id === st.activeCastId)) st.setActiveCast('')
  }
  
++/** [custom] 큐가 멈춘 마지막 이유 — 자동 생성 결과 파일에 취소 이유로 적는다 */
++let queueHaltReason: string | null = null
++const lastQueueHaltReason = (): string | null => queueHaltReason
++
 +/**
 + * [custom] 감시 폴더가 바꾼 씬을 1장씩 자동 생성한다 (설정에서 켰을 때만).
 + * 지금 화면에 골라 둔 출연·사이드바 설정으로 뽑는다 — 손으로 씬 하나를 생성할 때와 같다.
++ * 씬마다의 결과(뽑힘·실패·막힘과 이유)는 씬 JSON 옆의 결과 파일에 남긴다.
 + */
 +async function autoGenerateWatched(
++  file: string,
 +  presetId: number | undefined,
 +  sceneIds: number[]
 +): Promise<void> {
 +  if (presetId == null || sceneIds.length === 0) return
++  const report = (body: WatchGenerationReport): Promise<void> =>
++    window.nais.invoke('custom:watchGenerationReport', { file, report: body }).catch(() => {})
++  const skip = (reason: string): Promise<void> =>
++    report({ done: true, skipped: reason, generated: 0, failed: 0, scenes: [] })
 +  try {
 +    const { value } = await window.nais.invoke('settings:get', { key: WATCH_AUTOGEN_KEY })
-+    if (value !== '1') return
++    if (value !== '1') return skip('autoGenerateOff')
 +    const status = await window.nais.invoke('queue:status', undefined)
 +    const pending = status.items.filter((i) => i.state === 'pending' || i.state === 'generating')
 +    if (!canAutoGenerate(sceneIds.length, pending.length)) {
 +      toast(t('ui.customWatchAutoGenSkippedValue', sceneIds.length, WATCH_AUTOGEN_LIMIT), 'error')
-+      return
++      return skip(`overLimit: ${sceneIds.length} + ${pending.length} > ${WATCH_AUTOGEN_LIMIT}`)
 +    }
 +    const wanted = new Set(sceneIds)
 +    const { items } = await window.nais.invoke('scenes:list', { presetId })
@@ -10719,28 +10973,40 @@ index 7edbfbb0004cf4774d2461aa35cb9570102797aa..37385d8a4553cb7a485fd74c04207b9c
 +    const cast =
 +      st.activeCastId === '' ? null : (st.casts.find((c) => c.id === st.activeCastId) ?? null)
 +    const base = buildCastRequest(cast)
-+    let count = 0
-+    for (const scene of items) {
-+      if (!wanted.has(scene.id)) continue
-+      await window.nais.invoke('queue:enqueue', {
-+        request: { ...applySceneRequest(base, scene), seed: sceneSeed(0) },
-+        count: 1
-+      })
-+      count++
-+    }
-+    if (count > 0) toast(t('ui.customWatchAutoGenStartedValue', count), 'info')
++    const jobs = items
++      .filter((scene) => wanted.has(scene.id))
++      .map((scene) => ({
++        scene: scene.name,
++        request: { ...applySceneRequest(base, scene), seed: sceneSeed(0) }
++      }))
++    if (jobs.length > 0) toast(t('ui.customWatchAutoGenStartedValue', jobs.length), 'info')
++    const done = await runWatchGeneration(jobs, {
++      enqueue: (request) => window.nais.invoke('queue:enqueue', { request, count: 1 }),
++      status: () => window.nais.invoke('queue:status', undefined),
++      report,
++      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
++      haltReason: lastQueueHaltReason
++    })
++    if (done.failed > 0)
++      toast(t('ui.customWatchAutoGenFailedValue', file, done.generated, done.failed), 'error')
 +  } catch (error) {
-+    toast(error instanceof Error ? error.message : String(error), 'error')
++    const message = error instanceof Error ? error.message : String(error)
++    toast(message, 'error')
++    await skip(`error: ${message}`)
 +  }
 +}
 +
  /**
   * 씬 생성 완료 이벤트 바인딩 (목록 썸네일/개수 + 열린 상세 이미지 갱신).
   * 대량 배치 시 이벤트가 쏟아지므로 디바운스로 DB 부하·리렌더를 줄인다.
-@@ -627,9 +862,84 @@ export function bindSceneEvents(): () => void {
+@@ -627,9 +882,89 @@ export function bindSceneEvents(): () => void {
      // Reservation-only changes must not increment image counts or replace thumbnails.
      void useScenesStore.getState().load()
    })
++  // [custom] 큐가 멈춘 이유를 기억해 둔다 (자동 생성 결과 파일용)
++  const offWatchHalt = window.nais.on('queue:halted', ({ reason }) => {
++    queueHaltReason = reason
++  })
 +  // [custom] 감시 폴더가 파일을 불러옴 — 결과를 알리고 목록을 다시 읽는다
 +  const offWatch = window.nais.on('custom:watchImported', (event) => {
 +    if (!event.ok) {
@@ -10766,7 +11032,7 @@ index 7edbfbb0004cf4774d2461aa35cb9570102797aa..37385d8a4553cb7a485fd74c04207b9c
 +    )
 +    const st = useScenesStore.getState()
 +    void (event.presetCreated ? st.loadPresets() : Promise.resolve()).then(() => st.load())
-+    void autoGenerateWatched(event.presetId, event.sceneIds ?? [])
++    void autoGenerateWatched(event.file, event.presetId, event.sceneIds ?? [])
 +  })
 +  // [custom] 감시 폴더의 요청 파일을 처리함 (Claude가 넣은 대표 세트 받기 요청 등)
 +  const offRequest = window.nais.on('custom:watchRequestDone', (event) => {
@@ -10818,6 +11084,7 @@ index 7edbfbb0004cf4774d2461aa35cb9570102797aa..37385d8a4553cb7a485fd74c04207b9c
      clearTimeout(timer)
      offImages()
      offReservations()
++    offWatchHalt()
 +    offWatch()
 +    offRequest()
    }
@@ -11079,10 +11346,10 @@ index 0000000000000000000000000000000000000000..8f0d7bf64f375a1bd16629489bc5653b
 +  return changed > 0 && changed + pending <= limit
 +}
 diff --git a/src/shared/i18n/catalog-en.ts b/src/shared/i18n/catalog-en.ts
-index d3170a752e386ce3fd15f6de6d70eefe3ccc1529..f70e7d852118612305ffa5086971bc2c19ce87ee 100644
+index d3170a752e386ce3fd15f6de6d70eefe3ccc1529..a2adc11e8d31573d43c44002dcbe3afc74cfdefd 100644
 --- a/src/shared/i18n/catalog-en.ts
 +++ b/src/shared/i18n/catalog-en.ts
-@@ -180,6 +180,239 @@ export const EN = {
+@@ -180,6 +180,241 @@ export const EN = {
    'ui.valueValueImages': '{0}: {1} {1|image|images}',
    'ui.duplicate': 'Duplicate',
    'ui.openFolder': 'Open folder',
@@ -11126,6 +11393,7 @@ index d3170a752e386ce3fd15f6de6d70eefe3ccc1529..f70e7d852118612305ffa5086971bc2c
 +  'ui.customLanePausedNoAnlas': 'Resting · not enough Anlas',
 +  'ui.customLanePausedNotOpus': 'Resting · not Opus',
 +  'ui.customLanePausedUnknown': 'Resting · check failed',
++  'ui.customLanePausedGuard': 'Paused · Anlas guard',
 +  'ui.customLaneDoneValue': '{0} this session',
 +  'ui.customLaneGaugeValue': 'Gauge {0}%',
 +  'ui.customParallelAccounts': 'Generate with several accounts at once',
@@ -11164,6 +11432,7 @@ index d3170a752e386ce3fd15f6de6d70eefe3ccc1529..f70e7d852118612305ffa5086971bc2c
 +  'ui.customWatchAutoGenerateHint':
 +    'Generates one image for each scene the watch folder added or changed, using the settings currently on screen. Nothing is generated when that plus the pending queue would exceed 30.',
 +  'ui.customWatchAutoGenStartedValue': 'Watch folder: auto-generating {0} changed scene(s)',
++  'ui.customWatchAutoGenFailedValue': '{0}: auto-generated {1}, {2} not generated (see the result file for why)',
 +  'ui.customWatchAutoGenSkippedValue':
 +    'Watch folder: not auto-generating — {0} changed scene(s) exceed the limit ({1}, including pending).',
 +  'ui.customClaudePanel': 'Claude window',
@@ -11322,7 +11591,7 @@ index d3170a752e386ce3fd15f6de6d70eefe3ccc1529..f70e7d852118612305ffa5086971bc2c
    'ui.queuedForCastValue': 'Queued for cast "{0}"',
    'ui.queuedWithSidebarSettings': 'Queued with sidebar settings',
    'ui.deletedCast': 'Deleted cast',
-@@ -319,6 +552,7 @@ export const EN = {
+@@ -319,6 +554,7 @@ export const EN = {
    'ui.anlasPaidReasonOpusUsage': 'V5 gauge empty or unknown',
    'ui.anlasPaidReasonResolution': 'resolution over 1024²',
    'ui.anlasPaidReasonSteps': 'over 28 steps',
@@ -11331,10 +11600,10 @@ index d3170a752e386ce3fd15f6de6d70eefe3ccc1529..f70e7d852118612305ffa5086971bc2c
    'ui.anlasPaidReasonVibeEncoding': 'new vibe encoding',
    'ui.anlasPaidReasonMultiVibe': '5 or more vibes',
 diff --git a/src/shared/i18n/catalog-ko.ts b/src/shared/i18n/catalog-ko.ts
-index 575b52a72a8eb7df2e568a3f5d9d7560d836826c..3281f78ecd75271572babe192287a72d6eb7a2d7 100644
+index 575b52a72a8eb7df2e568a3f5d9d7560d836826c..150b2ee4c4bbb64eeb2f632b289c88d5a7deaa2f 100644
 --- a/src/shared/i18n/catalog-ko.ts
 +++ b/src/shared/i18n/catalog-ko.ts
-@@ -178,6 +178,235 @@ export const KO = {
+@@ -178,6 +178,237 @@ export const KO = {
    'ui.valueValueImages': '{0} {1}장',
    'ui.duplicate': '복제',
    'ui.openFolder': '폴더 열기',
@@ -11379,6 +11648,7 @@ index 575b52a72a8eb7df2e568a3f5d9d7560d836826c..3281f78ecd75271572babe192287a72d
 +  'ui.customLanePausedNoAnlas': '쉬는 중 · Anlas 부족',
 +  'ui.customLanePausedNotOpus': '쉬는 중 · Opus 아님',
 +  'ui.customLanePausedUnknown': '쉬는 중 · 확인 실패',
++  'ui.customLanePausedGuard': '쉬는 중 · Anlas 가드',
 +  'ui.customLaneDoneValue': '이번에 {0}장',
 +  'ui.customLaneGaugeValue': '게이지 {0}%',
 +  'ui.customParallelAccounts': '여러 계정으로 동시에 생성',
@@ -11414,6 +11684,7 @@ index 575b52a72a8eb7df2e568a3f5d9d7560d836826c..3281f78ecd75271572babe192287a72d
 +  'ui.customWatchAutoGenerateHint':
 +    '감시 폴더가 추가하거나 바꾼 씬을 지금 화면의 설정으로 1장씩 생성합니다. 대기 중인 생성과 합쳐 30장을 넘으면 생성하지 않습니다.',
 +  'ui.customWatchAutoGenStartedValue': '감시 폴더: 바뀐 씬 {0}장 자동 생성 시작',
++  'ui.customWatchAutoGenFailedValue': '{0}: 자동 생성 {1}장 뽑힘 · {2}장 못 뽑음 (이유는 결과 파일에)',
 +  'ui.customWatchAutoGenSkippedValue':
 +    '감시 폴더: 자동 생성하지 않음 — 바뀐 씬 {0}장이 한도({1}장, 대기 중 포함)를 넘습니다.',
 +  'ui.customClaudePanel': 'Claude 창',
@@ -11570,7 +11841,7 @@ index 575b52a72a8eb7df2e568a3f5d9d7560d836826c..3281f78ecd75271572babe192287a72d
    'ui.queuedForCastValue': '"{0}" 출연 예약',
    'ui.queuedWithSidebarSettings': '사이드바 설정 예약',
    'ui.deletedCast': '삭제된 출연',
-@@ -313,6 +542,7 @@ export const KO = {
+@@ -313,6 +544,7 @@ export const KO = {
    'ui.anlasPaidReasonOpusUsage': 'V5 게이지 소진 또는 확인 실패',
    'ui.anlasPaidReasonResolution': '해상도 1024² 초과',
    'ui.anlasPaidReasonSteps': '스텝 28 초과',
@@ -11579,10 +11850,10 @@ index 575b52a72a8eb7df2e568a3f5d9d7560d836826c..3281f78ecd75271572babe192287a72d
    'ui.anlasPaidReasonVibeEncoding': '새 바이브 인코딩',
    'ui.anlasPaidReasonMultiVibe': '바이브 5개 이상',
 diff --git a/src/shared/i18n/catalog-zh-CN.ts b/src/shared/i18n/catalog-zh-CN.ts
-index 57078492bd2c9b83f1808a636fb5aad5c1d9a947..cc132eec7f3a57a6950011c367baab2539d8d00f 100644
+index 57078492bd2c9b83f1808a636fb5aad5c1d9a947..bdd5b4738c721631767d611773b0ff9990d289bb 100644
 --- a/src/shared/i18n/catalog-zh-CN.ts
 +++ b/src/shared/i18n/catalog-zh-CN.ts
-@@ -176,6 +176,224 @@ export const ZH_CN = {
+@@ -176,6 +176,226 @@ export const ZH_CN = {
    'ui.valueValueImages': '{0}：{1} 张',
    'ui.duplicate': '复制',
    'ui.openFolder': '打开文件夹',
@@ -11625,6 +11896,7 @@ index 57078492bd2c9b83f1808a636fb5aad5c1d9a947..cc132eec7f3a57a6950011c367baab25
 +  'ui.customLanePausedNoAnlas': '休息中 · Anlas 不足',
 +  'ui.customLanePausedNotOpus': '休息中 · 非 Opus',
 +  'ui.customLanePausedUnknown': '休息中 · 检查失败',
++  'ui.customLanePausedGuard': '暂停 · Anlas 守卫',
 +  'ui.customLaneDoneValue': '本次 {0} 张',
 +  'ui.customLaneGaugeValue': '额度 {0}%',
 +  'ui.customParallelAccounts': '多个账户同时生成',
@@ -11660,6 +11932,7 @@ index 57078492bd2c9b83f1808a636fb5aad5c1d9a947..cc132eec7f3a57a6950011c367baab25
 +  'ui.customWatchAutoGenerateHint':
 +    '监视文件夹新增或更改的场景会按当前界面的设置各生成 1 张。与等待中的任务合计超过 30 张时不会生成。',
 +  'ui.customWatchAutoGenStartedValue': '监视文件夹：开始自动生成 {0} 个已更改的场景',
++  'ui.customWatchAutoGenFailedValue': '{0}：自动生成 {1} 张 · {2} 张未生成（原因见结果文件）',
 +  'ui.customWatchAutoGenSkippedValue':
 +    '监视文件夹：未自动生成 — 已更改的 {0} 个场景超过上限（{1} 张，含等待中）。',
 +  'ui.customClaudePanel': 'Claude 窗口',
@@ -11807,7 +12080,7 @@ index 57078492bd2c9b83f1808a636fb5aad5c1d9a947..cc132eec7f3a57a6950011c367baab25
    'ui.queuedForCastValue': '已按角色组合「{0}」预约',
    'ui.queuedWithSidebarSettings': '已按左侧当前配置预约',
    'ui.deletedCast': '已删除的角色组合',
-@@ -310,6 +528,7 @@ export const ZH_CN = {
+@@ -310,6 +530,7 @@ export const ZH_CN = {
    'ui.anlasPaidReasonOpusUsage': 'V5 额度耗尽或无法确认',
    'ui.anlasPaidReasonResolution': '分辨率超过 1024²',
    'ui.anlasPaidReasonSteps': '步数超过 28',
@@ -11816,10 +12089,10 @@ index 57078492bd2c9b83f1808a636fb5aad5c1d9a947..cc132eec7f3a57a6950011c367baab25
    'ui.anlasPaidReasonVibeEncoding': '新的氛围编码',
    'ui.anlasPaidReasonMultiVibe': '5 组以上氛围',
 diff --git a/src/shared/types.ts b/src/shared/types.ts
-index a900f71b8301f7f6493e7a9bebdb0d19c801f6ff..5b4c8e28971d004e2ac6b6e27abeedefb28bb76a 100644
+index a900f71b8301f7f6493e7a9bebdb0d19c801f6ff..ad72f264e84aeeed7ae2b4c07678e7e4cc268624 100644
 --- a/src/shared/types.ts
 +++ b/src/shared/types.ts
-@@ -135,12 +135,44 @@ export interface QueueItem {
+@@ -135,12 +135,45 @@ export interface QueueItem {
    filePath?: string
    /** 전이성 오류(429/5xx 등)로 백오프 대기 중 — state는 'generating' 유지, UI 안내용 */
    retrying?: boolean
@@ -11841,7 +12114,8 @@ index a900f71b8301f7f6493e7a9bebdb0d19c801f6ff..5b4c8e28971d004e2ac6b6e27abeedef
 + * [custom] 동시 생성에서 계정이 쉬는 이유 — 게이지 소진 / 게이지 소진에 Anlas도 모자람 /
 + * Opus 아님 / 계정 상태 조회 실패
 + */
-+export type LanePauseReason = 'exhausted' | 'noAnlas' | 'notOpus' | 'unknown'
++// guard: Anlas 가드가 그 계정의 생성을 막음 (다른 계정은 이어서 뽑는다)
++export type LanePauseReason = 'exhausted' | 'noAnlas' | 'notOpus' | 'unknown' | 'guard'
 +
 +/** [custom] 동시 생성 계정(레인) 하나의 상태 */
 +export interface QueueLane {
@@ -11864,7 +12138,7 @@ index a900f71b8301f7f6493e7a9bebdb0d19c801f6ff..5b4c8e28971d004e2ac6b6e27abeedef
  }
  
  /** Anlas 가드가 요청을 막아 큐를 멈춤 — reason은 사용자에게 보일 이유, stopped는 함께 멈춘 대기 항목 수 */
-@@ -221,6 +253,22 @@ export interface ListFolder {
+@@ -221,6 +254,22 @@ export interface ListFolder {
  }
  export type CharacterFolder = ListFolder
  
@@ -11887,7 +12161,7 @@ index a900f71b8301f7f6493e7a9bebdb0d19c801f6ff..5b4c8e28971d004e2ac6b6e27abeedef
  /** 무채색 테마에 어울리는 채도 낮은 폴더 색 프리셋 */
  export const FOLDER_COLORS = [
    '#c47a72', // red
-@@ -256,6 +304,11 @@ export interface HistoryItem {
+@@ -256,6 +305,11 @@ export interface HistoryItem {
    kind: string
    seed: number | null
    createdAt: string
@@ -11899,7 +12173,7 @@ index a900f71b8301f7f6493e7a9bebdb0d19c801f6ff..5b4c8e28971d004e2ac6b6e27abeedef
  }
  
  /** 디렉터 툴 (augment-image req_type) */
-@@ -437,6 +490,14 @@ export interface Scene {
+@@ -437,6 +491,14 @@ export interface Scene {
    imageCount: number
    /** 즐겨찾기 보유 여부 — 카드 낙관적 썸네일 교체 억제용 (즐겨찾기가 썸네일 고정) */
    hasFavorite: boolean
@@ -11914,7 +12188,7 @@ index a900f71b8301f7f6493e7a9bebdb0d19c801f6ff..5b4c8e28971d004e2ac6b6e27abeedef
  }
  
  /** 씬 상세의 생성 이미지 (페이지네이션 단위) */
-@@ -502,7 +563,131 @@ export interface RecoverableBackup {
+@@ -502,7 +564,158 @@ export interface RecoverableBackup {
  }
  
  /** IPC invoke 채널 계약: 채널명 → (요청, 응답) */
@@ -11929,6 +12203,33 @@ index a900f71b8301f7f6493e7a9bebdb0d19c801f6ff..5b4c8e28971d004e2ac6b6e27abeedef
 +  'unrecognized' | 'empty' | 'noPreset' | 'ambiguousPreset' | 'tooLarge' | 'readError'
 +
 +/** [custom] 감시 폴더가 파일 하나를 처리한 결과 */
++/** [custom] 감시 폴더 자동 생성에서 씬 하나의 결과 */
++export interface WatchGenerationScene {
++  scene: string
++  /**
++   * queued = 뽑을 차례를 기다림, generating = 뽑는 중, generated = 뽑힘, failed = 다시 시도해도 실패,
++   * blocked = Anlas 가드가 예약을 막음, cancelled = 큐가 멈추거나 취소됨, unknown = 결과를 확인하지 못함
++   */
++  state: 'queued' | 'generating' | 'generated' | 'failed' | 'blocked' | 'cancelled' | 'unknown'
++  /** 실패·막힘·취소의 이유 */
++  reason?: string
++  /** 뽑은 횟수 (다시 시도 포함) */
++  tries: number
++  /** 뽑힌 그림 파일 이름 */
++  image?: string
++}
++
++/** [custom] 감시 폴더 자동 생성의 진행·결과 — 결과 파일의 `generation` */
++export interface WatchGenerationReport {
++  /** false면 아직 도는 중 (같은 파일에 다시 적힌다) */
++  done: boolean
++  /** 자동 생성을 시작하지 않았을 때의 이유 (꺼짐, 한도 초과 등) */
++  skipped?: string
++  generated: number
++  failed: number
++  scenes: WatchGenerationScene[]
++}
++
 +export interface WatchFolderEvent {
 +  /** 감시 폴더 기준 상대 경로 */
 +  file: string
@@ -12046,7 +12347,7 @@ index a900f71b8301f7f6493e7a9bebdb0d19c801f6ff..5b4c8e28971d004e2ac6b6e27abeedef
    'db:status': { req: void; res: { version: number; path: string } }
    /** 앱 버전 */
    'app:version': { req: void; res: { version: string } }
-@@ -628,6 +813,24 @@ export interface IpcInvokeMap {
+@@ -628,6 +841,24 @@ export interface IpcInvokeMap {
    'chars:clearThumbnail': { req: { id: number }; res: void }
    'chars:reorder': { req: { order: CharacterOrderEntry[] }; res: void }
    'chars:folderCreate': { req: { name: string }; res: { id: number } }
@@ -12071,7 +12372,7 @@ index a900f71b8301f7f6493e7a9bebdb0d19c801f6ff..5b4c8e28971d004e2ac6b6e27abeedef
    'chars:folderRename': { req: { id: number; name: string }; res: void }
    'chars:folderCollapse': { req: { id: number; collapsed: boolean }; res: void }
    'chars:folderColor': { req: { id: number; color: string | null }; res: void }
-@@ -667,7 +870,8 @@ export interface IpcInvokeMap {
+@@ -667,7 +898,8 @@ export interface IpcInvokeMap {
    /** 파일 탐색기에서 해당 파일 위치 열기 (파일 선택 상태로) */
    'images:showInFolder': { req: { filePath: string }; res: void }
    /** 다른 이름으로 저장 — 파일 저장 다이얼로그로 복사 */
@@ -12081,7 +12382,7 @@ index a900f71b8301f7f6493e7a9bebdb0d19c801f6ff..5b4c8e28971d004e2ac6b6e27abeedef
    /** 편집기(모자이크 등)의 결과 base64 PNG를 곧바로 원하는 위치에 저장 — 적용/저장 단계 없이 바로 내려받기 */
    'images:saveBase64As': { req: { base64: string; defaultName?: string }; res: { saved: boolean } }
    /** 이미지를 클립보드로 복사 */
-@@ -797,6 +1001,9 @@ export interface IpcInvokeMap {
+@@ -797,6 +1029,9 @@ export interface IpcInvokeMap {
    }
    'scenes:duplicate': { req: { id: number }; res: { id: number } }
    'scenes:delete': { req: { id: number }; res: void }
@@ -12091,7 +12392,7 @@ index a900f71b8301f7f6493e7a9bebdb0d19c801f6ff..5b4c8e28971d004e2ac6b6e27abeedef
    'scenes:reorder': { req: { ids: number[] }; res: void }
    /** 예약: 전체 취소(count=0 등 절대값 설정 — 출연 내역도 함께 초기화) */
    'scenes:setReserveAll': { req: { presetId: number; count: number }; res: void }
-@@ -831,14 +1038,65 @@ export interface IpcInvokeMap {
+@@ -831,14 +1066,67 @@ export interface IpcInvokeMap {
    'scenes:openFolder': { req: { sceneId: number }; res: { ok: boolean } }
    /** 씬 JSON 내보내기/불러오기 (파일 다이얼로그, 활성 프리셋 기준) */
    'scenes:exportJson': { req: { presetId: number }; res: { saved: boolean } }
@@ -12145,6 +12446,8 @@ index a900f71b8301f7f6493e7a9bebdb0d19c801f6ff..5b4c8e28971d004e2ac6b6e27abeedef
 +  'custom:sceneNegativeOff': { req: { id: number; off: boolean }; res: void }
 +  /** [custom] 씬별 레퍼런스 끄기·켜기 */
 +  'custom:sceneReferencesOff': { req: { id: number; off: boolean }; res: void }
++  /** [custom] 감시 폴더 자동 생성의 진행·결과를 씬 JSON의 결과 파일에 적는다 */
++  'custom:watchGenerationReport': { req: { file: string; report: WatchGenerationReport }; res: void }
 +  /** [custom] 씬별 투명 배경 켜기·끄기 */
 +  'custom:sceneTransparent': { req: { id: number; on: boolean }; res: void }
 +  /** [custom] 미생성인 씬이 바뀌기 전 내용 — 바뀐 태그를 노랗게 칠하는 기준 (없으면 null) */
@@ -12159,7 +12462,7 @@ index a900f71b8301f7f6493e7a9bebdb0d19c801f6ff..5b4c8e28971d004e2ac6b6e27abeedef
    'vibes:list': { req: void; res: { folders: ListFolder[]; items: VibeItem[] } }
    /** 파일 다이얼로그(다중)로 추가 */
    'vibes:add': { req: { folderId: number | null }; res: { count: number } }
-@@ -943,6 +1201,13 @@ export interface IpcEventMap {
+@@ -943,6 +1231,13 @@ export interface IpcEventMap {
      tier?: SubscriptionInfo['tier'] | null
      usage?: OpusUsageStatus
    }
@@ -12173,7 +12476,7 @@ index a900f71b8301f7f6493e7a9bebdb0d19c801f6ff..5b4c8e28971d004e2ac6b6e27abeedef
    /** 수동 선택 또는 V5 게이지 소진으로 활성 계정이 바뀜 */
    'nai:accountChanged': {
      accountId: string | null
-@@ -959,6 +1224,12 @@ export interface IpcEventMap {
+@@ -959,6 +1254,12 @@ export interface IpcEventMap {
    /** 씬에 새 이미지가 생성됨 (목록/상세 갱신). filePath로 카드 즉시 낙관적 갱신 */
    'scenes:changed': { sceneId: number; filePath: string }
    'scenes:reservationsChanged': Record<string, never>
@@ -13975,10 +14278,10 @@ index 0000000000000000000000000000000000000000..687ee761ad921c30545c7a6d55afe249
 +})
 diff --git a/tests/custom-parallel-queue.test.ts b/tests/custom-parallel-queue.test.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..db7ee7d73ba8ad3a449706b7f36438e45247504a
+index 0000000000000000000000000000000000000000..581a86a1946d37238bc5ee7455723b46450cb167
 --- /dev/null
 +++ b/tests/custom-parallel-queue.test.ts
-@@ -0,0 +1,269 @@
+@@ -0,0 +1,310 @@
 +import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 +import type { GenerationRequest, QueueStatus } from '../src/shared/types'
 +import { GenerationQueue, LanePauseError } from '../src/main/queue/generation-queue'
@@ -14148,7 +14451,7 @@ index 0000000000000000000000000000000000000000..db7ee7d73ba8ad3a449706b7f36438e4
 +    expect(states(q.status())).toBe('done')
 +  })
 +
-+  it('stops everything left when the Anlas guard blocks an account', async () => {
++  it('rests only the account the Anlas guard blocks; the other account keeps generating', async () => {
 +    const { generate, calls } = controlledGenerator()
 +    const q = new GenerationQueue(generate)
 +    q.setParallel(
@@ -14157,23 +14460,64 @@ index 0000000000000000000000000000000000000000..db7ee7d73ba8ad3a449706b7f36438e4
 +    )
 +    q.setDelayMs(0)
 +    const halted: unknown[] = []
-+    const cancelled: string[] = []
 +    q.on('halted', (h) => halted.push(h))
-+    q.on('cancelled', (items: { id: string }[]) => cancelled.push(...items.map((i) => i.id)))
 +    const ids = q.enqueue(REQ, 4)
 +    await vi.advanceTimersByTimeAsync(0)
 +    const guard = Object.assign(new Error('blocked'), { haltQueue: true })
-+    calls[0].fail(guard)
++    calls[0].fail(guard) // a가 막힘
 +    await vi.advanceTimersByTimeAsync(0)
-+    // 막힌 장과 남은 대기 2장은 취소, 이미 보낸 b의 장은 그대로 끝까지
-+    expect(states(q.status())).toBe('cancelled,generating,cancelled,cancelled')
-+    expect(q.status().items[0].error).toBe('blocked')
-+    expect(cancelled).toEqual([ids[0], ids[2], ids[3]])
-+    expect(halted).toEqual([{ reason: 'blocked', stopped: 2 }])
-+    calls[1].finish()
++    // 막힌 장은 취소되지 않고 대기로 돌아가고, 남은 예약도 그대로 — a만 쉰다
++    expect(states(q.status())).toBe('pending,generating,pending,pending')
++    expect(halted).toEqual([])
++    expect(q.status().lanes?.find((l) => l.accountId === 'a')?.pauseReason).toBe('guard')
++    // b가 네 장을 차례로 다 뽑는다
++    for (let n = 1; n <= 4; n++) {
++      calls[n].finish()
++      await vi.advanceTimersByTimeAsync(0)
++    }
++    expect(states(q.status())).toBe('done,done,done,done')
++    expect(calls.slice(1).map((c) => c.lane)).toEqual(['b', 'b', 'b', 'b'])
++    expect(calls.map((c) => c.id)).toEqual([ids[0], ids[1], ids[0], ids[2], ids[3]])
++  })
++
++  it('stops everything left when the Anlas guard blocks every account', async () => {
++    const { generate, calls } = controlledGenerator()
++    const q = new GenerationQueue(generate)
++    q.setParallel(
++      () => ['a', 'b'],
++      () => null
++    )
++    q.setDelayMs(0)
++    const halted: unknown[] = []
++    q.on('halted', (h) => halted.push(h))
++    q.enqueue(REQ, 4)
 +    await vi.advanceTimersByTimeAsync(0)
-+    expect(states(q.status())).toBe('cancelled,done,cancelled,cancelled')
-+    expect(calls).toHaveLength(2)
++    const guard = Object.assign(new Error('blocked'), { haltQueue: true })
++    calls[0].fail(guard) // a가 막혀 쉰다
++    await vi.advanceTimersByTimeAsync(0)
++    calls[1].fail(guard) // b도 막힘 — 뽑을 계정이 없다
++    await vi.advanceTimersByTimeAsync(0)
++    expect(states(q.status())).toBe('cancelled,cancelled,cancelled,cancelled')
++    expect(halted).toEqual([{ reason: 'blocked', stopped: 3 }])
++    expect(q.status().items[1].error).toBe('blocked')
++  })
++
++  it('still cancels an item that was sent to the blocked account itself', async () => {
++    const { generate, calls } = controlledGenerator()
++    const q = new GenerationQueue(generate)
++    q.setParallel(
++      () => ['a', 'b'],
++      () => 'a'
++    )
++    q.setDelayMs(0)
++    const halted: unknown[] = []
++    q.on('halted', (h) => halted.push(h))
++    q.enqueue(REQ, 1)
++    await vi.advanceTimersByTimeAsync(0)
++    calls[0].fail(Object.assign(new Error('blocked'), { haltQueue: true }))
++    await vi.advanceTimersByTimeAsync(0)
++    expect(states(q.status())).toBe('cancelled')
++    expect(halted).toEqual([{ reason: 'blocked', stopped: 0 }])
 +  })
 +
 +  it('cancels an item one account is generating without touching the other', async () => {
@@ -16784,10 +17128,10 @@ index 0000000000000000000000000000000000000000..cb86c0426ddd812e7525dffeb09d8b35
 +})
 diff --git a/tests/custom-watch-folder.integration.ts b/tests/custom-watch-folder.integration.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..451e77e03bdbd3c4657f952a44dae7acea186c63
+index 0000000000000000000000000000000000000000..610ab32101681f3cb5877fcc7cd205a003f4d80c
 --- /dev/null
 +++ b/tests/custom-watch-folder.integration.ts
-@@ -0,0 +1,267 @@
+@@ -0,0 +1,336 @@
 +import {
 +  existsSync,
 +  mkdirSync,
@@ -16809,6 +17153,7 @@ index 0000000000000000000000000000000000000000..451e77e03bdbd3c4657f952a44dae7ac
 +  setWatchFolderEnabled,
 +  stopWatchFolder
 +} from '../src/main/custom/watch-folder'
++import { writeWatchGenerationReport } from '../src/main/custom/watch-result'
 +import {
 +  createPreset,
 +  createScene,
@@ -16923,11 +17268,67 @@ index 0000000000000000000000000000000000000000..451e77e03bdbd3c4657f952a44dae7ac
 +    })
 +    expect(getScene(kept)?.prompt).toBe('new prompt')
 +    expect(listScenes(preset).map((s) => s.name)).toEqual(['001', '002'])
-+    // 파일은 그 자리에 그대로, 다른 파일·폴더도 생기지 않는다
-+    expect(tree()).toEqual(['옆집 뒷계/json 모음/0NURA_D1_001-175_v21.json'])
++    // 파일은 그 자리에 그대로, 옆에 결과 파일만 생긴다
++    expect(tree()).toEqual([
++      '옆집 뒷계/json 모음/0NURA_D1_001-175_v21.json',
++      '옆집 뒷계/json 모음/0NURA_D1_001-175_v21.result.json'
++    ])
 +    expect(JSON.parse(readFileSync(join(watchDir, event.file), 'utf-8'))).toEqual(body)
 +    expect(scanWatchFolder()).toEqual([])
 +    expect(scanWatchFolder()).toEqual([])
++  })
++
++  it('leaves a result file next to the scene JSON, and adds the generation report to it', () => {
++    const preset = createPreset('결과 프리셋')
++    createScene(preset, '001')
++    drop('sub/v1.json', {
++      preset: '결과 프리셋',
++      scenes: [
++        { name: '001', prompt: 'changed' },
++        { name: '002', prompt: 'added' }
++      ]
++    })
++    settle()
++    const path = join(watchDir, 'sub/v1.result.json')
++    const first = JSON.parse(readFileSync(path, 'utf-8'))
++    expect(first).toMatchObject({
++      file: 'sub/v1.json',
++      ok: true,
++      presetName: '결과 프리셋',
++      added: 1,
++      updated: 1,
++      changedScenes: ['001', '002']
++    })
++    expect(first.sceneIds).toBeUndefined()
++    expect(first.generation).toBeUndefined()
++
++    writeWatchGenerationReport(watchDir, 'sub/v1.json', {
++      done: true,
++      generated: 1,
++      failed: 1,
++      scenes: [
++        { scene: '001', state: 'generated', tries: 1, image: 'a.png' },
++        { scene: '002', state: 'blocked', tries: 1, reason: 'guard' }
++      ]
++    })
++    const second = JSON.parse(readFileSync(path, 'utf-8'))
++    expect(second.changedScenes).toEqual(['001', '002'])
++    expect(second.generation).toMatchObject({ done: true, generated: 1, failed: 1 })
++    expect(second.generation.scenes[1]).toEqual({
++      scene: '002',
++      state: 'blocked',
++      tries: 1,
++      reason: 'guard'
++    })
++    // 결과 파일은 씬 JSON으로 다시 읽지 않고, 폴더 밖 이름에는 쓰지 않는다
++    expect(scanWatchFolder()).toEqual([])
++    writeWatchGenerationReport(watchDir, '../out.json', {
++      done: true,
++      generated: 0,
++      failed: 0,
++      scenes: []
++    })
++    expect(existsSync(join(watchDir, '../out.result.json'))).toBe(false)
 +  })
 +
 +  it('puts new scenes at their number instead of the end', () => {
@@ -17024,7 +17425,19 @@ index 0000000000000000000000000000000000000000..451e77e03bdbd3c4657f952a44dae7ac
 +      ['settings.json', false, 'unrecognized']
 +    ])
 +    expect(listScenes(preset)).toHaveLength(0)
-+    expect(tree().sort()).toEqual(['D1_N1.json', 'broken.json', 'empty.json', 'settings.json'])
++    // 씬 JSON인데 못 쓴 파일에만 이유를 적은 결과 파일이 생긴다
++    expect(tree().sort()).toEqual([
++      'D1_N1.json',
++      'D1_N1.result.json',
++      'broken.json',
++      'empty.json',
++      'empty.result.json',
++      'settings.json'
++    ])
++    expect(JSON.parse(readFileSync(join(watchDir, 'empty.result.json'), 'utf-8'))).toMatchObject({
++      ok: false,
++      reason: 'empty'
++    })
 +    expect(settle()).toEqual([])
 +  })
 +
@@ -17053,6 +17466,103 @@ index 0000000000000000000000000000000000000000..451e77e03bdbd3c4657f952a44dae7ac
 +    const exported = JSON.parse(readFileSync(environment.exportFile, 'utf-8'))
 +    expect(exported.preset).toBe('윤초아 D1')
 +    expect(exported.scenes).toHaveLength(1)
++  })
++})
+diff --git a/tests/custom-watch-generation.test.ts b/tests/custom-watch-generation.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..e9763f739bd2fdc26a07c0b8f5495aa30382b850
+--- /dev/null
++++ b/tests/custom-watch-generation.test.ts
+@@ -0,0 +1,91 @@
++import { describe, expect, it } from 'vitest'
++import type { GenerationRequest, QueueItem, WatchGenerationReport } from '../src/shared/types'
++import { runWatchGeneration, WATCH_RETRIES } from '../src/renderer/src/lib/custom-watch-generation'
++
++// [custom] 감시 폴더 자동 생성: 씬마다 예약하고, 실패는 다시 뽑고, 결과를 씬마다 남긴다
++
++const REQ = { seed: 1, prompt: '' } as GenerationRequest
++const jobs = (...names: string[]): { scene: string; request: GenerationRequest }[] =>
++  names.map((scene) => ({ scene, request: REQ }))
++
++/** 예약마다 미리 정한 결과로 끝나는 가짜 큐 */
++// eslint-disable-next-line @typescript-eslint/explicit-function-return-type
++function fakeQueue(outcomes: (QueueItem['state'] | 'blocked')[], halt: string | null = null) {
++  const items: QueueItem[] = []
++  const reports: WatchGenerationReport[] = []
++  let n = 0
++  return {
++    reports,
++    deps: {
++      enqueue: async () => {
++        const outcome = outcomes[n++] ?? 'done'
++        if (outcome === 'blocked') return { ids: [], blocked: '무료 범위 밖' }
++        const id = `q${n}`
++        items.push({
++          id,
++          state: outcome,
++          ...(outcome === 'done' ? { filePath: `C:\\out\\${id}.png` } : {}),
++          ...(outcome === 'failed' ? { error: '500' } : {})
++        } as QueueItem)
++        return { ids: [id] }
++      },
++      status: async () => ({ items }),
++      report: async (r: WatchGenerationReport) => void reports.push(r),
++      sleep: async () => {},
++      haltReason: () => halt
++    }
++  }
++}
++
++describe('custom: watch-folder auto generation tracking', () => {
++  it('reports every scene as generated with its picture name', async () => {
++    const q = fakeQueue(['done', 'done', 'done'])
++    const result = await runWatchGeneration(jobs('1', '2', '3'), q.deps)
++    expect(result).toMatchObject({ done: true, generated: 3, failed: 0 })
++    expect(result.scenes.map((s) => [s.scene, s.state, s.tries, s.image])).toEqual([
++      ['1', 'generated', 1, 'q1.png'],
++      ['2', 'generated', 1, 'q2.png'],
++      ['3', 'generated', 1, 'q3.png']
++    ])
++    expect(q.reports[0].done).toBe(false)
++    expect(q.reports.at(-1)?.done).toBe(true)
++  })
++
++  it('books a failed scene again', async () => {
++    const q = fakeQueue(['failed', 'done', 'done'])
++    const result = await runWatchGeneration(jobs('1', '2'), q.deps)
++    expect(result.scenes).toMatchObject([
++      { scene: '1', state: 'generated', tries: 2 },
++      { scene: '2', state: 'generated', tries: 1 }
++    ])
++  })
++
++  it('gives up after the retries and keeps the reason', async () => {
++    const q = fakeQueue(['failed', 'failed', 'failed', 'failed'])
++    const result = await runWatchGeneration(jobs('1'), q.deps)
++    expect(result).toMatchObject({ generated: 0, failed: 1 })
++    expect(result.scenes[0]).toMatchObject({
++      state: 'failed',
++      reason: '500',
++      tries: WATCH_RETRIES + 1
++    })
++  })
++
++  it('records a scene the guard refused, and one the queue cancelled, without retrying', async () => {
++    const q = fakeQueue(['blocked', 'cancelled', 'done'], 'Anlas 가드')
++    const result = await runWatchGeneration(jobs('1', '2', '3'), q.deps)
++    expect(result.scenes).toMatchObject([
++      { scene: '1', state: 'blocked', reason: '무료 범위 밖', tries: 1 },
++      { scene: '2', state: 'cancelled', reason: 'Anlas 가드', tries: 1 },
++      { scene: '3', state: 'generated' }
++    ])
++    expect(result).toMatchObject({ generated: 1, failed: 2 })
++  })
++
++  it('stops watching after the time limit', async () => {
++    const q = fakeQueue(['pending'])
++    let clock = 0
++    const result = await runWatchGeneration(jobs('1'), q.deps, () => (clock += 60 * 60_000))
++    expect(result.scenes[0]).toMatchObject({ state: 'unknown', reason: 'timeout' })
 +  })
 +})
 diff --git a/tests/folder-list.test.ts b/tests/folder-list.test.ts

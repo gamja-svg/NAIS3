@@ -11,8 +11,10 @@ import {
   deleteScene,
   exportScenesJson,
   getScene,
+  isSceneReferencesOff,
   isSceneTransparent,
   listScenes,
+  setSceneReferencesOff,
   setSceneTransparent,
   updateScene
 } from '../src/main/scenes/repo'
@@ -108,5 +110,35 @@ describe('custom: per-scene transparent background', () => {
       scenes: { name: string; transparent?: boolean }[]
     }
     expect(saved.scenes.map((s) => s.transparent)).toEqual([true, undefined])
+  })
+
+  // [custom] 씬별 레퍼런스 끄기 — 같은 방식으로 씬에 붙는 표시
+  it('turns references off per scene, from the menu or a scene JSON', () => {
+    const preset = createPreset('p')
+    const a = createScene(preset, 'a')
+    const b = createScene(preset, 'b')
+    expect(setSceneReferencesOff(a, true)).toBe(true)
+    expect(setSceneReferencesOff(a, true)).toBe(false)
+    expect([isSceneReferencesOff(a), isSceneReferencesOff(b)]).toEqual([true, false])
+    expect(listScenes(preset).map((s) => !!s.referencesOff)).toEqual([true, false])
+    expect(getScene(a)?.referencesOff).toBe(true)
+
+    const done = applyImportedScenes(
+      preset,
+      parseSceneImport(
+        JSON.stringify({
+          scenes: [
+            { name: 'a', references: true },
+            { name: 'b', references: false },
+            { name: 'c', prompt: 'new', references: false }
+          ]
+        })
+      ) ?? []
+    )
+    const c = listScenes(preset).find((s) => s.name === 'c')!.id
+    expect([a, b, c].map(isSceneReferencesOff)).toEqual([false, true, true])
+    expect(done.sceneIds.sort()).toEqual([a, b, c].sort())
+    deleteScene(b)
+    expect(isSceneReferencesOff(b)).toBe(false)
   })
 })

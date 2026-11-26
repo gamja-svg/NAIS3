@@ -4,6 +4,12 @@ import type { CharacterReferenceOptions, VibeOptions } from '../nai/payload'
 import { ENDPOINTS } from '../nai/endpoints'
 import { t } from '../i18n'
 import {
+  modelCapabilities,
+  referenceBucketFor,
+  referenceStrengthMax,
+  referenceTypeFor
+} from '../../shared/nai-models'
+import {
   charRefRowsByIds,
   enabledCharRefRows,
   enabledVibeRows,
@@ -82,11 +88,21 @@ async function encodeVibe(
  * 캐릭레퍼 이미지 전처리 — OpenAPI 명세: 1024×1536 / 1536×1024 / 1472×1472
  * 캔버스에 검정 패딩으로 맞춰 전송. 종횡비에 따라 캔버스 선택.
  */
-async function processCharRefImage(filePath: string): Promise<string> {
+export async function processCharRefImage(filePath: string, bucketed: boolean): Promise<string> {
   const buf = readFileSync(filePath)
   const meta = await sharp(buf).metadata()
   const w = meta.width ?? 1
   const h = meta.height ?? 1
+  // [custom] V5: 검정 여백 없이, 비율이 가장 가까운 버킷을 덮게 키운 뒤 가운데를 잘라 보낸다 (웹과 같음)
+  if (bucketed) {
+    const [bw, bh] = referenceBucketFor(w, h)
+    if (w === bw && h === bh && meta.format === 'png') return buf.toString('base64')
+    const cropped = await sharp(buf)
+      .resize(bw, bh, { fit: 'cover', position: 'centre', kernel: 'lanczos3' })
+      .png()
+      .toBuffer()
+    return cropped.toString('base64')
+  }
   const ratio = w / h
   const canvas =
     ratio > 1.2
@@ -102,16 +118,25 @@ async function processCharRefImage(filePath: string): Promise<string> {
   return png.toString('base64')
 }
 
-export async function prepareCharRefs(ids?: number[]): Promise<CharacterReferenceOptions[]> {
+export async function prepareCharRefs(
+  ids?: number[],
+  // [custom] 보낼 모델 — V5면 그림 손질·종류·강도 범위가 다르다
+  model = ''
+): Promise<CharacterReferenceOptions[]> {
+  const v5 = modelCapabilities(model).referencesV5
+  const maxStrength = referenceStrengthMax(model)
   // ids 지정 시 그 캐릭레퍼들(enabled 무시 — 출연 예약), 미지정 시 enabled 항목
   const rows = ids ? charRefRowsByIds(ids) : enabledCharRefRows()
   const result: CharacterReferenceOptions[] = []
   for (const row of rows) {
+    // V5가 아닌 모델에는 의상 레퍼런스를 보내지 않는다 (웹과 같음)
+    const referenceType = referenceTypeFor(model, row.refType)
+    if (referenceType === null) continue
     result.push({
-      referenceType: row.refType as CharacterReferenceOptions['referenceType'],
-      strength: row.strength,
+      referenceType: referenceType as CharacterReferenceOptions['referenceType'],
+      strength: Math.min(row.strength, maxStrength),
       fidelity: row.fidelity,
-      imageBase64: await processCharRefImage(row.filePath)
+      imageBase64: await processCharRefImage(row.filePath, v5)
     })
   }
   return result

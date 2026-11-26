@@ -34,6 +34,7 @@ interface Row {
   pending?: number
   memo?: string | null
   transparent?: number | null
+  refs_off?: number | null
 }
 
 /** 출연별 예약 내역 파싱 (키 '' = 사이드바) */
@@ -92,7 +93,8 @@ function toScene(
     hasFavorite: r.has_favorite === 1,
     pending: r.pending === 1,
     ...(r.memo ? { memo: r.memo } : {}), // [custom] 씬 메모
-    ...(r.transparent ? { transparent: true } : {}) // [custom] 씬별 투명 배경
+    ...(r.transparent ? { transparent: true } : {}), // [custom] 씬별 투명 배경
+    ...(r.refs_off ? { referencesOff: true } : {}) // [custom] 씬별 레퍼런스 끄기
   }
 }
 
@@ -122,6 +124,8 @@ function marksDb(): ReturnType<typeof getDb> {
     )
     // 씬별 투명 배경 — 줄이 있으면 그 씬은 늘 투명 배경으로 뽑는다
     db.exec('CREATE TABLE IF NOT EXISTS custom_scene_transparent (scene_id INTEGER PRIMARY KEY)')
+    // 씬별 레퍼런스 끄기 — 줄이 있으면 그 씬은 정밀 레퍼런스(캐릭레퍼)를 보내지 않는다
+    db.exec('CREATE TABLE IF NOT EXISTS custom_scene_refs_off (scene_id INTEGER PRIMARY KEY)')
     // 기준 칸이 없던 때 만든 표에 더한다
     const cols = db.prepare('PRAGMA table_info(custom_scene_marks)').all() as { name: string }[]
     for (const col of ['base_prompt', 'base_negative'])
@@ -207,6 +211,25 @@ export function setSceneMemo(id: number, memo: string): boolean {
   return true
 }
 
+/**
+ * [custom] 씬별 레퍼런스 끄기·켜기 — 끈 씬은 사이드바에서 켠 정밀 레퍼런스(와 출연의 레퍼런스)를 보내지 않는다.
+ * 값이 실제로 바뀌었으면 true.
+ */
+export function setSceneReferencesOff(id: number, off: boolean): boolean {
+  const db = marksDb()
+  if (isSceneReferencesOff(id) === off) return false
+  if (off) db.prepare('INSERT OR IGNORE INTO custom_scene_refs_off (scene_id) VALUES (?)').run(id)
+  else db.prepare('DELETE FROM custom_scene_refs_off WHERE scene_id = ?').run(id)
+  return true
+}
+
+export function isSceneReferencesOff(id: number): boolean {
+  return (
+    marksDb().prepare('SELECT 1 FROM custom_scene_refs_off WHERE scene_id = ?').get(id) !==
+    undefined
+  )
+}
+
 /** [custom] 프리셋의 씬을 지금 순서대로 (id·이름만) */
 function sceneOrder(presetId: number): { id: number; name: string }[] {
   return getDb()
@@ -250,6 +273,7 @@ sceneEvents.on('deleted', (ids: number[]) => {
   const list = placeholders(ids.length)
   db.prepare(`DELETE FROM custom_scene_memos WHERE scene_id IN (${list})`).run(...ids)
   db.prepare(`DELETE FROM custom_scene_transparent WHERE scene_id IN (${list})`).run(...ids)
+  db.prepare(`DELETE FROM custom_scene_refs_off WHERE scene_id IN (${list})`).run(...ids)
   db.prepare(`DELETE FROM custom_scene_marks WHERE scene_id IN (${list})`).run(...ids)
 })
 
@@ -348,6 +372,7 @@ export function listScenes(presetId: number): Scene[] {
               ${pendingSql('s')} AS pending,
               (SELECT memo FROM custom_scene_memos WHERE scene_id = s.id) AS memo,
               (SELECT 1 FROM custom_scene_transparent WHERE scene_id = s.id) AS transparent,
+              (SELECT 1 FROM custom_scene_refs_off WHERE scene_id = s.id) AS refs_off,
               cover.id AS thumb_id,
               cover.created_at AS thumb_created_at,
               length(cover.thumbnail) AS thumb_size,
@@ -393,7 +418,8 @@ export function getScene(id: number): Scene | null {
               (SELECT COUNT(*) FROM images WHERE scene_id = ?) AS image_count,
               ${pendingSql('gen_scenes')} AS pending,
               (SELECT memo FROM custom_scene_memos WHERE scene_id = gen_scenes.id) AS memo,
-              (SELECT 1 FROM custom_scene_transparent WHERE scene_id = gen_scenes.id) AS transparent
+              (SELECT 1 FROM custom_scene_transparent WHERE scene_id = gen_scenes.id) AS transparent,
+              (SELECT 1 FROM custom_scene_refs_off WHERE scene_id = gen_scenes.id) AS refs_off
        FROM gen_scenes WHERE id = ?`
     )
     .get(id, id) as (Row & { image_count: number }) | undefined
@@ -794,7 +820,8 @@ export async function exportScenesJson(presetId: number): Promise<boolean> {
     .prepare(
       `SELECT name, prompt, negative_prompt, width, height,
               (SELECT memo FROM custom_scene_memos WHERE scene_id = gen_scenes.id) AS memo,
-              (SELECT 1 FROM custom_scene_transparent WHERE scene_id = gen_scenes.id) AS transparent
+              (SELECT 1 FROM custom_scene_transparent WHERE scene_id = gen_scenes.id) AS transparent,
+              (SELECT 1 FROM custom_scene_refs_off WHERE scene_id = gen_scenes.id) AS refs_off
        FROM gen_scenes WHERE preset_id = ? ORDER BY sort_order, id`
     )
     .all(presetId) as Row[]
@@ -812,7 +839,8 @@ export async function exportScenesJson(presetId: number): Promise<boolean> {
     width: s.width,
     height: s.height,
     ...(s.memo ? { memo: s.memo } : {}), // [custom] 씬 메모
-    ...(s.transparent ? { transparent: true } : {}) // [custom] 씬별 투명 배경
+    ...(s.transparent ? { transparent: true } : {}), // [custom] 씬별 투명 배경
+    ...(s.refs_off ? { references: false } : {}) // [custom] 씬별 레퍼런스 끄기
   }))
   // [custom] 프리셋 이름을 같이 적는다 — 감시 폴더가 이 이름으로 넣을 프리셋을 정한다
   const preset = getPresetName(presetId)
@@ -883,6 +911,11 @@ export function applyImportedScenes(
     if (value === undefined || !setSceneTransparent(sceneId, value)) return
     if (!outcome.sceneIds.includes(sceneId)) outcome.sceneIds.push(sceneId)
   }
+  // [custom] 씬별 레퍼런스 — 칸이 있을 때만 맞춘다. 바뀌면 다시 뽑을 씬으로 친다
+  const applyReferences = (sceneId: number, value: boolean | undefined): void => {
+    if (value === undefined || !setSceneReferencesOff(sceneId, !value)) return
+    if (!outcome.sceneIds.includes(sceneId)) outcome.sceneIds.push(sceneId)
+  }
   // [custom] 네거 짝 자동 붙이기 — 칸이 있을 때만 맞춘다. 바뀌면 다시 뽑을 씬으로 친다
   const applyAutoNegative = (sceneId: number, value: boolean | undefined): void => {
     if (value === undefined || !setSceneNegativeOff(sceneId, !value)) return
@@ -920,6 +953,7 @@ export function applyImportedScenes(
         if (s.memo !== undefined && setSceneMemo(target.id, s.memo)) outcome.memos++
         applyTransparent(target.id, s.transparent)
         applyAutoNegative(target.id, s.autoNegative)
+        applyReferences(target.id, s.references)
         continue
       }
       const name = s.name ?? t('ui.scene')
@@ -954,6 +988,7 @@ export function applyImportedScenes(
         if (s.memo !== undefined && setSceneMemo(existing.id, s.memo)) outcome.memos++
         applyTransparent(existing.id, s.transparent)
         applyAutoNegative(existing.id, s.autoNegative)
+        applyReferences(existing.id, s.references)
         continue
       }
       outcome.added++
@@ -971,6 +1006,7 @@ export function applyImportedScenes(
       if (s.memo && setSceneMemo(Number(inserted.lastInsertRowid), s.memo)) outcome.memos++ // [custom]
       if (s.transparent) setSceneTransparent(Number(inserted.lastInsertRowid), true) // [custom]
       if (s.autoNegative === false) setSceneNegativeOff(Number(inserted.lastInsertRowid), true) // [custom]
+      if (s.references === false) setSceneReferencesOff(Number(inserted.lastInsertRowid), true) // [custom]
     }
   })()
   // [custom] 새 씬을 번호 자리에 — 있던 씬의 순서는 그대로 둔다

@@ -106,7 +106,14 @@ export interface I2iOptions {
  */
 export interface CharacterReferenceOptions {
   /** 실캡처는 character&style. costume/delta는 웹 번들 enum에서 확인된 신규 타입 */
-  referenceType: 'character' | 'style' | 'character&style' | 'costume' | 'delta'
+  referenceType:
+    | 'character'
+    | 'style'
+    | 'character&style'
+    | 'costume'
+    | 'delta'
+    | 'character_mainoutfit'
+    | 'character&style_anyoutfit'
   strength: number
   fidelity: number
   cacheSecretKey?: string
@@ -313,8 +320,9 @@ export function buildGenerateImagePayload(
             })),
             director_reference_information_extracted: opts.characterReferences.map(() => 1),
             director_reference_strength_values: opts.characterReferences.map((r) => r.strength),
-            director_reference_secondary_strength_values: opts.characterReferences.map(
-              (r) => 1 - r.fidelity
+            // [custom] V5에는 Fidelity가 없다 — 웹은 0을 보낸다
+            director_reference_secondary_strength_values: opts.characterReferences.map((r) =>
+              capabilities.referencesV5 ? 0 : 1 - r.fidelity
             ),
             ...(opts.characterReferences.some((r) => r.cacheSecretKey)
               ? {

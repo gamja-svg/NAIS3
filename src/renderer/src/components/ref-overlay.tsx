@@ -17,6 +17,7 @@ import { cn } from '../lib/utils'
 import { useT } from '../lib/i18n'
 import { applyClickSelection, useSelectAllShortcut } from '../lib/edit-selection'
 import { buildDisplayRows } from '../lib/folder-list'
+import { modelCapabilities, referenceStrengthMax } from '@shared/nai-models'
 import { CHARREF_TYPES, refsStoreFor } from '../stores/refs-store'
 import { askConfirm, askText } from '../stores/dialog-store'
 import { FolderListView } from './folder-list-view'
@@ -438,6 +439,7 @@ function BulkParamsDialog({
 }): React.JSX.Element {
   const t = useT()
   const [strength, setStrength] = useState(0.6)
+  const bulkStrengthMax = referenceStrengthMax(useGenerationStore((st) => st.request.model))
   const [info, setInfo] = useState(0.7)
   const [fidelity, setFidelity] = useState(0.5)
   const [refType, setRefType] = useState<CharRefType>('character')
@@ -460,6 +462,7 @@ function BulkParamsDialog({
                   {CHARREF_TYPES.map((t) => (
                     <SelectItem key={t.value} value={t.value}>
                       {t.label}
+                      {t.v5 ? ' (V5)' : ''}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -469,7 +472,7 @@ function BulkParamsDialog({
           <ParamRow label={t('ui.strengthValue', strength.toFixed(2))}>
             <Slider
               min={0}
-              max={1}
+              max={kind === 'charref' ? bulkStrengthMax : 1}
               step={0.05}
               value={[strength]}
               onValueChange={([v]) => setStrength(Math.round(v * 100) / 100)}
@@ -579,6 +582,9 @@ function CharRefParams({
   update: (id: number, patch: Record<string, unknown>) => void
 }): React.JSX.Element {
   const t = useT()
+  const model = useGenerationStore((st) => st.request.model)
+  const v5 = modelCapabilities(model).referencesV5
+  const strengthMax = referenceStrengthMax(model)
   return (
     <div className="flex flex-col gap-1.5">
       <ParamRow label={t('ui.type')}>
@@ -593,6 +599,7 @@ function CharRefParams({
             {CHARREF_TYPES.map((t) => (
               <SelectItem key={t.value} value={t.value}>
                 {t.label}
+                {t.v5 ? ' (V5)' : ''}
               </SelectItem>
             ))}
           </SelectContent>
@@ -601,21 +608,26 @@ function CharRefParams({
       <ParamRow label={t('ui.strengthValue', item.strength.toFixed(2))}>
         <Slider
           min={0}
-          max={1}
+          max={strengthMax}
           step={0.05}
-          value={[item.strength]}
+          value={[Math.min(item.strength, strengthMax)]}
           onValueChange={([v]) => update(item.id, { strength: Math.round(v * 100) / 100 })}
         />
       </ParamRow>
-      <ParamRow label={t('ui.fidelityValue', item.fidelity.toFixed(2))}>
-        <Slider
-          min={0}
-          max={1}
-          step={0.05}
-          value={[item.fidelity]}
-          onValueChange={([v]) => update(item.id, { fidelity: Math.round(v * 100) / 100 })}
-        />
-      </ParamRow>
+      {/* [custom] V5에는 Fidelity가 없다 — 강도만 쓴다 (5.0까지) */}
+      {v5 ? (
+        <p className="text-[11px] leading-snug text-faint">{t('ui.customRefV5Note')}</p>
+      ) : (
+        <ParamRow label={t('ui.fidelityValue', item.fidelity.toFixed(2))}>
+          <Slider
+            min={0}
+            max={1}
+            step={0.05}
+            value={[item.fidelity]}
+            onValueChange={([v]) => update(item.id, { fidelity: Math.round(v * 100) / 100 })}
+          />
+        </ParamRow>
+      )}
     </div>
   )
 }

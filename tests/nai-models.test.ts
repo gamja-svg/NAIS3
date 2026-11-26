@@ -11,6 +11,10 @@ import {
   inpaintingModelFor,
   isV5Model,
   modelCapabilities,
+  REFERENCE_BUCKETS,
+  referenceBucketFor,
+  referenceStrengthMax,
+  referenceTypeFor,
   promptTokenLimit
 } from '../src/shared/nai-models'
 
@@ -31,10 +35,11 @@ describe('NAI 모델별 동작', () => {
     })
   })
 
-  it('V5는 출시 시점에 바이브·정밀 레퍼런스·Variety+를 지원하지 않는다', () => {
+  it('V5는 바이브·Variety+를 지원하지 않는다 ([custom] 정밀 레퍼런스는 2026-11-24부터 Full·Curated)', () => {
     expect(modelCapabilities('nai-diffusion-5-curated')).toMatchObject({
       vibes: false,
-      characterReferences: false,
+      characterReferences: true,
+      referencesV5: true,
       variety: false,
       noiseScheduleSelection: false,
       transparency: true,
@@ -81,13 +86,59 @@ describe('V5 Full Effort 토글 (Medium/High)', () => {
     )
     expect(isMediumEffortModel('nai-diffusion-5-full-medium-inpainting')).toBe(true)
     expect(promptTokenLimit('nai-diffusion-5-full-medium')).toBe(1471)
-    expect(modelCapabilities('nai-diffusion-5-full-medium')).toEqual(
-      modelCapabilities('nai-diffusion-5-full')
-    )
+    // [custom] 정밀 레퍼런스만 다르다 (High effort 전용)
+    expect(modelCapabilities('nai-diffusion-5-full-medium')).toEqual({
+      ...modelCapabilities('nai-diffusion-5-full'),
+      characterReferences: false,
+      referencesV5: false
+    })
   })
 
   it('Medium은 실제 전송 스텝이 14로 고정된다', () => {
     expect(effectiveSteps('nai-diffusion-5-full-medium', 28)).toBe(14)
     expect(effectiveSteps('nai-diffusion-5-full', 28)).toBe(28)
+  })
+
+  // [custom] V5 정밀 레퍼런스
+  it('[custom] V5 정밀 레퍼런스: Full·Curated만, 강도 5.0까지, Medium과 V4.5는 그대로', () => {
+    expect(modelCapabilities('nai-diffusion-5-full').characterReferences).toBe(true)
+    expect(modelCapabilities('nai-diffusion-5-full-medium')).toMatchObject({
+      characterReferences: false,
+      referencesV5: false
+    })
+    expect(modelCapabilities('nai-diffusion-4-5-full')).toMatchObject({
+      characterReferences: true,
+      referencesV5: false
+    })
+    expect(referenceStrengthMax('nai-diffusion-5-full')).toBe(5)
+    expect(referenceStrengthMax('nai-diffusion-4-5-full')).toBe(1)
+  })
+
+  it('[custom] V5가 아닌 모델에는 의상 레퍼런스를 빼고 같은 의상 변형을 접는다', () => {
+    const v45 = 'nai-diffusion-4-5-full'
+    expect(referenceTypeFor(v45, 'costume')).toBeNull()
+    expect(referenceTypeFor(v45, 'character_mainoutfit')).toBe('character')
+    expect(referenceTypeFor(v45, 'character&style_anyoutfit')).toBe('character&style')
+    expect(referenceTypeFor(v45, 'style')).toBe('style')
+    const v5 = 'nai-diffusion-5-curated'
+    expect(referenceTypeFor(v5, 'costume')).toBe('costume')
+    expect(referenceTypeFor(v5, 'character_mainoutfit')).toBe('character_mainoutfit')
+  })
+
+  it('[custom] V5 레퍼런스 버킷: 웹과 같은 97개, 비율이 가장 가까운 것을 고른다', () => {
+    expect(REFERENCE_BUCKETS).toHaveLength(97)
+    expect(REFERENCE_BUCKETS[0]).toEqual([256, 4096])
+    expect(REFERENCE_BUCKETS[96]).toEqual([4096, 256])
+    expect(REFERENCE_BUCKETS[48]).toEqual([1024, 1024])
+    for (const [w, h] of REFERENCE_BUCKETS) {
+      expect(w % 64).toBe(0)
+      expect(h % 64).toBe(0)
+      expect(w * h).toBeLessThanOrEqual(1048576)
+    }
+    expect(referenceBucketFor(1024, 1024)).toEqual([1024, 1024])
+    expect(referenceBucketFor(832, 1216)).toEqual([832, 1216])
+    expect(referenceBucketFor(1216, 832)).toEqual([1216, 832])
+    expect(referenceBucketFor(2000, 3000)).toEqual([832, 1216])
+    expect(referenceBucketFor(100, 10000)).toEqual([256, 4096])
   })
 })

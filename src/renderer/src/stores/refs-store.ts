@@ -134,11 +134,14 @@ export function refsStoreFor(kind: 'vibe' | 'charref'): AnyRefsStore {
   return (kind === 'vibe' ? useVibesStore : useCharRefsStore) as unknown as AnyRefsStore
 }
 
-export const CHARREF_TYPES: { value: CharRefType; label: string }[] = [
+// [custom] v5: V5에서만 통하는 종류 — 다른 모델에는 의상은 빠지고 `같은 의상` 변형은 원래 종류로 간다
+export const CHARREF_TYPES: { value: CharRefType; label: string; v5?: boolean }[] = [
   { value: 'character', label: 'Character' },
+  { value: 'character_mainoutfit', label: 'Character · same outfit', v5: true },
   { value: 'style', label: 'Style' },
   { value: 'character&style', label: 'Character & Style' },
-  { value: 'costume', label: 'Costume' },
+  { value: 'character&style_anyoutfit', label: 'Character & Style · any outfit', v5: true },
+  { value: 'costume', label: 'Outfit', v5: true },
   { value: 'delta', label: 'Delta' }
 ]
 

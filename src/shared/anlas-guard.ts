@@ -165,6 +165,7 @@ const PAID_REASON_MESSAGES: Record<AnlasPaidReason, MessageId> = {
   opusUsage: 'ui.anlasPaidReasonOpusUsage',
   resolution: 'ui.anlasPaidReasonResolution',
   steps: 'ui.anlasPaidReasonSteps',
+  referenceV5: 'ui.customAnlasPaidReasonReferenceV5',
   characterReference: 'ui.anlasPaidReasonCharacterReference',
   vibeEncoding: 'ui.anlasPaidReasonVibeEncoding',
   multiVibe: 'ui.anlasPaidReasonMultiVibe',

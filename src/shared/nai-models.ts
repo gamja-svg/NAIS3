@@ -75,6 +75,11 @@ export function effectiveSteps(model: string, steps: number): number {
 export interface NaiModelCapabilities {
   vibes: boolean
   characterReferences: boolean
+  /**
+   * [custom] V5식 정밀 레퍼런스 (2026-11-24 출시, Full·Curated) — Fidelity 없음, 강도 5.0까지,
+   * 의상 레퍼런스·`같은 의상 선호`, 그림은 검정 여백 없이 버킷 크기로 잘라 보낸다
+   */
+  referencesV5: boolean
   variety: boolean
   noiseScheduleSelection: boolean
   transparency: boolean
@@ -83,9 +88,12 @@ export interface NaiModelCapabilities {
 
 export function modelCapabilities(model: string): NaiModelCapabilities {
   if (isV5Model(model)) {
+    // [custom] 정밀 레퍼런스는 High effort만 — Medium(14스텝)에서는 웹도 꺼 둔다
+    const references = !isMediumEffortModel(model)
     return {
       vibes: false,
-      characterReferences: false,
+      characterReferences: references,
+      referencesV5: references,
       variety: false,
       noiseScheduleSelection: false,
       transparency: true,
@@ -95,6 +103,7 @@ export function modelCapabilities(model: string): NaiModelCapabilities {
   return {
     vibes: true,
     characterReferences: true,
+    referencesV5: false,
     variety: true,
     noiseScheduleSelection: true,
     transparency: false,
@@ -135,4 +144,51 @@ export function promptTokenLimit(model: string): number {
   if (isV5FullModel(model)) return 1471
   if (isV5Model(model)) return 703
   return 512
+}
+
+/** [custom] 정밀 레퍼런스 강도의 윗값 — V5는 5.0, 그 전은 1.0 */
+export function referenceStrengthMax(model: string): number {
+  return modelCapabilities(model).referencesV5 ? 5 : 1
+}
+
+/**
+ * [custom] 이 모델에 보낼 레퍼런스 종류 — V5가 아니면 웹처럼 의상 레퍼런스는 빼고(null),
+ * `같은 의상 선호` 변형은 원래 종류로 접는다.
+ */
+export function referenceTypeFor(model: string, type: string): string | null {
+  if (modelCapabilities(model).referencesV5) return type
+  if (type === 'costume') return null
+  if (type === 'character_mainoutfit') return 'character'
+  if (type === 'character&style_anyoutfit') return 'character&style'
+  return type
+}
+
+/**
+ * [custom] V5 레퍼런스 그림의 버킷 97개 (웹 클라이언트와 같음) — 높이 4096부터 1024까지 64씩 내려가며
+ * 1메가픽셀 안의 가장 넓은 64 배수 폭, 그리고 그것들을 눕힌 것.
+ */
+export const REFERENCE_BUCKETS: readonly (readonly [number, number])[] = (() => {
+  const portrait: [number, number][] = []
+  for (let height = 4096; height >= 1024; height -= 64)
+    portrait.push([Math.floor(1048576 / (height * 64)) * 64, height])
+  const landscape = portrait
+    .slice(0, -1)
+    .reverse()
+    .map(([w, h]): [number, number] => [h, w])
+  return [...portrait, ...landscape]
+})()
+
+/** [custom] 그림 비율에 가장 가까운 버킷 (로그 비율 기준) */
+export function referenceBucketFor(width: number, height: number): readonly [number, number] {
+  const aspect = Math.log(Math.max(width, 1) / Math.max(height, 1))
+  let best = REFERENCE_BUCKETS[0]
+  let bestGap = Infinity
+  for (const bucket of REFERENCE_BUCKETS) {
+    const gap = Math.abs(aspect - Math.log(bucket[0] / bucket[1]))
+    if (gap < bestGap) {
+      best = bucket
+      bestGap = gap
+    }
+  }
+  return best
 }

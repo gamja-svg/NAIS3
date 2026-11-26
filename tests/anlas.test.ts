@@ -4,6 +4,7 @@ import {
   displayOpusUsagePercent,
   effectiveGenerationStrength,
   estimateAnlas,
+  opusFreeMisses,
   formatAnlasEstimate,
   formatOpusUsageRefill,
   isOpusUsageDepleted,
@@ -276,5 +277,24 @@ describe('Anlas 추정 (NAI 웹 공식 이식)', () => {
 
   it('V5 Curated 업스케일러는 고정 1 Anlas', () => {
     expect(UPSCALE_ANLAS_COST).toBe(1)
+  })
+
+  it('[custom] V5는 정밀 레퍼런스를 쓰면 무료 생성이 안 된다 (V4.5는 그대로 무료 + 레퍼런스 사용료)', () => {
+    const v5 = {
+      ...base,
+      model: 'nai-diffusion-5-full',
+      steps: 23,
+      isOpus: true,
+      opusUsageExhausted: false
+    }
+    expect(estimateAnlas(v5).free).toBe(true)
+    const withRef = estimateAnlas({ ...v5, charRefCount: 1 })
+    expect(withRef.generation).toBeGreaterThan(0)
+    expect(withRef.charRef).toBe(5)
+    expect(withRef.usesOpusUsage).toBe(false)
+    expect(opusFreeMisses({ ...v5, charRefCount: 1 })).toEqual(['referenceV5'])
+    const v45 = estimateAnlas({ ...base, isOpus: true, charRefCount: 1 })
+    expect(v45.generation).toBe(0)
+    expect(v45.charRef).toBe(5)
   })
 })

@@ -110,17 +110,43 @@ describe('payload builder', () => {
     expect(p.parameters.tag_hint_transparent_background).toBe(true)
   })
 
-  it('V5에서는 출시 시점 미지원 바이브·정밀 레퍼런스를 payload에서 제외한다', () => {
+  it('V5에서는 미지원 바이브를 payload에서 제외한다 ([custom] 정밀 레퍼런스는 보낸다)', () => {
     const p = buildGenerateImagePayload(
       { ...baseRequest, model: 'nai-diffusion-5-curated' },
       {
         vibes: [{ strength: 0.6, encodedVibeBase64: 'vibe' }],
         characterReferences: [
-          { referenceType: 'character', strength: 1, fidelity: 1, imageBase64: 'ref' }
+          {
+            referenceType: 'character_mainoutfit',
+            strength: 3.5,
+            fidelity: 0.2,
+            imageBase64: 'ref'
+          },
+          { referenceType: 'costume', strength: 1, fidelity: 1, imageBase64: 'ref2' }
         ]
       }
     )
     expect(p.parameters).not.toHaveProperty('reference_image_multiple')
+    // [custom] V5 정밀 레퍼런스: Fidelity가 없어 secondary는 0, 강도는 1을 넘어도 그대로
+    expect(p.parameters.director_reference_images).toEqual(['ref', 'ref2'])
+    expect(p.parameters.director_reference_strength_values).toEqual([3.5, 1])
+    expect(p.parameters.director_reference_secondary_strength_values).toEqual([0, 0])
+    expect(p.parameters.director_reference_information_extracted).toEqual([1, 1])
+    expect(p.parameters.director_reference_descriptions).toEqual([
+      { caption: { base_caption: 'character_mainoutfit', char_captions: [] }, legacy_uc: false },
+      { caption: { base_caption: 'costume', char_captions: [] }, legacy_uc: false }
+    ])
+  })
+
+  it('[custom] V5 Full Medium은 정밀 레퍼런스를 보내지 않는다 (High effort 전용)', () => {
+    const p = buildGenerateImagePayload(
+      { ...baseRequest, model: 'nai-diffusion-5-full-medium' },
+      {
+        characterReferences: [
+          { referenceType: 'character', strength: 1, fidelity: 1, imageBase64: 'ref' }
+        ]
+      }
+    )
     expect(p.parameters).not.toHaveProperty('director_reference_images')
   })
 

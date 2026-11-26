@@ -8,7 +8,8 @@ import {
   type AnlasCharge,
   type AnlasGuardSettings
 } from '../../shared/anlas-guard'
-import { inpaintingModelFor, modelCapabilities } from '../../shared/nai-models'
+import { inpaintingModelFor, modelCapabilities, referenceTypeFor } from '../../shared/nai-models'
+import { isSceneReferencesOff } from '../scenes/repo'
 import { snapNaiResolution } from '../../shared/nai-resolution'
 import type { GenerationRequest } from '../../shared/types'
 import { getSetting } from '../db/settings'
@@ -63,9 +64,14 @@ export function requestCharge(
     encoded.add(key)
     unencodedVibes++
   }
-  const charRefCount = capabilities.characterReferences
-    ? (request.charRefIds ? charRefRowsByIds(request.charRefIds) : enabledCharRefRows()).length
-    : 0
+  // [custom] 레퍼런스를 끈 씬은 세지 않고, V5가 아닌 모델에는 의상 레퍼런스를 보내지 않는다 (index.ts와 같은 규칙)
+  const referencesOff = request.sceneId !== undefined && isSceneReferencesOff(request.sceneId)
+  const charRefCount =
+    capabilities.characterReferences && !referencesOff
+      ? (request.charRefIds ? charRefRowsByIds(request.charRefIds) : enabledCharRefRows()).filter(
+          (row) => referenceTypeFor(request.model, row.refType) !== null
+        ).length
+      : 0
   const source = request.source
   const size = source
     ? snapNaiResolution(request.width, request.height)

@@ -40,7 +40,7 @@ import { GenerationQueue } from './queue/generation-queue'
 import { laneSelection, parallelLanes, parallelTarget, refreshLaneBalance } from './custom/parallel'
 import { guardClaudeChatGuest } from './custom/claude-chat'
 import { withFragmentNegatives } from './custom/fragment-negatives'
-import { getPresetName, getScene, isSceneTransparent } from './scenes/repo'
+import { getPresetName, getScene, isSceneReferencesOff, isSceneTransparent } from './scenes/repo'
 
 // 앱 이름 (dev 메뉴바·dock에서 'Electron' 대신 표시). 패키징 앱은 productName 사용
 app.setName('NAIS3')
@@ -239,9 +239,13 @@ const startup = app.whenReady().then(async () => {
       ? await prepareVibes(token, request.model, request.vibeIds)
       : { vibes: [], newlyEncoded: [] }
     if (newlyEncoded.length) broadcast('vibes:encoded', {}) // 카드 인코딩 표시 갱신
-    const characterReferences = capabilities.characterReferences
-      ? await prepareCharRefs(request.charRefIds)
-      : []
+    // [custom] 레퍼런스를 끈 씬은 보내지 않는다. 모델에 따라 그림 손질·종류·강도 범위가 다르다 (V5)
+    const referencesOff =
+      rawRequest.sceneId !== undefined && isSceneReferencesOff(rawRequest.sceneId)
+    const characterReferences =
+      capabilities.characterReferences && !referencesOff
+        ? await prepareCharRefs(request.charRefIds, request.model)
+        : []
 
     let source = request.source
     // i2i/인페인트: 소스 해상도를 유효 NAI 해상도(64 배수·픽셀 상한)로 스냅하고 이미지를 맞춰 리사이즈.

@@ -281,6 +281,13 @@ export const EN = {
   'ui.customRemovedTags': 'Removed',
   'ui.customSceneMemo': 'Scene memo',
   'ui.customSceneMemoEdit': 'Memo…',
+  'ui.customSceneReferencesOff': 'Turn off references',
+  'ui.customSceneReferencesOn': 'Turn on references',
+  'ui.customSceneReferencesOffBadge': 'Refs off',
+  'ui.customSceneReferencesOffHint':
+    'This scene sends no Precise Reference (and pays no reference cost).',
+  'ui.customRefV5Note':
+    'V5 has no Fidelity, only Strength (up to 5.0). References are off on Medium.',
   'ui.customFragmentNegativeSet': 'Set negative pair',
   'ui.customFragmentNegativeHintValue':
     'Negative pair: {0} — when this fragment is in the prompt, it is added to the negative prompt at generation. Click to change.',
@@ -504,6 +511,7 @@ export const EN = {
   'ui.anlasPaidReasonOpusUsage': 'V5 gauge empty or unknown',
   'ui.anlasPaidReasonResolution': 'resolution over 1024²',
   'ui.anlasPaidReasonSteps': 'over 28 steps',
+  'ui.customAnlasPaidReasonReferenceV5': 'Precise Reference on V5 (no free generation)',
   'ui.anlasPaidReasonCharacterReference': 'character reference',
   'ui.anlasPaidReasonVibeEncoding': 'new vibe encoding',
   'ui.anlasPaidReasonMultiVibe': '5 or more vibes',

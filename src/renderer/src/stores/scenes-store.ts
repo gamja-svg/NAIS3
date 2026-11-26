@@ -154,6 +154,8 @@ interface ScenesState {
   setMemo: (id: number, memo: string) => Promise<void>
   /** [custom] 씬별 투명 배경 켜기·끄기 */
   setTransparent: (id: number, on: boolean) => Promise<void>
+  /** [custom] 씬별 레퍼런스 끄기·켜기 */
+  setReferencesOff: (id: number, off: boolean) => Promise<void>
 }
 
 /**
@@ -691,6 +693,13 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
       scenes: st.scenes.map((s) => (s.id === id ? { ...s, transparent: on || undefined } : s))
     }))
     await window.nais.invoke('custom:sceneTransparent', { id, on })
+  },
+
+  setReferencesOff: async (id, off) => {
+    set((st) => ({
+      scenes: st.scenes.map((s) => (s.id === id ? { ...s, referencesOff: off || undefined } : s))
+    }))
+    await window.nais.invoke('custom:sceneReferencesOff', { id, off })
   },
 
   // ── 출연(Cast) ──────────────────────────────────────────
